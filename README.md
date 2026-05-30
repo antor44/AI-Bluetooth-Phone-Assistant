@@ -113,7 +113,7 @@ python3 phone_assistant.py
 
 The application features a "Call Memory" system that injects the history of previous conversations into the prompt of a returning caller. You must understand how this works and its privacy implications.
 
-**How it works under the hood (lines 1327–1361):**
+**How it works under the hood (lines ~1417):**
 ```python
 last_rec = conn.execute(
     "SELECT transcript, date FROM calls WHERE number=? ORDER BY id DESC LIMIT 1",
@@ -128,10 +128,6 @@ Even though the JSON prompt includes strict rules like: *"Today's call is new, d
 
 *   **Scenario A (Same number, repeat caller):** There is no leak to third parties. However, if the caller gave sensitive medical data in Call 1, the AI might spontaneously bring it up in Call 2 without the user evoking it, violating the "clean slate" rule and creating an awkward user experience.
 *   **Scenario B (Shared numbers / Fake Caller ID):** If a company number (PBX) is used, and *Person X* calls, followed later by *Person Y* from the same external number, **Person Y's AI context will contain the full transcript of Person X**. This is a real privacy leak, as the AI has access to someone else's business or personal data.
-
-**Root Cause & Mitigation:**
-The root cause is that the *entire* transcript (including names, medical appointments, and even spam conversations) is injected without length limits or sensitive data filters. 
-*If privacy is a critical concern for your setup, you should modify the code (around line 1359 in `run()`) to only inject the extracted `caller_name` and `company` summary, rather than the raw transcript block.*
 
 ---
 
