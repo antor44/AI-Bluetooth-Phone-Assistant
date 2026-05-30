@@ -119,25 +119,23 @@ python3 phone_assistant.py
 
 ---
 
-## 🔒 Deep Dive: Call Memory & Privacy Risks
+## 🔒 Dynamic Call Memory & Context Isolation
 
-The application features a "Call Memory" system that injects the history of previous conversations into the prompt of a returning caller. You must understand how this works and its privacy implications.
+The application features a "Call Memory" system that allows the assistant to maintain continuity by referencing the last conversation when a caller calls back. It is important to understand how this is handled technically and its exact scope:
 
-**How it works under the hood (lines ~1417):**
-```python
-last_rec = conn.execute(
-    "SELECT transcript, date FROM calls WHERE number=? ORDER BY id DESC LIMIT 1",
-    (self.caller_number,)
-).fetchone()
-```
-The query uses `WHERE number=?` filtering strictly by the caller's phone number. It never mixes numbers.
-If the last call is completely finished (not "IN PROGRESS"), the system injects the **entire past transcript** into the Gemini Live system prompt.
+### 1. Data Isolation & Sandbox Scope
+*   **Zero System Integration:** Neither the AI nor the application has access to your personal files, emails, calendar, contacts, or any other private operating system data.
+*   **Explicit Context Only:** The assistant's entire knowledge base is strictly sandboxed. It only knows what you explicitly configure in the Web GUI (such as the boss's name, expected calls, and business description) and the SQLite call logs database.
 
-**Privacy Risks & Unintended Behaviors:**
-Even though the JSON prompt includes strict rules like: *"Today's call is new, do not assume they call for the same reason"* and *"Only refer to historical context if explicitly mentioned"*, Gemini does not always respect this nuance.
+### 2. Default Guarded Behavior (Concise & Neutral)
+By default, the assistant is configured with a **highly professional, guarded, and straight-to-the-point personality**. 
+*   It does not volunteer or reveal any information about the owner (such as last names, current location, or schedule).
+*   It focuses strictly on taking messages or managing hold requests, keeping interactions brief and direct.
 
-*   **Scenario A (Same number, repeat caller):** There is no leak to third parties. However, if the caller gave sensitive medical data in Call 1, the AI might spontaneously bring it up in Call 2 without the user evoking it, violating the "clean slate" rule and creating an awkward user experience.
-*   **Scenario B (Shared numbers / Fake Caller ID):** If a company number (PBX) is used, and *Person X* calls, followed later by *Person Y* from the same external number, **Person Y's AI context will contain the full transcript of Person X**. This is a real privacy leak, as the AI has access to someone else's business or personal data.
+### 3. Personality Tuning & Behavioral Edge Cases
+While the default profile is highly secure, the Web GUI allows you to modify the assistant's personality. If you configure a highly talkative, jovial, or over-compliant personality, certain edge cases can theoretically occur in rare circumstances:
+*   **Over-Compliance:** A highly friendly personality might be more prone to becoming talkative if pressed by an inquisitive caller.
+*   **Shared Office Numbers (Caller ID Matching):** The system retrieves the last conversation based strictly on the caller's phone number (`SELECT transcript FROM calls WHERE number=?`). If multiple people call your assistant from the exact same corporate switchboard or shared office number, the background context of the second call will contain the transcript of the first call. Under a highly compliant custom personality, the AI could reference past details if the new caller explicitly asks about them.
 
 ---
 
