@@ -123,7 +123,7 @@ def get_default_sink() -> str:
     except Exception: return ""
 
 MODEL_LIVE  = "gemini-3.1-flash-live-preview"
-API_KEY_PAY = os.environ.get("GEMINI_API_KEY_PAY")
+API_KEY = os.environ.get("GEMINI_API_KEY")
 
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
@@ -561,8 +561,8 @@ class PhoneAssistant:
         self.recording_path = os.path.join(recordings_dir, f"call_{caller_number}_{ts_str}.wav")
         self.client_recording_path = os.path.join(recordings_dir, f"call_{caller_number}_{ts_str}_client.wav")
 
-        self.client_text = genai.Client(api_key=API_KEY_PAY)
-        self.client_live = genai.Client(api_key=API_KEY_PAY, http_options={"api_version": "v1alpha"})
+        self.client_text = genai.Client(api_key=API_KEY)
+        self.client_live = genai.Client(api_key=API_KEY, http_options={"api_version": "v1alpha"})
 
         self.last_call_json = {
             "caller_type": "unknown", "risk_score": 0, "insult_detected": False,
@@ -1554,8 +1554,8 @@ def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
 if __name__ == "__main__":
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    if not API_KEY_PAY:
-        print(f"{_C_ERR}{ICON_ERR}Error: GEMINI_API_KEY_PAY environment variable not set.{_R}")
+    if not API_KEY:
+        print(f"{_C_ERR}{ICON_ERR}Error: GEMINI_API_KEY environment variable not set.{_R}")
         sys.exit(1)
 
     ensure_database_exists()

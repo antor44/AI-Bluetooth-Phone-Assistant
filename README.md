@@ -105,7 +105,7 @@ To start the actual phone assistant daemon:
 ```bash
 python3 phone_assistant.py
 ```
-*You must provide your Gemini API key via the environment variable `GEMINI_API_KEY_PAY`.*
+*You must provide your Gemini API key via the environment variable `GEMINI_API_KEY`.*
 
 ---
 
