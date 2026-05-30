@@ -117,6 +117,7 @@ def find_whisper_bin() -> str:
 WHISPER_BIN = find_whisper_bin()
 
 def get_default_sink() -> str:
+    """Retrieves the default PulseAudio/PipeWire sink name."""
     try:
         res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True)
         return res.stdout.strip() if res.returncode == 0 else ""
@@ -152,6 +153,7 @@ OUTPUT_SCHEMA = {
 # SYSTEM INITIALIZATION & DATABASE
 # =============================================================================
 def apply_language_defaults(lang_code: str) -> None:
+    """Applies default localized settings to the database if missing."""
     path = os.path.join(LANG_DIR, lang_code, "gui.json")
     if os.path.exists(path):
         try:
@@ -173,6 +175,7 @@ def apply_language_defaults(lang_code: str) -> None:
         except Exception: pass
 
 def ensure_database_exists() -> None:
+    """Ensures that the SQLite database and its required tables are created."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS calls 
@@ -184,6 +187,7 @@ def ensure_database_exists() -> None:
     c.execute('''CREATE TABLE IF NOT EXISTS settings 
                  (key TEXT PRIMARY KEY, value TEXT)''')
     
+    # Insert system defaults
     c.execute("INSERT OR IGNORE INTO settings VALUES ('wait_seconds', '0')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('auto_block_spam', 'false')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_model', 'medium')")
@@ -204,6 +208,7 @@ def ensure_database_exists() -> None:
     except Exception: pass
 
 def ensure_system_dependencies() -> None:
+    """Checks and applies necessary WirePlumber and oFono configurations for Bluetooth routing."""
     print(f"{_C_SERVER}{ICON_INFO}Checking system configurations...{_R}")
     home_dir = os.path.expanduser("~")
 
@@ -279,6 +284,7 @@ WantedBy=default.target"""
         print(f"{_C_ERR}{ICON_ERR}Failed to verify/start oFono: {e}{_R}")
 
 def ensure_null_sink() -> None:
+    """Creates a temporary null sink if it does not exist, used for audio monitoring isolation."""
     try:
         res = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True)
         if "AssistantMonitor" not in res.stdout:
@@ -286,6 +292,7 @@ def ensure_null_sink() -> None:
     except Exception: pass
 
 def initialize_ofono_modems(retries: int = 3) -> None:
+    """Connects to the oFono D-Bus interface and powers on all available modems (phones)."""
     for attempt in range(retries):
         try:
             bus = dbus.SystemBus()
@@ -315,6 +322,7 @@ def initialize_ofono_modems(retries: int = 3) -> None:
             else: print(f"{_C_ERR}{ICON_ERR}oFono initialization error: {e}{_R}")
 
 def initialize_bluez_devices() -> None:
+    """Automatically trusts connected BlueZ devices to allow seamless reconnection."""
     try:
         bus = dbus.SystemBus()
         manager = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
@@ -333,9 +341,11 @@ def initialize_bluez_devices() -> None:
 # UTILITY FUNCTIONS
 # =============================================================================
 def get_timestamp() -> str:
+    """Returns the current system time formatted as HH:MM:SS."""
     return datetime.datetime.now().strftime("%H:%M:%S")
 
 def get_config(key: str, default_value: str) -> str:
+    """Retrieves a configuration value from the SQLite settings table, handling localized keys."""
     try:
         conn = sqlite3.connect(DB_PATH)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
@@ -353,6 +363,7 @@ def get_config(key: str, default_value: str) -> str:
     except Exception: return default_value
 
 def load_language_data(lang_code: str, file_name: str = "assistant.json") -> dict:
+    """Loads a JSON configuration file from the specified language directory."""
     path = os.path.join(LANG_DIR, lang_code, file_name)
     if os.path.exists(path):
         try:
@@ -361,6 +372,7 @@ def load_language_data(lang_code: str, file_name: str = "assistant.json") -> dic
     return {}
 
 def calculate_rms(data_pcm: bytes) -> float:
+    """Calculates the Root Mean Square (RMS) energy level of PCM audio data."""
     count = len(data_pcm) // 2
     if count == 0: return 0.0
     shorts = struct.unpack(f"<{count}h", data_pcm)
@@ -368,6 +380,7 @@ def calculate_rms(data_pcm: bytes) -> float:
     return math.sqrt(sum_squares / count)
 
 def upsample_16k_to_24k(data_16k: bytes) -> bytes:
+    """Upsamples 16kHz PCM audio to 24kHz using basic linear interpolation."""
     num_samples = len(data_16k) // 2
     if num_samples < 2: return b""
     samples = struct.unpack(f"<{num_samples}h", data_16k)
@@ -382,6 +395,7 @@ def upsample_16k_to_24k(data_16k: bytes) -> bytes:
     return struct.pack(f"<{len(upsampled)}h", *upsampled)
 
 def clean_whisper_output(stdout_str: str) -> str:
+    """Removes timestamps and brackets from Whisper CLI terminal output."""
     lines = stdout_str.replace('\r', '\n').split('\n')
     cleaned = []
     for line in lines:
@@ -395,6 +409,7 @@ def clean_whisper_output(stdout_str: str) -> str:
     return " ".join(cleaned)
 
 def clean_ai_text(text: str) -> str:
+    """Strips internal system commands (like call:hangup) generated by the AI from the final text."""
     t = re.sub(r"start\s*\{.*?\}\s*endcall", "", text, flags=re.IGNORECASE)
     t = re.sub(r"start\s*\{.*?\}", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\{.*?\}", "", t)
@@ -402,6 +417,7 @@ def clean_ai_text(text: str) -> str:
     return t
 
 def clean_json_text(raw_text: str) -> str:
+    """Extracts valid JSON syntax from Markdown code blocks returned by the LLM."""
     if not raw_text or not str(raw_text).strip(): return "{}"
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL | re.IGNORECASE)
     if m: return m.group(1).strip()
@@ -410,15 +426,13 @@ def clean_json_text(raw_text: str) -> str:
     return "{}"
 
 def extract_response_text(response, default: str = "{}") -> str:
-    """Robustly extracts text from a Gemini/Gemma GenerateContent response."""
-    # PATH 1: Gemini (extracts text without touching thought_signature)
+    """Robustly extracts text from a Gemini/Gemma GenerateContent response structure."""
     try:
         for p in response.candidates[0].content.parts:
             if getattr(p, "text", None) and p.text.strip():
                 return p.text.strip()
     except Exception: pass
     
-    # PATH 2: Gemma fallback (Gemma usually outputs directly into response.text)
     try:
         if hasattr(response, "text") and response.text:
             return response.text.strip()
@@ -436,6 +450,7 @@ class PolicyDecision:
     safe_args: Dict[str, Any] = field(default_factory=dict)
 
 class CallPolicyEngine:
+    """Evaluates security rules before allowing the AI to execute tools like hangup or save."""
     def __init__(self, owner_name: str, parent=None):
         self.owner_name = owner_name
         self.parent = parent
@@ -466,6 +481,7 @@ class CallPolicyEngine:
 # PHONE ASSISTANT
 # =============================================================================
 class PhoneAssistant:
+    """Main class that handles a single active Bluetooth phone call via Gemini Live."""
     def __init__(self, dbus_path: str, caller_number: str):
         self.dbus_path = dbus_path
         self.caller_number = caller_number
@@ -502,13 +518,15 @@ class PhoneAssistant:
         self.last_speaker = None
         self.hanging_up = False
         self.forced_goodbye_active = False
-        # Track the origin of hangup to prevent tool-initiated hangups
-        # from being cancelled by the question-detection logic ("cut_words" vs "tool")
+        
+        # Track origin of hangup ("tool" vs "cut_words") to prevent question detection
+        # logic from inadvertently cancelling a valid tool-initiated hangup.
         self.hangup_source = ""
-        # Accumulator for streaming assistant transcription chunks within a
-        # short time window, used to evaluate goodbye/hold across partial chunks
+        
+        # Accumulator buffer for streaming transcription chunks (solves word-splitting issues)
         self._asst_chunk_buffer = ""
         self._asst_chunk_last_time = 0.0
+        
         self.hello_question_sent = False
         self.cutoff_sent = False
         self.hangup_triggered = False
@@ -573,6 +591,7 @@ class PhoneAssistant:
     # SPAM AI CHECKER
     # ==========================================
     async def check_network_spam(self) -> bool:
+        """Asynchronously queries external spam databases to evaluate the caller's phone number."""
         clean_num = re.sub(r"\D", "", self.caller_number)
         if not clean_num: return False
         
@@ -644,6 +663,7 @@ class PhoneAssistant:
     # PIPEWIRE LINK MANAGEMENT
     # ==========================================
     async def enforce_bluetooth_call_profile(self) -> None:
+        """Forces the Bluetooth controller to switch to the Hands-Free Profile (HFP) for calling."""
         mac_match = re.search(r'dev_([0-9A-Z_]+)', self.dbus_path)
         if not mac_match: return
         mac_str = mac_match.group(1).upper()
@@ -675,6 +695,7 @@ class PhoneAssistant:
         print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Warning: Could not force profile. Relying on auto-switching.{_R}")
 
     async def wait_for_pw_node(self, node_name: str, timeout: float = 12.0) -> Tuple[bool, str]:
+        """Polls PipeWire to ensure the requested audio node is active before proceeding."""
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_CONN}[PipeWire] Waiting for node: {node_name}...{_R}")
         base_name = re.sub(r'\.\d+$', '', node_name)
         deadline = time.time() + timeout
@@ -695,6 +716,7 @@ class PhoneAssistant:
     # DYNAMIC LOCAL MONITOR ROUTER (PC SPEAKERS)
     # ==========================================
     async def monitor_routing_manager(self) -> None:
+        """Background daemon that mirrors call audio to PC speakers dynamically based on settings."""
         while self.running:
             mode = get_config("monitor_mode", "both")
             if mode in ["both", "assistant"]:
@@ -748,14 +770,20 @@ class PhoneAssistant:
     # DB AND D-BUS HANDLERS
     # ==========================================
     def log_system_message(self, message_text: str, emoji_prefix: str = "⚠") -> None:
+        """Logs internal system events to the console and appends them to the call transcript."""
         ts = get_timestamp()
         clean_msg = message_text.replace("⏳", "").replace("⚠", "").replace("❌", "").replace("⏸", "").replace("[SYSTEM]", "").replace(":", "").strip()
-        console_tag = f"{emoji_prefix} [SYSTEM]" if USE_EMOJI else "[SYSTEM]"
+        
+        # Prepend "> " if the system is currently on hold.
+        prefix = "> " if getattr(self, "on_hold", False) else ""
+        console_tag = f"{prefix}{emoji_prefix} [SYSTEM]" if USE_EMOJI else f"{prefix}[SYSTEM]"
+        
         print(f"\n{_C_WARN}[{ts}] {console_tag}: {clean_msg}{_R}")
         self.accumulated_transcript += f"\n\n{emoji_prefix} [{ts}]: [SYSTEM]: {clean_msg}"
         self.update_transcription_db()
 
     def create_call_record_db(self) -> None:
+        """Initializes a new row in the database for the current incoming call."""
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         in_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
@@ -770,12 +798,14 @@ class PhoneAssistant:
         conn.commit(); conn.close()
 
     def update_transcription_db(self) -> None:
+        """Writes the accumulated transcription string into the database."""
         if self.call_id:
             conn = sqlite3.connect(DB_PATH)
             conn.execute("UPDATE calls SET transcript=? WHERE id=?", (self.accumulated_transcript, self.call_id))
             conn.commit(); conn.close()
 
     def save_to_db(self, name: str, message: str) -> None:
+        """Saves a specific message/appointment (triggered by the AI tool) to the transcript."""
         if self.call_id:
             msg_fmt = self.assistant_data.get("ui_saved_message", "Message from {name}: {message}")
             final_msg = msg_fmt.format(name=name, message=message)
@@ -785,6 +815,7 @@ class PhoneAssistant:
             print(f"\n\n{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[DB] Message saved.{_R}")
 
     def answer_call(self) -> None:
+        """Answers the incoming D-Bus oFono call."""
         try:
             iface = dbus.Interface(dbus.SystemBus().get_object("org.ofono", self.dbus_path), "org.ofono.VoiceCall")
             iface.Answer()
@@ -792,6 +823,7 @@ class PhoneAssistant:
         except Exception as e: print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[D-Bus] Answer failed: {e}{_R}")
 
     def hangup_call(self) -> None:
+        """Terminates the current D-Bus oFono call."""
         try:
             iface = dbus.Interface(dbus.SystemBus().get_object("org.ofono", self.dbus_path), "org.ofono.VoiceCall")
             iface.Hangup()
@@ -802,6 +834,7 @@ class PhoneAssistant:
     # AUDIO SUBPROCESS HANDLING
     # ==========================================
     async def send_mic_audio(self, session) -> None:
+        """Continuously reads PCM data from the Bluetooth microphone node and streams it to Gemini."""
         print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_AUDIO}[Mic] Active on node: {self.pw_record_target}{_R}")
         backends = [
             ["pw-record", f"--target={self.pw_record_target}", "--format=s16", "--rate=16000", "--channels=1", "-"],
@@ -873,6 +906,7 @@ class PhoneAssistant:
             if not silence_detected: break
 
     def sync_playback_loop(self) -> None:
+        """Reads audio generated by Gemini from a queue and pipes it to the Bluetooth speaker node."""
         cmd = ["pw-play", f"--target={self.pw_playback_target}", "--format=s16", "--rate=24000", "--channels=1", "-"]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
@@ -896,6 +930,7 @@ class PhoneAssistant:
     # HYBRID WHISPER LOGIC & JSON DATA
     # ==========================================
     def _calculate_text_similarity(self, a: str, b: str) -> float:
+        """Calculates simple similarity ratio between two strings using sets of words."""
         a, b = a.lower().strip(), b.lower().strip()
         if not a and not b: return 1.0
         if not a or not b: return 0.0
@@ -904,23 +939,27 @@ class PhoneAssistant:
         return len(wa & wb) / len(wa | wb)
 
     def _has_foreign_language_noise(self, text: str) -> bool:
+        """Detects if transcription contains hallucinated foreign noise words."""
         words = text.lower().split()
         if not words: return False
         foreign = set(self.words_data.get("foreign_noise", []))
         return (sum(1 for w in words if w in foreign) / len(words)) > 0.30
 
     def _has_excessive_repetition(self, text: str) -> bool:
+        """Detects loop hallucinations (e.g. 'hello hello hello')."""
         words = text.lower().split()
         if len(words) < 5: return False
         _, freq = Counter(words).most_common(1)[0]
         return freq > 4 and (freq / len(words)) > 0.40
 
     def _is_transcription_noise(self, text: str) -> bool:
+        """Detects common system-level transcription noise markers."""
         t = re.sub(r'[\(\[\{].*?[\)\}\]]', '', text).strip().lower()
         if not t or re.match(r'^[¿¡\s\-,.;.:!?]+$', t): return True
         return t in set(self.words_data.get("transcription_noise", []))
 
     async def heal_transcription_whisper(self, audio_bytes_list: list, gemini_txt: str, turn_ts: str = "") -> None:
+        """Re-evaluates a short audio snippet using the local Whisper model for higher accuracy."""
         model_path = f"./models/ggml-{self.whisper_full_model}.bin"
         if not WHISPER_BIN or not os.path.exists(WHISPER_BIN) or not os.path.exists(model_path): return
         tmp_wav = f"/tmp/whisper_turn_{str(uuid.uuid4())[:8]}.wav"
@@ -943,9 +982,8 @@ class PhoneAssistant:
             pat = f"🗣 [{turn_ts}]: {gemini_txt}"
             if pat in self.accumulated_transcript:
                 self.accumulated_transcript = self.accumulated_transcript.replace(pat, f"🗣 [{turn_ts}]: {combined}")
-            # Print Whisper result to terminal in orange (ANSI \033[33m), preceded by a
-            # newline so it never splits a mid-stream Gemini transcription line visually.
-            # This is display-only: it does not affect any logic or state.
+            
+            # Visual update only for console output (does not affect state logic)
             _C_WHISPER = "\033[33m" if SUPPORTS_COLOR else ""
             whisper_display = whisper_txt if wv else "[Noise Filtered]"
             print(f"\n{_C_WHISPER}· [Whisper/{turn_ts}]: {whisper_display}{_R}", flush=True)
@@ -955,21 +993,24 @@ class PhoneAssistant:
             if os.path.exists(tmp_wav): os.remove(tmp_wav)
 
     def is_valid_text(self, text: str) -> bool:
+        """Filters out non-Latin character sets and extremely short non-word artifacts."""
         if re.search(r"[\u4e00-\u9fff\uac00-\ud7a3\u3040-\u30ff\u1100-\u11ff]", text): return False
         cleaned = text.strip().lower()
         if len(cleaned) <= 1 and cleaned not in ('y', 'o', 'a', 's', 'i', 'sí', 'si', 'no'): return False
         return True
 
     async def update_state_json_safe(self, full_transcript: str) -> None:
+        """Non-blocking wrapper to periodically extract structured JSON state."""
         if not hasattr(self, "last_state_update_time"): self.last_state_update_time = 0.0
         now = time.time()
-        if (now - self.last_state_update_time) < 12.0 or self.state_update_lock.locked(): return
+        if (now - self.last_state_update_time) < 25.0 or self.state_update_lock.locked(): return
         async with self.state_update_lock:
             self.last_state_update_time = time.time()
             try: await asyncio.to_thread(self.execute_blocking_generate_content, full_transcript)
             except Exception: pass
 
     def execute_blocking_generate_content(self, complete_transcript: str) -> None:
+        """Sends transcript history to LLM model to deduce caller identity and risks (JSON mapping)."""
         raw = self.assistant_data.get("output_schema_instruction", "Analyze the transcript.")
         try: instruction = raw.format(boss_name=self.boss_name, assistant_name=self.assistant_name)
         except Exception: instruction = raw
@@ -1006,10 +1047,8 @@ class PhoneAssistant:
     def _matches_any_phrase(self, text: str, phrases: list) -> bool:
         """
         Checks whether any phrase from the list appears in text.
-        Single-word entries require a word-boundary match (surrounded by
-        spaces or start/end of string) to avoid false positives from
-        partial-word occurrences (e.g. 'wait' inside 'awaiting').
-        Multi-word entries (two or more words) are matched as plain substrings.
+        Single-word entries require a word-boundary match to avoid false positives.
+        Multi-word entries are matched as plain substrings.
         """
         t = text.lower()
         for phrase in phrases:
@@ -1017,26 +1056,21 @@ class PhoneAssistant:
             if not phrase_l:
                 continue
             if " " in phrase_l:
-                # Multi-word phrase: substring match is precise enough
                 if phrase_l in t:
                     return True
             else:
-                # Single word: require word boundary
                 if re.search(r'(?<![a-záéíóúñüàèìòùâêîôûäëïöüãõ])' + re.escape(phrase_l) + r'(?![a-záéíóúñüàèìòùâêîôûäëïöüãõ])', t):
                     return True
         return False
     
     def _check_wait_return(self, text: str) -> bool:
-        """
-        Returns True if the transcribed caller text contains a hold-return trigger.
-        Uses _matches_any_phrase so single-word triggers require word boundaries,
-        preventing spurious hold-exit on noise fragments containing short words.
-        """
+        """Checks if the transcription contains words indicating return from hold."""
         triggers = list(self.words_data.get("return_triggers", []))
         triggers.extend([self.assistant_name.lower(), self.boss_name.lower()])
         return self._matches_any_phrase(text, triggers)
 
     async def receive_audio_and_tools(self, session) -> None:
+        """Main interaction loop handling incoming events, audio, and logic rules from Gemini Live."""
         threading.Thread(target=self.sync_playback_loop, daemon=True).start()
 
         self.last_user_spoke_time = time.time()
@@ -1056,41 +1090,52 @@ class PhoneAssistant:
         print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Connected. Conversation started.{_R}")
 
         while self.running:
+            # Evaluate graceful exit sequences.
             if self.hanging_up and self.audio_out_queue.empty():
                 if time.time() - self.last_chunk_audio_time > 3.0 or time.time() - getattr(self, "hangup_triggered_time", time.time()) > 7.0:
                     print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Final goodbye audio finished playing. Cutting call.{_R}")
                     await asyncio.sleep(2.0); self.running = False; break
 
-            if self.currently_playing: self.last_user_spoke_time = time.time()
+            # Maintain active status while assistant speaks.
+            if self.currently_playing: 
+                self.last_user_spoke_time = time.time()
 
+            # Dynamic Inactivity Loop Execution
             if not self.hanging_up:
                 silence_threshold = self.category_wait_seconds if (self.on_hold or self.priority_call) else 25.0
                 time_without_user = time.time() - self.last_user_spoke_time
                 total_hold_time = self.accumulated_wait_time + (time.time() - self.current_wait_start if self.on_hold and self.current_wait_start > 0 else 0)
 
                 if self.waiting_definitive_cut:
-                    if time.time() - self.cut_warning_time > 15.0:
+                    if time.time() - self.cut_warning_time > 20.0:
                         self.hanging_up = self.forced_goodbye_active = self.hangup_triggered = True
                         self.hangup_reason = "completed"
                         self.log_system_message("Grace period exhausted. Forcing hangup...", "❌")
                         await session.send_realtime_input(text=self.prompts_data.get("silence_grace_end", ""))
+                
+                # Check maximum allowed total hold time (15 minutes / 900 seconds safety net)
                 elif self.on_hold and total_hold_time > 900.0 and not self.waiting_definitive_cut:
                     self.waiting_definitive_cut = True
-                    self.cut_warning_time = self.last_user_spoke_time = time.time()
+                    self.cut_warning_time = time.time()
                     self.log_system_message("Maximum accumulated hold time (15 mins) exceeded. Starting 15s grace warning...", "⚠")
                     await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
-                elif time_without_user > silence_threshold and not self.waiting_definitive_cut:
-                    if not self.hello_question_sent:
-                        self.log_system_message(f"{int(silence_threshold)}s without response. Asking if someone is there...", "⏳")
-                        self.hello_question_sent = True
-                        self.last_user_spoke_time = time.time()
-                        await session.send_realtime_input(text=self.prompts_data.get("hello_question", ""))
-                    else:
-                        self.waiting_definitive_cut = True
-                        self.cut_warning_time = self.last_user_spoke_time = time.time()
-                        self.log_system_message("Continued silence. Starting 15s grace period...", "⏳")
-                        await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
+                
+                # Initial Silence Timeout -> Ask Hello
+                elif time_without_user > silence_threshold and not self.hello_question_sent and not self.waiting_definitive_cut:
+                    self.log_system_message(f"{int(silence_threshold)}s without response. Asking if someone is there...", "⏳")
+                    self.hello_question_sent = True
+                    self.last_user_spoke_time = time.time()  # Reset the inactivity timer to wait exactly 15s from now
+                    await session.send_realtime_input(text=self.prompts_data.get("hello_question", ""))
+                
+                # Extended Silence (15 seconds after Assistant finished asking hello) -> Grace Warning
+                elif self.hello_question_sent and not self.waiting_definitive_cut and time_without_user > 15.0:
+                    self.waiting_definitive_cut = True
+                    self.cut_warning_time = time.time()
+                    self.last_user_spoke_time = time.time()  # Reset timer to wait another 15s properly
+                    self.log_system_message("Continued silence. Starting 15s grace period...", "⏳")
+                    await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
 
+            # Non-blocking web socket receiving event loop.
             try: msg = await asyncio.wait_for(session._receive(), timeout=0.5)
             except asyncio.TimeoutError: continue
             except Exception: break
@@ -1104,8 +1149,6 @@ class PhoneAssistant:
                             self.hanging_up = self.hangup_triggered = True
                             self.hangup_triggered_time = time.time()
                             self.hangup_reason = "completed"
-                            # Mark hangup as tool-initiated so that the question-detection
-                            # cancellation logic in the otx block does not interfere.
                             self.hangup_source = "tool"
                             print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] {self.assistant_name} requested hangup via tool. Waiting for audio to finish...{_R}")
                         elif fc.name == "save_message":
@@ -1129,30 +1172,56 @@ class PhoneAssistant:
                         print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[SYSTEM]: Interruption during grace period. Cancelling hangup...{_R}")
                         self.waiting_definitive_cut = False
 
-                    if self.on_hold:
-                        if any(hr in itx.text.lower() for hr in self.words_data.get("hold_words", [])):
-                            now = time.time()
-                            if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
-                                self.last_renewal_printed_time = now
-                                self.log_system_message(self.labels_data.get("hold_renewed_caller", "").format(limit=int(self.category_wait_seconds)), "⏳")
+                    just_activated_hold = False
 
-                        if not self._check_wait_return(itx.text):
-                            ts = get_timestamp()
-                            self.log_system_message(f"Active Hold: Ignored background noise / TV: '{itx.text}'", "⏸")
-                            if self.final_transcription_mode == "realtime" and len(self.user_turn_audio) > 0:
-                                cloned_audio = list(self.user_turn_audio); self.user_turn_audio.clear()
-                                asyncio.create_task(self.heal_transcription_whisper(cloned_audio, itx.text, ts))
-                            else: self.user_turn_audio.clear()
-                            itx = None  
-                        else:
-                            self.log_system_message("Return from hold detected. Resuming conversation...", "⏳")
-                            self.on_hold = False
-                            if self.current_wait_start > 0: self.accumulated_wait_time += (time.time() - self.current_wait_start)
-                            self.current_wait_start = 0.0
+                    # --- Caller initiates hold manually ---
+                    if not self.hanging_up and not self.on_hold:
+                        user_safe_text = itx.text.lower()
+                        for iw in self.words_data.get("ignore_hold_words", []):
+                            user_safe_text = user_safe_text.replace(iw.lower(), "")
+                        
+                        if self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
+                            self.on_hold = True
+                            just_activated_hold = True
+                            self.current_wait_start = self.last_user_spoke_time = time.time()
+                            self.last_speaker = None
+                            self.log_system_message(f"Hold activated by caller. Silencing inactivity (Limit {int(self.category_wait_seconds)}s).", "⏳")
+
+                    if self.on_hold:
+                        if not just_activated_hold:
+                            # --- Caller renews hold time ---
+                            user_safe_text = itx.text.lower()
+                            for iw in self.words_data.get("ignore_hold_words", []):
+                                user_safe_text = user_safe_text.replace(iw.lower(), "")
+
+                            if self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
+                                now = time.time()
+                                self.last_user_spoke_time = now  # Reset the inactivity timer!
+                                if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
+                                    self.last_renewal_printed_time = now
+                                    self.log_system_message(self.labels_data.get("hold_renewed_caller", "⏳ Hold time renewed by caller (Limit {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
+
+                            # --- Check return from hold ---
+                            # Prevent instant exit by evaluating on the original (un-safened) text, but only if they didn't just activate it.
+                            if not self._check_wait_return(itx.text):
+                                ts = get_timestamp()
+                                self.log_system_message(f"Active Hold Ignored background noise / TV '{itx.text}'", "⏸")
+                                if self.final_transcription_mode == "realtime" and len(self.user_turn_audio) > 0:
+                                    cloned_audio = list(self.user_turn_audio); self.user_turn_audio.clear()
+                                    asyncio.create_task(self.heal_transcription_whisper(cloned_audio, itx.text, ts))
+                                else: self.user_turn_audio.clear()
+                                itx = None  
+                            elif not self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
+                                # Only exit hold if they didn't ALSO say a hold-renew word in the exact same sentence.
+                                self.log_system_message("Return from hold detected. Resuming conversation...", "⏳")
+                                self.on_hold = False
+                                if self.current_wait_start > 0: self.accumulated_wait_time += (time.time() - self.current_wait_start)
+                                self.current_wait_start = 0.0
 
                     if itx:
                         ts = get_timestamp()
-                        print(f"\n\n{_C_MUTED}[{ts}]{_R} {_C_AUDIO}{ICON_USER_STR}{itx.text}{_R}")
+                        prefix = "> " if self.on_hold else ""
+                        print(f"\n\n{_C_MUTED}{prefix}[{ts}]{_R} {_C_AUDIO}{ICON_USER_STR}{itx.text}{_R}")
                         self.accumulated_transcript += f"\n\n🗣 [{ts}]: {itx.text}"
                         self.update_transcription_db()
                         
@@ -1169,7 +1238,6 @@ class PhoneAssistant:
                                     self.log_system_message(f"Priority keyword detected. Activating extended attention mode ({int(self.category_wait_seconds)}s).", "⚠")
                                     self.priority_call = True
                                 break
-                        asyncio.create_task(self.update_state_json_safe(itx.text))
 
                 model_turn = getattr(sc, "model_turn", None)
                 if model_turn:
@@ -1204,9 +1272,10 @@ class PhoneAssistant:
                         force_new_timestamp = (time.time() - self.last_asst_text_time > 4.0)
                         self.last_asst_text_time = time.time()
 
+                        prefix = "> " if self.on_hold else ""
                         if self.last_speaker != self.assistant_name.lower() or force_new_timestamp:
                             ts_asst = get_timestamp()
-                            print(f"\n\n{_C_MUTED}[{ts_asst}]{_R} {_C_CONN}{ICON_ASST}{clean_otx}{_R}", end="", flush=True)
+                            print(f"\n\n{_C_MUTED}{prefix}[{ts_asst}]{_R} {_C_CONN}{ICON_ASST}{clean_otx}{_R}", end="", flush=True)
                             self.accumulated_transcript += f"\n\n📞 [{ts_asst}]: {clean_otx}"
                             self.last_speaker = self.assistant_name.lower()
                         else:
@@ -1215,40 +1284,34 @@ class PhoneAssistant:
 
                         self.update_transcription_db()
 
-                        otx_lower = clean_otx.lower()
-
-                        # --- Build safe_otx: remove ignore_hold_words before hold detection ---
-                        safe_otx = otx_lower
-                        for iw in self.words_data.get("ignore_hold_words", []):
-                            safe_otx = safe_otx.replace(iw.lower(), "")
-
-                        # --- Accumulate streaming chunks in a short time window (600 ms) ---
+                        # --- Accumulate streaming chunks in a larger time window (2.5 secs) ---
                         # Gemini Live sends the assistant transcription in partial chunks.
-                        # Evaluating each chunk in isolation can cause false positives (a chunk
-                        # ending in "?" that precedes "goodbye" in the next chunk) or false
-                        # negatives (a goodbye split across two chunks).  We concatenate chunks
-                        # that arrive within 600 ms of each other and only evaluate the buffer
-                        # once we detect a natural pause (>600 ms) or a non-empty new chunk.
+                        # We use 2.5s to ensure the sentence is fully completed before evaluating it.
                         now_chunk = time.time()
-                        if now_chunk - self._asst_chunk_last_time < 0.6:
+                        if now_chunk - self._asst_chunk_last_time < 2.5:
                             self._asst_chunk_buffer += " " + clean_otx
                         else:
                             self._asst_chunk_buffer = clean_otx
                         self._asst_chunk_last_time = now_chunk
                         eval_text = self._asst_chunk_buffer.lower()
 
+                        # --- Build safe_eval_text: remove ignore_hold_words before hold detection ---
+                        safe_eval_text = eval_text
+                        for iw in self.words_data.get("ignore_hold_words", []):
+                            safe_eval_text = safe_eval_text.replace(iw.lower(), "")
+
                         # --- HOLD renewal: assistant speaks while on hold ---
-                        if self.on_hold and self._matches_any_phrase(safe_otx, self.words_data.get("hold_words", [])):
+                        if self.on_hold and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", [])):
                             now = time.time()
+                            self.last_user_spoke_time = now  # Reset the inactivity timer!
                             if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
-                                self.last_user_spoke_time = self.last_renewal_printed_time = now
+                                self.last_renewal_printed_time = now
                                 self.log_system_message(
-                                    self.labels_data.get("hold_renewed_assistant", "⏳ Wait renewed by assistant (Limit: {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
+                                    self.labels_data.get("hold_renewed_assistant", "⏳ Wait renewed by assistant (Limit {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
 
                         # --- GOODBYE detection on accumulated eval_text ---
-                        # Only trigger if hangup has not already been initiated from any source.
-                        # We use eval_text (buffered) so a goodbye split across chunks is caught.
-                        if not self.hangup_triggered and self._matches_any_phrase(eval_text, self.words_data.get("cut_words", [])):
+                        # EXCLUDE detection if we are actively executing a system-prompted warning (hello_question or grace period).
+                        if not self.hangup_triggered and not self.waiting_definitive_cut and not self.hello_question_sent and self._matches_any_phrase(eval_text, self.words_data.get("cut_words", [])):
                             self.hanging_up = self.hangup_triggered = True
                             self.hangup_triggered_time = time.time()
                             self.hangup_source = "cut_words"
@@ -1256,16 +1319,8 @@ class PhoneAssistant:
                             print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Goodbye detected in assistant text. Initiating clean call cut...{_R}")
 
                         # --- GOODBYE cancellation: only when the assistant is asking a question ---
-                        # Cancellation is allowed only when:
-                        #   1. The hangup was initiated by cut_words detection (NOT by a tool call).
-                        #   2. The evaluated text contains an explicit "add anything?" type phrase
-                        #      from the cancel_phrases list in the JSON.
-                        # Removed: the broad `endswith("?")` condition that caused false cancellations
-                        # whenever any question appeared in the same utterance as the goodbye.
                         if self.hanging_up and self.hangup_source == "cut_words":
                             cancel_phrases = self.words_data.get("cancel_goodbye_phrases", [])
-                            # A goodbye and a cancel phrase can coexist in eval_text when Gemini
-                            # produces "Anything else? Goodbye." — in that case do NOT cancel.
                             has_goodbye = self._matches_any_phrase(eval_text, self.words_data.get("cut_words", []))
                             has_cancel  = self._matches_any_phrase(eval_text, cancel_phrases)
                             if has_cancel and not has_goodbye:
@@ -1276,9 +1331,7 @@ class PhoneAssistant:
                                 print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[SYSTEM]: Cancel-goodbye phrase detected without goodbye word. Cancelling hangup...{_R}")
 
                         # --- HOLD activation: assistant puts call on hold ---
-                        # Only activate if not already hanging up and not already on hold.
-                        # Uses _matches_any_phrase to require word-boundary for single words.
-                        if not self.hanging_up and not self.on_hold and self._matches_any_phrase(safe_otx, self.words_data.get("hold_words", [])):
+                        if not self.hanging_up and not self.on_hold and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", [])):
                             self.on_hold = True
                             self.current_wait_start = self.last_user_spoke_time = time.time()
                             self.last_speaker = None
@@ -1289,12 +1342,13 @@ class PhoneAssistant:
                                     text=self.prompts_data.get("hold_reminder", "").format(wait_seconds=int(self.category_wait_seconds)))
                             else:
                                 self.log_system_message(
-                                    f"{self.assistant_name} accepted hold. Silencing inactivity (Limit: {int(self.category_wait_seconds)}s).", "⏳")
+                                    f"{self.assistant_name} accepted hold. Silencing inactivity (Limit {int(self.category_wait_seconds)}s).", "⏳")
 
     # ==========================================
     # END OF CALL POST-PROCESSING LOGIC
     # ==========================================
     async def transcribe_file_whisper(self, wav_path: str) -> str:
+        """Executes Whisper.cpp completely over the isolated audio file for maximum offline accuracy."""
         model_path = f"./models/ggml-{self.whisper_full_model}.bin"
         if not WHISPER_BIN or not os.path.exists(WHISPER_BIN) or not os.path.exists(model_path): return ""
         try:
@@ -1305,6 +1359,7 @@ class PhoneAssistant:
         return ""
 
     async def correct_transcript_with_whisper(self, raw_whisper: str) -> str:
+        """Aligns the live transcription logs with the highly-accurate batch Whisper transcript."""
         prompt = (f"We have two transcriptions of a call:\n1. LIVE TRANSCRIPT (📞 correct, 🗣 may have noise).\n2. RAW WHISPER (🗣 only).\n"
                   f"Task: Align and correct 🗣 parts in LIVE TRANSCRIPT using RAW WHIPER. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
                   f"If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\nLIVE TRANSCRIPT:\n{self.accumulated_transcript}\n\nRAW WHIPER:\n{raw_whisper}")
@@ -1316,6 +1371,7 @@ class PhoneAssistant:
         except Exception: return self.accumulated_transcript
 
     async def correct_transcript_with_gemini_audio(self, wav_path: str, model_override: str = None) -> str:
+        """Uploads the actual audio file to Gemini to execute the final transcription alignment."""
         try:
             model_to_use = model_override if model_override else self.model_text
             with open(wav_path, "rb") as f: audio_bytes = f.read()
@@ -1328,6 +1384,7 @@ class PhoneAssistant:
         except Exception: return self.accumulated_transcript
 
     async def post_process_call(self) -> None:
+        """Final cleanup execution. Merges audio channels, parses labels and tags, outputs result logic."""
         print(f"\n{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Saving recordings and evaluating categories...{_R}")
         if self.caller_recording_buffer:
             try:
@@ -1412,6 +1469,7 @@ class PhoneAssistant:
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Post-Processing] Complete. Tagged as: {final_tag}{_R}")
 
     async def run(self) -> None:
+        """Entry point. Initializes instructions and triggers the execution loops for the ongoing call."""
         conn = sqlite3.connect(DB_PATH)
         contact = conn.execute("SELECT type, prompt_rules FROM contacts WHERE number=?", (self.caller_number,)).fetchone()
         last_rec = conn.execute("SELECT transcript, date FROM calls WHERE number=? ORDER BY id DESC LIMIT 1", (self.caller_number,)).fetchone()
@@ -1461,7 +1519,15 @@ class PhoneAssistant:
 
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"], system_instruction=types.Content(parts=[types.Part(text=instruction)]), tools=tools_list,
-            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede" if "fem" in self.assistant_gender.lower() else "Puck")))
+            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede" if "fem" in self.assistant_gender.lower() else "Puck"))),
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    prefix_padding_ms=200,
+                    silence_duration_ms=500,
+                )
+            )
         )
 
         spam_task = asyncio.create_task(self.check_network_spam())
@@ -1525,6 +1591,7 @@ class PhoneAssistant:
                     self._post_processed = True; await self.post_process_call()
 
 def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
+    """Listens for CallAdded and CallRemoved events over D-Bus from oFono."""
     global ACTIVE_ASSISTANT
     def on_call_added(path: str, properties: dict) -> None:
         global ACTIVE_ASSISTANT, ACTIVE_TASKS
