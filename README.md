@@ -6,14 +6,26 @@
 
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini Live** for conversational AI and **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages, sets context-aware memory for repeat callers, and provides a sleek Web GUI to manage your communications.
 
-> ⚠️ **DISCLAIMER & PRELIMINARY VERSION WARNING**
-> This is a **preliminary, experimental version**. The author is not responsible for any errors, missed calls, or damages resulting from its use. There are many unhandled edge cases, potential API timeouts, and a remote but possible risk of privacy leaks (see the Privacy section below). Use it at your own risk.
+> ⚠️ **DISCLAIMER / EXPERIMENTAL SOFTWARE / NO WARRANTY NOTICE**
+> This is a **preliminary, experimental version** intended for technically competent users who understand Linux telephony, Bluetooth routing, and AI-assisted voice processing. It may contain unhandled edge cases, missed-call scenarios, API timeouts, routing failures, transcription mistakes, privacy-impacting bugs, unexpected model behavior, or unsafe interactions with third-party services.
+>
+> To the maximum extent permitted by applicable law and consistent with the GPL license terms, this project is distributed **as-is**, **without any warranty**, **without any guarantee of fitness for a particular purpose**, and **without any representation that any specific deployment is lawful, compliant, safe, uninterrupted, or suitable for production use**. It should not be treated as a fault-tolerant appliance, a compliance product, a legal template, or a substitute for jurisdiction-specific legal review.
 
 > 🧪 **EXPERIMENTAL & UNTESTED FEATURES WARNING**
-> Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, or behave unpredictably under certain conditions.
+> Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, misclassify calls, or behave unpredictably under certain conditions.
 
-> ⚖️ **LEGAL WARNING REGARDING CALL RECORDING**
-> Laws regarding the recording of phone conversations and AI-driven voice processing vary significantly by jurisdiction and can be highly sensitive. For example, in jurisdictions like Spain (under European GDPR and local AEPD regulations), privacy laws are exceptionally strict. If this application is used for business or commercial purposes, you **must** configure the AI's initial greeting to explicitly and immediately inform the caller that the conversation is being recorded and processed by an automated AI system. Failure to provide proper notification can lead to severe legal penalties and substantial financial audits. It is your sole responsibility to ensure full compliance with local telecommunications, data protection, and privacy laws.
+> ⚖️ **LEGAL / PRIVACY / RECORDING NOTICE**
+> Laws regarding phone call recording, AI-driven voice interaction, live transcription, caller notification, consent, retention, and personal-data processing vary significantly by country, state, and context. In many jurisdictions—especially in Europe—people interacting with an AI system must be informed clearly and early, and in some jurisdictions call recording or transcription may require stricter consent rules than a simple generic warning.
+>
+> Any person or entity that **deploys, redistributes, packages, hosts, integrates, modifies, configures, enables, or operates** this software for real-world use is solely responsible for ensuring that the actual deployment complies with applicable telecommunications, privacy, consumer-protection, employment, health-data, and data-protection laws. This includes, where applicable, lawful basis, caller notice, consent, retention periods, access controls, deletion, international data transfers, regulated-sector restrictions, and the handling of any sensitive information disclosed by callers.
+>
+> This repository is a technical project, not a legal authorization to record calls and not a warranty of legal compliance. Whether a deployment is lawful depends on the jurisdiction, the actual configuration used, the data retained, the third-party services connected, and the way the system is operated in practice.
+
+> 🧩 **AUTHOR / DISTRIBUTOR POSITION**
+> The author distributes source code under GPL for research, development, testing, and adaptation by technically capable users. Anyone who changes prompts, disables or rewrites disclosures, alters retention behavior, connects external systems, enables recording/transcription in a live setting, or repackages the software for customers or employees is acting as a deployer, integrator, operator, or redistributor for their own use case and assumes responsibility for those choices and their consequences.
+
+> 🔐 **SAFER DEPLOYMENT PRINCIPLE**
+> The most defensible use case for this project is typically: **incoming calls only**, a clear first-message disclosure, minimal data collection, restricted retention, conservative assistant behavior, and no unnecessary access to unrelated local data.
 
 Author: Antonio R. | Version: 1.0 | License: GPL 3.0
 ---
@@ -59,6 +71,19 @@ This code interacts directly with Linux D-Bus and PipeWire, making it a robust s
 *   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). However, **be warned**: doing so can trigger unforeseen side effects or cause the AI to ignore structural commands like hanging up or saving messages.
 *   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values.
 
+### Recommended Operating Profile
+For privacy-sensitive or legally cautious deployments, the safest default profile is generally:
+*   concise,
+*   neutral,
+*   non-chatty,
+*   inbound-call focused,
+*   resistant to oversharing,
+*   and limited to call handling, message capture, hold management, and basic classification.
+
+A more playful, emotionally warm, or highly compliant personality may sound nicer, but it can also increase the risk of over-disclosure, prompt drift, or ambiguous behavior during real calls.
+
+If you adapt this project for **medical scheduling, legal intake, customer support, debt collection, internal HR workflows, regulated industries, or any environment where callers may disclose sensitive or confidential information**, do not assume that the stock prompts or the stock README are sufficient. Independent review, narrower retention, stricter disclosures, and additional safeguards are strongly recommended before real-world use.
+
 ---
 
 ## 🛠️ Installation & Setup
@@ -95,10 +120,8 @@ This app uses a hybrid approach: Gemini Live for conversational speed, and a loc
    Copy the compiled `whisper-cli` (or `main`) executable into the root directory of *this* application, or ensure it's in a `./build/bin/` subfolder.
 4. **Download Models:**
    Create a `models/` folder in the root of this app and download the `.bin` models (e.g., `ggml-medium.bin`). The GUI allows you to select which model and quantization to use.
----
 
 ### 4. Bluetooth Mobile Pairing (Crucial for Ubuntu 24.04 / Modern GNOME)
-
 On modern Linux distributions like **Ubuntu 24.04** (and other desktops using modern GNOME or KDE Plasma), pairing your mobile phone using the default desktop Settings GUI often fails to establish the necessary telephony integration. The desktop GUI frequently pairs devices solely as media audio players (A2DP), ignoring or blocking the **Hands-Free Profile (HFP)** required by `oFono` to detect incoming calls.
 
 To ensure your phone is recognized correctly as a telephony gateway, **you must pair, trust, and connect the device via the terminal using direct `bluetoothctl` commands**:
@@ -125,6 +148,7 @@ To ensure your phone is recognized correctly as a telephony gateway, **you must 
    *   `[OK] oFono modem ready: /hfp/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX` (If successful).
    *   `[INFO] oFono: no modems found. Ensure your phone is connected via Bluetooth.` (If it fails).
    *   *Tip:* If your phone is connected but not detected by oFono, restart the Bluetooth service (`sudo systemctl restart bluetooth`) to trigger a clean re-scan.
+
 ---
 
 ## 📂 Project Directory Structure
@@ -166,7 +190,6 @@ Below is the directory scheme of the installation, showing where the main daemon
 └── /build                      # Optional whisper.cpp compilation tree (if cloned in the same folder)
     └── /bin
         └── whisper-cli         # Original compiled path of the whisper-cli executable
-
 ```
 
 ### Directory Components Breakdown:
@@ -175,6 +198,11 @@ Below is the directory scheme of the installation, showing where the main daemon
     *   *Tip:* For English-only installations, using the specialized English-only models (e.g., **`ggml-medium.en.bin`** or **`ggml-base.en.bin`**) provides significantly better performance, lower resource usage, and higher accuracy compared to their standard multilingual counterparts.
 *   **`/languages`:** Contains separate directory folders for each translation locale. Adding a new language (like the `/fr-FR` example) is as simple as creating a folder, copying the JSON files, and translating their text values while preserving the original JSON parameter keys.
 *   **`/recordings`:** This directory holds the audio files of the processed calls. For every call, it generates a clean mono caller track (used for post-call Whisper transcription) and a high-quality synchronized stereo master containing both speaker channels separated.
+
+### Data Storage & Sensitivity Note
+The presence of call audio, transcripts, and per-number history means this directory structure should be treated as sensitive local data. Real deployments should think about file permissions, disk encryption, backup scope, retention limits, and explicit deletion workflows rather than indefinite accumulation.
+
+Do not assume that “local on my own Linux box” automatically eliminates legal duties. Depending on the jurisdiction and the way the system is used, local storage may still involve regulated personal data, employment data, customer data, or sensitive information that requires notice, restricted access, controlled retention, and deletion discipline.
 
 ---
 
@@ -197,6 +225,20 @@ python3 phone_assistant.py
 ```
 *You must provide your Gemini API key via the environment variable `GEMINI_API_KEY`.*
 
+### Deployment Caution
+The GUI makes the system highly configurable, but legal or privacy compliance does **not** come from merely having an option available in the interface. In live operation, disclosure, recording rules, retention, and personality constraints should be treated as deployment requirements, not decorative toggles.
+
+If a user, integrator, employer, client, reseller, or downstream distributor disables disclosures, weakens safeguards, broadens the assistant's personality, enables risky data flows, or repurposes the system for a jurisdiction or sector with stricter requirements, that creates a materially different deployment profile. Responsibility for that modified operational setup belongs to the party making or commissioning those changes, not to the upstream publication of the original source code alone.
+
+### Suggested Greeting Pattern
+A safer default greeting for many jurisdictions is something close to:
+
+> “Hello. You are speaking with an AI assistant. This call may be recorded and transcribed to handle your request. Please do not share unnecessary sensitive information.”
+
+This is not universal legal advice, but it is generally far more defensible than silent operation.
+
+If you remove, weaken, hide, delay, or rewrite this kind of disclosure for a live deployment, you should not assume that the original project documentation still describes your real compliance posture.
+
 ---
 
 ## 🔒 Dynamic Call Memory & Context Isolation
@@ -216,6 +258,16 @@ By default, the assistant is configured with a **highly professional, guarded, a
 While the default profile is highly secure, the Web GUI allows you to modify the assistant's personality. If you configure a highly talkative, jovial, or over-compliant personality, certain edge cases can theoretically occur in rare circumstances:
 *   **Over-Compliance:** A highly friendly personality might be more prone to becoming talkative if pressed by an inquisitive caller.
 *   **Shared Office Numbers (Caller ID Matching):** The system retrieves the last conversation based strictly on the caller's phone number (`SELECT transcript FROM calls WHERE number=?`). If multiple people call your assistant from the exact same corporate switchboard or shared office number, the background context of the second call will contain the transcript of the first call. Under a highly compliant custom personality, the AI could reference past details if the new caller explicitly asks about them.
+
+### 4. Safer Memory Practices
+If you plan to deploy this beyond hobby testing, a more cautious approach is usually better:
+*   keep only the minimum context required,
+*   separate short message memory from general free-form memory,
+*   expire old call history automatically where possible,
+*   avoid keeping sensitive context unless there is a clear operational reason,
+*   and do not assume that caller ID always maps to one real human being.
+
+From a risk perspective, the easiest memory policy to defend is usually the narrowest one. Every additional retention rule, category tag, or persistent recall feature may increase operational usefulness, but it can also increase legal exposure if deployed carelessly.
 
 ---
 
