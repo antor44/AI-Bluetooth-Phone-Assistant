@@ -6,26 +6,12 @@
 
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini Live** for conversational AI and **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages, sets context-aware memory for repeat callers, and provides a sleek Web GUI to manage your communications.
 
-> ⚠️ **DISCLAIMER / EXPERIMENTAL SOFTWARE / NO WARRANTY NOTICE**
-> This is a **preliminary, experimental version** intended for technically competent users who understand Linux telephony, Bluetooth routing, and AI-assisted voice processing. It may contain unhandled edge cases, missed-call scenarios, API timeouts, routing failures, transcription mistakes, privacy-impacting bugs, unexpected model behavior, or unsafe interactions with third-party services.
+> ⚠️ **EXPERIMENTAL SOFTWARE / NO WARRANTY / LEGAL NOTICE**
+> This project is an **experimental AI phone assistant** for technically competent users. It is distributed **as-is**, without warranty, and may contain bugs, missed-call scenarios, transcription errors, privacy-impacting failures, or other unsafe edge cases.
 >
-> To the maximum extent permitted by applicable law and consistent with the GPL license terms, this project is distributed **as-is**, **without any warranty**, **without any guarantee of fitness for a particular purpose**, and **without any representation that any specific deployment is lawful, compliant, safe, uninterrupted, or suitable for production use**. It should not be treated as a fault-tolerant appliance, a compliance product, a legal template, or a substitute for jurisdiction-specific legal review.
-
-> 🧪 **EXPERIMENTAL & UNTESTED FEATURES WARNING**
-> Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, misclassify calls, or behave unpredictably under certain conditions.
-
-> ⚖️ **LEGAL / PRIVACY / RECORDING NOTICE**
-> Laws regarding phone call recording, AI-driven voice interaction, live transcription, caller notification, consent, retention, and personal-data processing vary significantly by country, state, and context. In many jurisdictions—especially in Europe—people interacting with an AI system must be informed clearly and early, and in some jurisdictions call recording or transcription may require stricter consent rules than a simple generic warning.
+> If you deploy, repackage, integrate, modify, or operate it in a real environment, **you** are responsible for compliance with local law, including caller notice, recording/transcription rules, retention, access control, and any sector-specific requirements. This repository is a technical project, not legal advice and not a guarantee that any particular deployment is lawful or production-safe.
 >
-> Any person or entity that **deploys, redistributes, packages, hosts, integrates, modifies, configures, enables, or operates** this software for real-world use is solely responsible for ensuring that the actual deployment complies with applicable telecommunications, privacy, consumer-protection, employment, health-data, and data-protection laws. This includes, where applicable, lawful basis, caller notice, consent, retention periods, access controls, deletion, international data transfers, regulated-sector restrictions, and the handling of any sensitive information disclosed by callers.
->
-> This repository is a technical project, not a legal authorization to record calls and not a warranty of legal compliance. Whether a deployment is lawful depends on the jurisdiction, the actual configuration used, the data retained, the third-party services connected, and the way the system is operated in practice.
-
-> 🧩 **AUTHOR / DISTRIBUTOR POSITION**
-> The author distributes source code under GPL for research, development, testing, and adaptation by technically capable users. Anyone who changes prompts, disables or rewrites disclosures, alters retention behavior, connects external systems, enables recording/transcription in a live setting, or repackages the software for customers or employees is acting as a deployer, integrator, operator, or redistributor for their own use case and assumes responsibility for those choices and their consequences.
-
-> 🔐 **SAFER DEPLOYMENT PRINCIPLE**
-> The most defensible use case for this project is typically: **incoming calls only**, a clear first-message disclosure, minimal data collection, restricted retention, conservative assistant behavior, and no unnecessary access to unrelated local data.
+> In practice, the safest profile is usually: **incoming calls only**, clear first-message disclosure, minimal data retention, and a conservative assistant configuration.
 
 Author: Antonio R. | Version: 1.0 | License: GPL 3.0
 ---
@@ -81,8 +67,6 @@ For privacy-sensitive or legally cautious deployments, the safest default profil
 *   and limited to call handling, message capture, hold management, and basic classification.
 
 A more playful, emotionally warm, or highly compliant personality may sound nicer, but it can also increase the risk of over-disclosure, prompt drift, or ambiguous behavior during real calls.
-
-If you adapt this project for **medical scheduling, legal intake, customer support, debt collection, internal HR workflows, regulated industries, or any environment where callers may disclose sensitive or confidential information**, do not assume that the stock prompts or the stock README are sufficient. Independent review, narrower retention, stricter disclosures, and additional safeguards are strongly recommended before real-world use.
 
 ---
 
@@ -202,8 +186,6 @@ Below is the directory scheme of the installation, showing where the main daemon
 ### Data Storage & Sensitivity Note
 The presence of call audio, transcripts, and per-number history means this directory structure should be treated as sensitive local data. Real deployments should think about file permissions, disk encryption, backup scope, retention limits, and explicit deletion workflows rather than indefinite accumulation.
 
-Do not assume that “local on my own Linux box” automatically eliminates legal duties. Depending on the jurisdiction and the way the system is used, local storage may still involve regulated personal data, employment data, customer data, or sensitive information that requires notice, restricted access, controlled retention, and deletion discipline.
-
 ---
 
 ## ⚙️ Configuration & GUI Options
@@ -228,16 +210,10 @@ python3 phone_assistant.py
 ### Deployment Caution
 The GUI makes the system highly configurable, but legal or privacy compliance does **not** come from merely having an option available in the interface. In live operation, disclosure, recording rules, retention, and personality constraints should be treated as deployment requirements, not decorative toggles.
 
-If a user, integrator, employer, client, reseller, or downstream distributor disables disclosures, weakens safeguards, broadens the assistant's personality, enables risky data flows, or repurposes the system for a jurisdiction or sector with stricter requirements, that creates a materially different deployment profile. Responsibility for that modified operational setup belongs to the party making or commissioning those changes, not to the upstream publication of the original source code alone.
-
 ### Suggested Greeting Pattern
 A safer default greeting for many jurisdictions is something close to:
 
 > “Hello. You are speaking with an AI assistant. This call may be recorded and transcribed to handle your request. Please do not share unnecessary sensitive information.”
-
-This is not universal legal advice, but it is generally far more defensible than silent operation.
-
-If you remove, weaken, hide, delay, or rewrite this kind of disclosure for a live deployment, you should not assume that the original project documentation still describes your real compliance posture.
 
 ---
 
@@ -266,8 +242,6 @@ If you plan to deploy this beyond hobby testing, a more cautious approach is usu
 *   expire old call history automatically where possible,
 *   avoid keeping sensitive context unless there is a clear operational reason,
 *   and do not assume that caller ID always maps to one real human being.
-
-From a risk perspective, the easiest memory policy to defend is usually the narrowest one. Every additional retention rule, category tag, or persistent recall feature may increase operational usefulness, but it can also increase legal exposure if deployed carelessly.
 
 ---
 
