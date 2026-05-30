@@ -13,8 +13,9 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 > Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, or behave unpredictably under certain conditions.
 
 > ⚖️ **LEGAL WARNING REGARDING CALL RECORDING**
-> Laws regarding the recording of phone conversations and AI usage vary heavily by country and can be highly controversial. For example, in countries like Spain—despite being a place unfortunately plagued by spammers, scammers, corruption and mafias of all kinds—privacy regulations are extremely strict. If you use this for a business or company, you **must** configure the AI's initial greeting to explicitly warn the caller that the call is being recorded and processed by an AI. Failure to do so can result in massive legal fines. It is your sole responsibility to comply with your local telecommunications and privacy laws.
+> Laws regarding the recording of phone conversations and AI-driven voice processing vary significantly by jurisdiction and can be highly sensitive. For example, in jurisdictions like Spain (under European GDPR and local AEPD regulations), privacy laws are exceptionally strict. If this application is used for business or commercial purposes, you **must** configure the AI's initial greeting to explicitly and immediately inform the caller that the conversation is being recorded and processed by an automated AI system. Failure to provide proper notification can lead to severe legal penalties and substantial financial audits. It is your sole responsibility to ensure full compliance with local telecommunications, data protection, and privacy laws.
 
+Author: Antonio R. | Version: 1.0 | License: GPL 3.0
 ---
 
 ## 📸 Screenshots
@@ -25,6 +26,8 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 ![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant2.jpg)
 ![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant3.jpg)
 ![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant4.jpg)
+
+---
 
 ### Web GUI (Control Panel & Call Log)
 *Streamlit-based GUI for managing call transcripts, SPAM rules, category memory, and AI personality settings.*
