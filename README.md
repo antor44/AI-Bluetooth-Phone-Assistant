@@ -7,7 +7,10 @@
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini Live** for conversational AI and **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages, sets context-aware memory for repeat callers, and provides a sleek Web GUI to manage your communications.
 
 > ⚠️ **DISCLAIMER & PRELIMINARY VERSION WARNING**
-> This is a **preliminary, experimental version**. I am not responsible for any errors, missed calls, or damages resulting from its use. There are many unhandled edge cases, potential API timeouts, and a remote but possible risk of privacy leaks (see the Privacy section below). Use it at your own risk.
+> This is a **preliminary, experimental version**. The author is not responsible for any errors, missed calls, or damages resulting from its use. There are many unhandled edge cases, potential API timeouts, and a remote but possible risk of privacy leaks (see the Privacy section below). Use it at your own risk.
+
+> 🧪 **EXPERIMENTAL & UNTESTED FEATURES WARNING**
+> Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, or behave unpredictably under certain conditions.
 
 > ⚖️ **LEGAL WARNING REGARDING CALL RECORDING**
 > Laws regarding the recording of phone conversations and AI usage vary heavily by country and can be highly controversial. For example, in countries like Spain—despite being a place unfortunately plagued by spammers, scammers, corruption and mafias of all kinds—privacy regulations are extremely strict. If you use this for a business or company, you **must** configure the AI's initial greeting to explicitly warn the caller that the call is being recorded and processed by an AI. Failure to do so can result in massive legal fines. It is your sole responsibility to comply with your local telecommunications and privacy laws.
@@ -49,7 +52,7 @@ This code interacts directly with Linux D-Bus and PipeWire, making it a robust s
 
 ## 🧠 Tuning & Personality
 
-*   **Language & Accent:** I am not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases.
+*   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases.
 *   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). However, **be warned**: doing so can trigger unforeseen side effects or cause the AI to ignore structural commands like hanging up or saving messages.
 *   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values.
 
