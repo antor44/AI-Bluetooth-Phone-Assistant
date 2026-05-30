@@ -16,15 +16,19 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 
 ## 📸 Screenshots
 
-*(Add your screenshots here by replacing the placeholder links after uploading the images to your repository)*
-
 ### Terminal View (Live Call Processing)
-![Terminal Output Screenshot](docs/images/terminal_placeholder.png)
 *Real-time processing showing User audio chunks, D-Bus interaction, Gemini AI responses, and Whisper.cpp noise filtering.*
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant1.jpg)
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant2.jpg)
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant3.jpg)
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant4.jpg)
 
 ### Web GUI (Control Panel & Call Log)
-![GUI Screenshot](docs/images/gui_placeholder.png)
 *Streamlit-based GUI for managing call transcripts, SPAM rules, category memory, and AI personality settings.*
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy1.jpg)
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy3.jpg)
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy2.jpg)
+
 
 ---
 
