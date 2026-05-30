@@ -1,0 +1,5 @@
+google-genai
+aiohttp
+streamlit
+dbus-python
+PyGObject
