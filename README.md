@@ -95,7 +95,43 @@ This app uses a hybrid approach: Gemini Live for conversational speed, and a loc
    Copy the compiled `whisper-cli` (or `main`) executable into the root directory of *this* application, or ensure it's in a `./build/bin/` subfolder.
 4. **Download Models:**
    Create a `models/` folder in the root of this app and download the `.bin` models (e.g., `ggml-medium.bin`). The GUI allows you to select which model and quantization to use.
+---
 
+### 4. Bluetooth Mobile Pairing (Crucial for Ubuntu 24.04 / Modern GNOME)
+
+On modern Linux distributions like **Ubuntu 24.04** (and other desktops using modern GNOME or KDE Plasma), pairing your mobile phone using the default desktop Settings GUI often fails to establish the necessary telephony integration. The desktop GUI frequently pairs devices solely as media audio players (A2DP), ignoring or blocking the **Hands-Free Profile (HFP)** required by `oFono` to detect incoming calls.
+
+To ensure your phone is recognized correctly as a telephony gateway, **you must pair and trust the device using the terminal via `bluetoothctl`**:
+
+1.  **Open the Bluetooth control utility in your terminal:**
+    ```bash
+    bluetoothctl
+    ```
+
+2.  **Configure the agent and power on the controller:**
+    ```text
+    power on
+    agent on
+    default-agent
+    discoverable on
+    ```
+
+3.  **Initiate pairing from your mobile phone:**
+    Search for your PC's Bluetooth name on your phone and tap to pair. 
+    *   The terminal will display a numeric passkey confirmation prompt. Type `yes` and press **Enter** on your terminal to authorize the pairing, then accept the prompt on your phone.
+
+4.  **Trust and connect the device manually:**
+    Once paired, copy your phone's MAC address (displayed as `Device XX:XX:XX:XX:XX:XX`) and run the following commands within the `bluetoothctl` prompt:
+    ```text
+    trust XX:XX:XX:XX:XX:XX
+    connect XX:XX:XX:XX:XX:XX
+    ```
+
+5.  **Verification through the Assistant:**
+    After pairing and trusting your device via `bluetoothctl`, exit the utility (`exit`). When you run the `phone_assistant.py` script, it will automatically attempt to detect and connect to available oFono modems. Watch the terminal output for messages like:
+    *   `[INFO] oFono: no modems found. Ensure your phone is connected via Bluetooth.` (If it fails to find any).
+    *   `[OK] oFono modem ready: /hfp/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX` (If successful).
+    *   If your phone is connected but not detected as a modem, ensure it's powered on, discoverable, and correctly paired/trusted. You might need to restart the Bluetooth service (`sudo systemctl restart bluetooth`) after pairing to ensure oFono re-scans.
 ---
 
 ## 📂 Project Directory Structure
