@@ -98,6 +98,56 @@ This app uses a hybrid approach: Gemini Live for conversational speed, and a loc
 
 ---
 
+## 📂 Project Directory Structure
+
+Below is the directory scheme of the installation, showing where the main daemon, the SQLite database, the Whisper models, translations, and generated recordings are located:
+
+```text
+/AI-Bluetooth-Phone-Assistant
+├── phone_assistant.py          # Main daemon (handles HFP, D-Bus, and Gemini Live)
+├── gui.py                      # Web Control Panel (Streamlit GUI interface)
+├── switchboard.db              # SQLite Database (Auto-generated on first launch)
+├── requirements.txt            # Python package dependencies
+├── whisper-cli                 # Compiled whisper.cpp executable (or symlink in root)
+│
+├── /models                     # Whisper.cpp Model Folder
+│   ├── ggml-medium.bin         # Multilingual model (ideal for Spanish/bilingual setups)
+│   └── ggml-medium.en.bin      # Highly optimized English-only model (recommended for English)
+│
+├── /languages                  # Localization JSON files
+│   ├── /en-US                  # English Default Locale
+│   │   ├── assistant.json      # Core AI prompts, hold rules, and logic variables
+│   │   ├── gui.json            # Web Control Panel translations & defaults
+│   │   └── spam.json           # Default spam verification search URL templates
+│   │
+│   ├── /es-ES                  # Spanish Default Locale
+│   │   ├── assistant.json
+│   │   ├── gui.json
+│   │   └── spam.json
+│   │
+│   └── /fr-FR                  # [Example of adding a new language]
+│       ├── assistant.json      # Simply translate the text values while
+│       ├── gui.json            # keeping the exact same variable keys intact!
+│       └── spam.json
+│
+├── /recordings                 # Call audio logs directory (Auto-created)
+│   ├── call_1234_client.wav    # Isolated caller audio (16kHz mono, used for offline Whisper)
+│   └── call_1234.wav           # Mixed synchronized call recording (24kHz stereo: Left=Caller, Right=AI)
+│
+└── /build                      # Optional whisper.cpp compilation tree (if cloned in the same folder)
+    └── /bin
+        └── whisper-cli         # Original compiled path of the whisper-cli executable
+
+```
+
+### Directory Components Breakdown:
+*   **`switchboard.db`:** The SQL database created automatically at runtime. It holds the active calls history, whitelist/blacklist rules, and persistent GUI configuration settings.
+*   **`/models`:** This is where you place the offline GGML model binaries downloaded for `whisper.cpp`. 
+    *   *Tip:* For English-only installations, using the specialized English-only models (e.g., **`ggml-medium.en.bin`** or **`ggml-base.en.bin`**) provides significantly better performance, lower resource usage, and higher accuracy compared to their standard multilingual counterparts.
+*   **`/languages`:** Contains separate directory folders for each translation locale. Adding a new language (like the `/fr-FR` example) is as simple as creating a folder, copying the JSON files, and translating their text values while preserving the original JSON parameter keys.
+*   **`/recordings`:** This directory holds the audio files of the processed calls. For every call, it generates a clean mono caller track (used for post-call Whisper transcription) and a high-quality synchronized stereo master containing both speaker channels separated.
+```
+
 ## ⚙️ Configuration & GUI Options
 
 Run the Control Panel:
