@@ -49,7 +49,7 @@ This code interacts directly with Linux D-Bus and PipeWire, making it a robust s
 
 ### 🎧 Complex Bluetooth Scenarios
 1.  **Headsets connected simultaneously:** If you have Bluetooth headphones connected to the PC while the phone rings, the script extracts the specific MAC address of the calling phone. It forces the HFP profile **only** on the phone, leaving your headset alone. *(Note: depending on your motherboard's BT chip bandwidth, handling A2DP music and HFP bidirectional audio simultaneously may cause slight audio drops).*
-2.  **Two Phones Connected:** Linux (oFono) detects both phones as separate modems. If Phone B rings, the script isolates its D-Bus path and PipeWire nodes (`bluez_input.MAC_PHONE_B`) to answer it. *(Current limitation: If both ring at the exact same millisecond, the global instance variable might be overwritten. It's best to handle calls sequentially).*
+2.  **Two Phones Connected:** Linux (oFono) detects both phones as separate modems, but currently, the app has not been tested for multi-user/multi-instance use. There may be hardware limitations in handling both phones, so it is advisable to only have one of them paired.
 
 ---
 
