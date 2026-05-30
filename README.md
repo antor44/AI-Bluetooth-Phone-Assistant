@@ -10,7 +10,7 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 > This is a **preliminary, experimental version**. I am not responsible for any errors, missed calls, or damages resulting from its use. There are many unhandled edge cases, potential API timeouts, and a remote but possible risk of privacy leaks (see the Privacy section below). Use it at your own risk.
 
 > ⚖️ **LEGAL WARNING REGARDING CALL RECORDING**
-> Laws regarding the recording of phone conversations and AI usage vary heavily by country and can be highly controversial. For example, in countries like Spain—despite being a place unfortunately plagued by corruption and mafias of all kinds—privacy regulations are extremely strict. If you use this for a business or company, you **must** configure the AI's initial greeting to explicitly warn the caller that the call is being recorded and processed by an AI. Failure to do so can result in massive legal fines. It is your sole responsibility to comply with your local telecommunications and privacy laws.
+> Laws regarding the recording of phone conversations and AI usage vary heavily by country and can be highly controversial. For example, in countries like Spain—despite being a place unfortunately plagued by spammers, scammers, corruption and mafias of all kinds—privacy regulations are extremely strict. If you use this for a business or company, you **must** configure the AI's initial greeting to explicitly warn the caller that the call is being recorded and processed by an AI. Failure to do so can result in massive legal fines. It is your sole responsibility to comply with your local telecommunications and privacy laws.
 
 ---
 
