@@ -101,37 +101,30 @@ This app uses a hybrid approach: Gemini Live for conversational speed, and a loc
 
 On modern Linux distributions like **Ubuntu 24.04** (and other desktops using modern GNOME or KDE Plasma), pairing your mobile phone using the default desktop Settings GUI often fails to establish the necessary telephony integration. The desktop GUI frequently pairs devices solely as media audio players (A2DP), ignoring or blocking the **Hands-Free Profile (HFP)** required by `oFono` to detect incoming calls.
 
-To ensure your phone is recognized correctly as a telephony gateway, **you must pair and trust the device using the terminal via `bluetoothctl`**:
+To ensure your phone is recognized correctly as a telephony gateway, **you must pair, trust, and connect the device via the terminal using direct `bluetoothctl` commands**:
 
-1.  **Open the Bluetooth control utility in your terminal:**
-    ```bash
-    bluetoothctl
-    ```
+1. **Find your phone's Bluetooth MAC address:**
+   Turn on Bluetooth on your phone and make it discoverable. Note your phone's MAC address (which looks like `50:2F:BB:89:0C:BE`).
 
-2.  **Configure the agent and power on the controller:**
-    ```text
-    power on
-    agent on
-    default-agent
-    discoverable on
-    ```
+2. **Execute the pairing sequence directly from your terminal:**
+   Replace `XX:XX:XX:XX:XX:XX` with your phone's actual MAC address:
 
-3.  **Initiate pairing from your mobile phone:**
-    Search for your PC's Bluetooth name on your phone and tap to pair. 
-    *   The terminal will display a numeric passkey confirmation prompt. Type `yes` and press **Enter** on your terminal to authorize the pairing, then accept the prompt on your phone.
+   ```bash
+   # 1. Pair the device (accept any numeric confirmation prompts on your phone)
+   bluetoothctl pair XX:XX:XX:XX:XX:XX
 
-4.  **Trust and connect the device manually:**
-    Once paired, copy your phone's MAC address (displayed as `Device XX:XX:XX:XX:XX:XX`) and run the following commands within the `bluetoothctl` prompt:
-    ```text
-    trust XX:XX:XX:XX:XX:XX
-    connect XX:XX:XX:XX:XX:XX
-    ```
+   # 2. Trust the device so it can reconnect automatically in the future
+   bluetoothctl trust XX:XX:XX:XX:XX:XX
 
-5.  **Verification through the Assistant:**
-    After pairing and trusting your device via `bluetoothctl`, exit the utility (`exit`). When you run the `phone_assistant.py` script, it will automatically attempt to detect and connect to available oFono modems. Watch the terminal output for messages like:
-    *   `[INFO] oFono: no modems found. Ensure your phone is connected via Bluetooth.` (If it fails to find any).
-    *   `[OK] oFono modem ready: /hfp/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX` (If successful).
-    *   If your phone is connected but not detected as a modem, ensure it's powered on, discoverable, and correctly paired/trusted. You might need to restart the Bluetooth service (`sudo systemctl restart bluetooth`) after pairing to ensure oFono re-scans.
+   # 3. Establish the connection manually
+   bluetoothctl connect XX:XX:XX:XX:XX:XX
+   ```
+
+3. **Verification through the Assistant:**
+   Once paired, when you run the `phone_assistant.py` script, it will automatically attempt to detect and connect to your phone via oFono. Watch the terminal output for the status:
+   *   `[OK] oFono modem ready: /hfp/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX` (If successful).
+   *   `[INFO] oFono: no modems found. Ensure your phone is connected via Bluetooth.` (If it fails).
+   *   *Tip:* If your phone is connected but not detected by oFono, restart the Bluetooth service (`sudo systemctl restart bluetooth`) to trigger a clean re-scan.
 ---
 
 ## 📂 Project Directory Structure
