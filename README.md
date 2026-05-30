@@ -12,6 +12,33 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 > If you deploy, repackage, integrate, modify, or operate it in a real environment, **you** are responsible for compliance with local law, including caller notice, recording/transcription rules, retention, access control, and any sector-specific requirements. This repository is a technical project, not legal advice and not a guarantee that any particular deployment is lawful or production-safe.
 >
 > In practice, the safest profile is usually: **incoming calls only**, clear first-message disclosure, minimal data retention, and a conservative assistant configuration.
+>
+> 🧪 **EXPERIMENTAL & UNTESTED FEATURES WARNING**
+> Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, or behave unpredictably under certain conditions.
+
+## 🌟 Why use this? (Use Cases)
+
+<div align="center">
+  <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant1.jpg" width="80%">
+  <br><b>🏖️ Free time call answered</b>
+</div>
+
+<br>
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant2.jpg" width="100%">
+      <br><b>🛠️ Hands-Free & Deep Work</b><br>
+      Perfect for mechanics, freelancers, or programmers. Maintain your flow state or keep working with dirty hands while your AI secretary gracefully handles clients and takes detailed messages.
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant3.jpg" width="100%">
+      <br><b>🛡️ The Ultimate SPAM Shield</b><br>
+      Enjoy your free time in peace. The AI intercepts unknown callers, verifies their numbers against live SPAM databases, and automatically terminates telemarketing calls before they bother you.
+    </td>
+  </tr>
+</table>
 
 Author: Antonio R. | Version: 1.0 | License: GPL 3.0
 ---
