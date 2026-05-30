@@ -1,0 +1,123 @@
+{
+  "gui_title": "Panel de Control - Centralita IA",
+  "gui_header": "🎛️ Panel de Control - Centralita IA",
+  "call_log_title": "📝 Registro de llamadas y Grabaciones",
+  "filters_title": "🚫 Filtros de Contactos y Prompts",
+  "settings_title": "⚙️ Ajustes del Asistente",
+  
+  "wait_seconds_label": "Segundos de espera antes de descolgar:",
+  "ui_spam_title": "🛡️ Protección IA contra SPAM",
+  "ui_spam_providers_desc": "Bases de datos de números. Escribe una URL por línea usando {number} donde va el teléfono:",
+  "ui_spam_providers_label": "URLs de SPAM:",
+  "auto_block_spam_label": "Colgar automáticamente si es Spam confirmado",
+  "priority_keywords_title": "🚨 Palabras Clave de Alta Prioridad",
+  "priority_keywords_desc": "Si la conversación contiene estas palabras clave, se activará la atención prioritaria independientemente del tipo de propietario:",
+  "software_echo_label": "Activar Supresión de Eco por Software",
+  
+  "identity_title": "👤 Identidad del Asistente",
+  "assistant_name_label": "Nombre de tu asistente virtual:",
+  "assistant_gender_label": "Género y voz del asistente:",
+  "whisper_model_label": "Modelo Whisper (GGML):",
+  
+  "ui_initial_greeting": "Saludo Inicial Exacto (Aviso Legal):",
+  "ui_extra_prompt": "Personalidad e Instrucciones Extra:",
+  "ui_text_model_label": "Modelo de Texto (Análisis y SPAM):",
+  "default_legal_warning": "Hola. Soy una inteligencia artificial y esta llamada está siendo grabada por seguridad. ¿En qué le puedo ayudar?",
+  
+  "memory_title": "🧠 Memoria por Categorías",
+  "add_category_label": "Añadir nueva categoría (ej: Abogados, Familia):",
+  "create_category_btn": "➕ Crear Categoría",
+  "save_memory_btn": "💾 Guardar Configuración",
+  
+  "owner_settings_title": "👤 Configuración del Jefe / Propietario",
+  "owner_name_label": "Nombre del propietario/jefe:",
+  "owner_type_label": "Tipo de propietario:",
+  "activity_desc_label": "Descripción de la actividad o situación:",
+  "expected_calls_label": "Tipos de llamadas que espera:",
+
+  "language_label": "Idioma del Sistema / System Language:",
+  "transcription_mode_title": "🎙️ Modo de Transcripción",
+  "transcription_mode_label": "Selecciona el motor de transcripción:",
+  
+  "monitor_mode_title": "🔊 Monitorización por los Altavoces del PC",
+  "monitor_mode_label": "Selecciona qué deseas escuchar por los altavoces de tu PC:",
+  "monitor_mode_opts_labels": {
+    "both": "Ambos (Llamante y Secretaria)",
+    "none": "Ninguno (Silencio total en PC)",
+    "caller": "Solo Llamante",
+    "assistant": "Solo Secretaria"
+  },
+
+  "ui_in_progress": "🟢 EN CURSO",
+  "ui_general_call": "🟡 LLAMADA GENERAL",
+  "ui_caller_name": "👤 Nombre del llamante:",
+  "ui_company": "🏢 Empresa:",
+  "ui_transcript": "Transcripción:",
+  "ui_btn_delete_audio": "🗑️ Borrar Audio",
+  "ui_btn_delete_record": "❌ Borrar Registro",
+  "ui_btn_whitelist": "🛡️ Lista Blanca",
+  "ui_btn_blacklist": "🚫 Lista Negra",
+  "ui_toast_audio_deleted": "Audio eliminado",
+  "ui_toast_record_deleted": "Registro eliminado",
+  "ui_toast_saved": "Guardado correctamente",
+  "ui_toast_tag_updated": "Etiqueta actualizada",
+  "ui_toast_caller_updated": "Datos del llamante actualizados",
+  "ui_toast_phrase_updated": "Frase actualizada",
+  "ui_toast_phrase_deleted": "Frase eliminada",
+  "ui_no_calls": "No hay llamadas registradas todavía.",
+  
+  "ui_form_phone": "Número de Teléfono (ej. +34600...):",
+  "ui_form_category": "Categoría:",
+  "ui_form_prompt": "Instrucciones personalizadas:",
+  "ui_form_save_rule": "Guardar Regla",
+  "ui_managed_contacts": "Contactos gestionados:",
+  "ui_tag_label": "🏷️ Clasificación:",
+
+  "ui_whisper_base": "Modelo Base:",
+  "ui_whisper_quant": "Cuantización:",
+  "ui_cat_name": "Nombre de la Categoría:",
+  "ui_cat_keywords": "Palabras clave (separadas por coma):",
+  "ui_cat_days": "Días de memoria:",
+  "ui_cat_wait": "Segundos de espera dinámica:",
+  "audio_mode_title": "🔊 Modo de Audio (Full Duplex / Half Duplex)",
+  "show_system_msg_label": "👁️ Mostrar mensajes de sistema en la transcripción (Hold, Cuelgues, etc.)",
+
+  "modal_confirm_lang_title": "⚠️ ¿Desea cambiar el idioma a {lang}?",
+  "modal_confirm_lang_body": "Al cambiar de idioma, elija una de las siguientes opciones:\n\n1. 📂 **Cargar guardada:** Recupera tus ajustes de este idioma.\n2. 🔄 **Cargar defectos:** Restablece todo al original.\n3. 📌 **Mantener la actual:** Mantiene tu config (Puede dar errores de idioma).",
+  "modal_btn_saved": "📂 Cargar Guardada",
+  "modal_btn_defaults": "🔄 Cargar Defectos",
+  "modal_btn_keep": "📌 Mantener Actual",
+  "modal_btn_cancel": "❌ Cancelar",
+
+  "trans_mode_opts_labels": {
+    "realtime": "Tiempo real (Whisper.cpp)",
+    "disabled": "Desactivado (Solo Gemini Live)",
+    "whisper_final": "Whisper.cpp al final de la llamada",
+    "gemini_final": "Gemini Flash 3 al final de la llamada"
+  },
+  
+  "tags": [
+    "🔴 POSIBLE ESTAFA / SPAM",
+    "🔵 PRIORITARIA / CITAS",
+    "🟢 PERSONAL / CONFIANZA",
+    "🟠 TRABAJO / NEGOCIOS",
+    "🟡 LLAMADA GENERAL"
+  ],
+  
+  "owner_types": ["privado", "profesional", "negocio"],
+  "gender_types": ["femenino", "masculino"],
+  "text_model_opts": ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
+  
+  "defaults": {
+    "assistant_name": "Beatriz",
+    "boss_name": "Antonio",
+    "assistant_gender": "femenino",
+    "owner_type": "privado",
+    "priority_keywords": "operación, hospital, médico, médica, clínica, consulta, dentista, dental, cita, abogado, notario, empleo, entrevista, juicio, contrato",
+    "memory_rules": [
+      {"category": "Médicos", "keywords": ["médico", "doctor", "hospital", "operación"], "days": 90, "wait_seconds": 300},
+      {"category": "Abogados", "keywords": ["abogado", "juicio", "notario", "legal"], "days": 180, "wait_seconds": 180},
+      {"category": "Taller/Dentista", "keywords": ["taller", "dentista", "mecánico", "clínica"], "days": 15, "wait_seconds": 120}
+    ]
+  }
+}

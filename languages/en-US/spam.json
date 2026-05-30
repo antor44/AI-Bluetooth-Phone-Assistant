@@ -1,0 +1,5 @@
+{
+  "providers": [
+    "https://www.tellows.com/num/{number}"
+  ]
+}

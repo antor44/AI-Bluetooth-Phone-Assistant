@@ -1,0 +1,6 @@
+{
+  "providers": [
+    "https://www.listaspam.com/busca.php?Telefono={number}",
+    "https://www.tellows.es/num/%2B34{number}"
+  ]
+}
