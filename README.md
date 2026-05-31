@@ -195,20 +195,22 @@ The Paid API operates strictly on a pay-per-use basis: if you don't receive call
     *   Used silently in the background for SPAM checking and parsing call transcripts.
     *   *Cost:* ~$0.50 per 1 Million input tokens and ~$3.00 per 1 Million output tokens. This equates to fractions of a cent per call.
 
-### 4. Text Model Selection (`gemini` vs `gemma-4`)
-The GUI allows you to select different models for the offline text processing tasks:
-*   **`gemini-3-flash-preview`:** The default and most stable choice for text processing. It perfectly balances speed, reliability, and low cost.
-*   **`gemma-4` Family:** You can opt for the open-weight Gemma models.
-    *   `gemma-4-31b-it`: Slightly more comprehensive in its reasoning.
-    *   `gemma-4-26b-a4b-it`: Provides faster response times.
-    *   *Warning:* While these models are highly capable, the online API endpoints for the Gemma-4 family currently exhibit lower stability compared to the native Gemini endpoints.
+### 4. Offline Text Processing & Final Transcription Selection
+The GUI provides flexibility in how post-call tasks (SPAM checks, JSON state extraction, and final audio alignment) are handled:
+
+*   **Text Processing Models (`gemini` vs `gemma-4`):**
+    *   **`gemini-3-flash-preview`:** The default and most stable choice for text processing. It perfectly balances speed, reliability, and low cost.
+    *   **`gemma-4` Family (`gemma-4-31b-it` / `gemma-4-26b-a4b-it`):** You can opt for these open-weight models. The 31B version is slightly more comprehensive, while the 26B provides faster response times. *(Warning: online API endpoints for the Gemma-4 family currently exhibit lower stability compared to native Gemini endpoints).*
+*   **Final Audio Transcription (Whisper vs Online AI):**
+    By default, the app uses a local `whisper.cpp` executable to perform the final cleanup and alignment of the call transcript without relying on the cloud. However, **you can change this in the GUI** to use the online API instead (selecting *"Gemini at end"*). 
+    *   If you select the online option, the app uploads the isolated caller audio to `gemini-3-flash-preview` for final processing. 
 
 ### 5. Understanding Free Tier Limits in Real-World Calls
 If you choose to test the application on the Free Tier, the limits provided by Google are **more than sufficient** for a standard phone switchboard environment. Human speech is slow in terms of token generation:
 
 *   **Voice Limits (Gemini 3.1 Flash Live):** Google converts audio at a rate of 25 tokens per second (1,500 tokens per minute). The Free Tier limit is 150,000 Tokens Per Minute (TPM). You would need **100 active phone calls simultaneously** to hit this limit.
 *   **Text Limits (Gemma 4 / Gemini 3 Flash):** SPAM checks and transcript summaries require 1 or 2 HTTP requests per call. Even the strictest model limit (Gemma 4 at 30 Requests Per Minute) means you would need to receive **more than 15 incoming calls in a single 60-second window** before the API temporarily blocks the request.
-
+   
 ---
 
 ## 📂 Project Directory Structure
