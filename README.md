@@ -97,22 +97,29 @@ A more playful, emotionally warm, or highly compliant personality may sound nice
 
 ---
 
-## 🌐 Multi-Language Compatibility & Non-Latin Scripts
+## 🌐 Multi-Language Compatibility & Script Limitations
 
-While the application is architecturally prepared to support global translations via JSON locale files, there are temporary constraints regarding non-Latin scripts, Asian languages, and voice synthesis:
+While the application is structurally designed to support translation locales via JSON files, there are technical limitations in the current codebase regarding non-Latin scripts, Asian languages, and Right-to-Left (RTL) languages:
 
-### 1. Hardcoded Hallucination Filtering (CJK Languages)
-Due to current behavior in Gemini Live's text transcription output (`input_transcription`), general ambient noise can sometimes cause the text channel to hallucinate random Chinese, Japanese, or Korean characters. Interestingly, this occurs even though the underlying multimodal model **internally understands the caller's spoken voice perfectly** and responds accurately via audio. 
-*   To prevent these visual transcript hallucinations from cluttering your database logs, the code currently filters out CJK Unicode ranges (`\u4e00-\u9fff`, `\uac00-\ud7a3`, `\u3040-\u30ff`) in the `is_valid_text` function.
-*   *Bypassing the filter:* Removing this regex filter immediately enables full native support for Chinese, Japanese, and Korean callers.
+### 1. Hardcoded Character Filtering (CJK Languages)
+At the code level, the daemon employs a regex-based noise filter in the is_valid_text function to discard transcription artifacts caused by Bluetooth static. This filter explicitly blocks and discards any text containing character ranges for:
 
-### 2. Unicode and RTL Rendering
-Modern Linux terminal emulators (such as GNOME, XFCE, and MATE) with standard system fonts installed handle Unicode and Right-to-Left (RTL) scripts (like Arabic and Hebrew) remarkably well. Complete sentences and character sets will display correctly in your logs, with only minor layout variations depending on your terminal's specific bidirectionality engine.
+Chinese (Kanji/Hanzi: \u4e00-\u9fff)
+Japanese (Hiragana/Katakana: \u3040-\u30ff)
+Korean (Hangul: \uac00-\ud7a3 / \u1100-\u11ff)
 
-### 3. Voice Profiles
-The current prebuilt Gemini Live voice profiles (`Aoede` and `Puck`) are optimized primarily for Western phonetics. Native localized voices for other regional languages (such as Russian, Hindi, or Arabic) are expected to be fully supported in upcoming Gemini API iterations, requiring only a simple configuration variable update.
+If a caller speaks in Chinese, Japanese, or Korean, the daemon will classify the input as noise, skip the processing branch entirely, and produce no response to the caller.
 
-### 4. Planned Support & Future Roadmap
+### 2. Word Tokenization Failure (CJK Languages)
+The _calculate_text_similarity helper splits text using Python's str.split(), which tokenizes by whitespace. Chinese and Japanese writing systems do not use spaces between words, so this function will always return 0.0 similarity for CJK input, breaking the hallucination-detection and deduplication logic that depends on it. Adapting the system for CJK languages requires replacing the whitespace tokenizer with a dedicated segmenter.
+
+### 3. Right-to-Left (RTL) Languages (Arabic, Hebrew)
+Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment glitches, displaced punctuation, and inverted text ordering in live terminal logs and Web GUI logs.
+
+### 4. Voice Synthesis (TTS) Restrictions
+The Gemini Live connection is hardcoded to use only two voices (Aoede for female, Puck for male). While Gemini Live does handle many languages with these voices, quality varies significantly for non-Western languages. If you configure the system prompt to operate in languages like Russian, Hindi, or Arabic, the voice synthesizer may sound heavily accented or produce noticeably degraded output. For best results, change the voice_name in phone_assistant.py to a voice optimized for your target language.
+
+### 5. Planned Support & Future Roadmap
 Expanding native, out-of-the-box compatibility for non-Latin scripts, localized voice mapping, and multi-language SPAM filtering is planned for future releases. These updates will be integrated progressively as development resources and API capabilities permit.
 
 ---
