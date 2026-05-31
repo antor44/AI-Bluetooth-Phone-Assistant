@@ -323,5 +323,28 @@ If you plan to deploy this beyond hobby testing, a more cautious approach is usu
 
 ---
 
+## 🏗️ Architecture & Design Philosophy (Why not just let the LLM do everything?)
+
+At first glance, the main `phone_assistant.py` daemon is a dense, monolithic script containing numerous hardcoded rules, timeouts, and state trackers. A common question when working with advanced models like Gemini Live is: *Why build such complex "spaghetti" logic around the AI? Shouldn't a sufficiently prompted LLM handle edge cases naturally?*
+
+The answer is a definitive **no**. Relying purely on the LLM to manage a physical, real-time telephony environment is unreliable. This application was built using a **Monolithic State Machine** approach functioning as a robust Telephony Middleware. Here is why this architecture was absolutely necessary:
+
+### 1. LLMs Have No Perception of Time (The Silence Problem)
+Gemini Live generates text and audio based on input, but it has no internal clock. If a caller goes silent, the LLM simply waits indefinitely. The dense logic loops in this script act as the "nervous system", actively tracking seconds of inactivity (`time_without_user`) and artificially forcing the AI to prompt the user (e.g., *"Are you still there?"*) or initiating a grace-period termination. 
+
+### 2. Deterministic Guardrails vs. Probabilistic AI
+LLMs are probabilistic. If you instruct an AI via system prompt to *"Never hang up while the user is on hold"*, it will obey 90% of the time. But if background noise occurs, the AI might hallucinate a goodbye and hang up. 
+This project implements a `CallPolicyEngine` (Deterministic Guardrails). When the AI attempts to use a tool (like `hangup`), the engine intercepts the request and verifies the hardcoded system state. If `self.on_hold == True`, the code explicitly denies the AI's request. **Business rules must be hardcoded; they cannot be left purely to neural network probability.**
+
+### 3. The Fragmentation of Streaming APIs
+Real-time streaming APIs deliver text in fragmented chunks. The AI might send `"Good"`, and 500ms later send `"bye"`. If the code evaluated chunks individually to detect call-termination triggers, it would fail. The script employs an accumulator buffer (`_asst_chunk_buffer`) with a 2.5-second sliding window to properly reconstruct and evaluate semantic intent before triggering physical hardware actions.
+
+### 4. Hardware Actuation & Hallucination Curation
+Gemini Live cannot physically hang up a Linux modem; the Python code must translate semantic AI intent into `oFono` D-Bus signals. Furthermore, live audio over Bluetooth HFP is prone to severe static, causing Gemini to hallucinate bizarre foreign words. The integration of local `whisper.cpp` acts as an asynchronous post-processor to heal the database logs, ensuring the resulting transcripts are clean and usable for future memory injection.
+
+In summary, this codebase bridges the gap between a "disembodied AI brain" and the physical realities of Bluetooth radio, acoustic noise, and strict telephony protocols.
+
+---
+
 ## 📝 License
 This project is licensed under the GPL v3 License. See the `LICENSE` file for details.
