@@ -97,6 +97,26 @@ A more playful, emotionally warm, or highly compliant personality may sound nice
 
 ---
 
+## 🌐 Multi-Language Compatibility & Non-Latin Scripts
+
+While the application is architecturally prepared to support global translations via JSON locale files, there are temporary constraints regarding non-Latin scripts, Asian languages, and voice synthesis:
+
+### 1. Hardcoded Hallucination Filtering (CJK Languages)
+Due to current behavior in Gemini Live's text transcription output (`input_transcription`), general ambient noise can sometimes cause the text channel to hallucinate random Chinese, Japanese, or Korean characters. Interestingly, this occurs even though the underlying multimodal model **internally understands the caller's spoken voice perfectly** and responds accurately via audio. 
+*   To prevent these visual transcript hallucinations from cluttering your database logs, the code currently filters out CJK Unicode ranges (`\u4e00-\u9fff`, `\uac00-\ud7a3`, `\u3040-\u30ff`) in the `is_valid_text` function.
+*   *Bypassing the filter:* Removing this regex filter immediately enables full native support for Chinese, Japanese, and Korean callers.
+
+### 2. Unicode and RTL Rendering
+Modern Linux terminal emulators (such as GNOME, XFCE, and MATE) with standard system fonts installed handle Unicode and Right-to-Left (RTL) scripts (like Arabic and Hebrew) remarkably well. Complete sentences and character sets will display correctly in your logs, with only minor layout variations depending on your terminal's specific bidirectionality engine.
+
+### 3. Voice Profiles
+The current prebuilt Gemini Live voice profiles (`Aoede` and `Puck`) are optimized primarily for Western phonetics. Native localized voices for other regional languages (such as Russian, Hindi, or Arabic) are expected to be fully supported in upcoming Gemini API iterations, requiring only a simple configuration variable update.
+
+### 4. Planned Support & Future Roadmap
+Expanding native, out-of-the-box compatibility for non-Latin scripts, localized voice mapping, and multi-language SPAM filtering is planned for future releases. These updates will be integrated progressively as development resources and API capabilities permit.
+
+---
+
 ## 🛠️ Installation & Setup
 
 ### 1. System Dependencies (Ubuntu 24.04 / Debian)
