@@ -21,23 +21,78 @@
 #
 # https://github.com/antor44/AI-Bluetooth-Phone-Assistant
 
-# Exit immediately if a command exits with a non-zero status
+# Exit on error
 set -e
 
+# SAFETY TRAP
+trap 'echo ""; echo "[FATAL ERROR] The launcher terminated unexpectedly."; echo "Press Enter to close this window..."; read' ERR
+
 # User Configurable List: Standard Linux terminals with proper Emoji/UTF-8 support.
-# The script will try to use them in this exact order.
 PREFERRED_TERMINALS=("xfce4-terminal" "gnome-terminal" "mate-terminal")
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Check if the virtual environment directory exists
-if [ -d "venv" ]; then
-    echo "[INFO] Activating Python virtual environment..."
-    source venv/bin/activate
+# ---------------------------------------------------------------------------
+# API KEY EXTRACTION (Bypassing non-interactive shell limitations)
+# ---------------------------------------------------------------------------
+# If the key is not already set, we grep it directly from common config files.
+if [ -z "$GEMINI_API_KEY" ]; then
+    echo "[INFO] Searching for GEMINI_API_KEY in user profile files..."
+    for file in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zshrc"; do
+        if [ -f "$file" ]; then
+            # Extract the line containing the key, strip 'export', quotes, and spaces
+            EXTRACTED_KEY=$(grep -E "^(export )?GEMINI_API_KEY=" "$file" | tail -n 1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+            if [ -n "$EXTRACTED_KEY" ]; then
+                export GEMINI_API_KEY="$EXTRACTED_KEY"
+                echo "[INFO] GEMINI_API_KEY successfully extracted from $file"
+                break
+            fi
+        fi
+    done
+fi
+
+if [ -z "$GEMINI_API_KEY" ]; then
+    echo "[WARNING] GEMINI_API_KEY could not be found."
+    echo "[WARNING] The Phone Assistant daemon will fail if the key is required."
+fi
+# ---------------------------------------------------------------------------
+
+# 1. DYNAMIC DETECTION: Search for local virtual environments (venv or virtualenv)
+VENV_DIR=""
+for dir in "venv" ".venv" "env" "virtualenv"; do
+    if [ -d "$dir" ]; then
+        VENV_DIR="$dir"
+        break
+    fi
+done
+
+# 2. DYNAMIC DETECTION: Search for Conda/Mamba/Miniforge installations in HOME
+CONDA_DIR=""
+for dir in "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/miniforge3" "$HOME/mambaforge" "$HOME/miniconda" "$HOME/anaconda"; do
+    if [ -d "$dir" ]; then
+        CONDA_DIR="$dir"
+        break
+    fi
+done
+
+# 3. ENVIRONMENT ACTIVATION: Activate the detected environment
+ACTIVATION_CMD="true" # Default fallback (do nothing)
+
+if [ -n "$VENV_DIR" ]; then
+    echo "[INFO] Activating local Python virtual environment ($VENV_DIR)..."
+    source "$VENV_DIR/bin/activate"
+    ACTIVATION_CMD="source $VENV_DIR/bin/activate"
+elif [ -n "$CONDA_DIR" ]; then
+    echo "[INFO] Conda-based installation detected at $CONDA_DIR"
+    source "$CONDA_DIR/etc/profile.d/conda.sh"
+    echo "[INFO] Activating Conda 'base' environment..."
+    conda activate base
+    ACTIVATION_CMD="source $CONDA_DIR/etc/profile.d/conda.sh && conda activate base"
 else
-    echo "[WARNING] 'venv' directory not found. Attempting to run with system Python..."
+    echo "[WARNING] No local virtual environment (venv/virtualenv) or Conda-based installation found."
+    echo "[INFO] Attempting to run with system Python..."
 fi
 
 # Check if streamlit is installed in the active environment
@@ -57,14 +112,14 @@ for term in "${PREFERRED_TERMINALS[@]}"; do
 done
 
 # Command to execute inside the chosen terminal
-DAEMON_CMD="cd \"$SCRIPT_DIR\"; [ -d \"venv\" ] && source venv/bin/activate; python3 phone_assistant.py; echo \"\"; echo \"[Process Stopped] Press Enter to exit...\"; read"
+# We explicitly inject the extracted GEMINI_API_KEY into the new terminal's environment
+DAEMON_CMD="export GEMINI_API_KEY=\"$GEMINI_API_KEY\"; cd \"$SCRIPT_DIR\"; $ACTIVATION_CMD; python3 phone_assistant.py; echo \"\"; echo \"[Process Stopped] Press Enter to exit...\"; read"
 
 # Launch the daemon
 if [ -n "$SELECTED_TERMINAL" ]; then
     echo "[INFO] Found emoji-supported terminal: $SELECTED_TERMINAL"
     echo "[INFO] Starting AI Phone Assistant daemon in a new window..."
     
-    # Execute with the correct flag depending on the terminal type
     case "$SELECTED_TERMINAL" in
         "xfce4-terminal")
             xfce4-terminal --title="AI Phone Assistant Daemon" --command="bash -c '$DAEMON_CMD'" &
@@ -76,7 +131,6 @@ if [ -n "$SELECTED_TERMINAL" ]; then
             mate-terminal --title="AI Phone Assistant Daemon" --command="bash -c '$DAEMON_CMD'" &
             ;;
         *)
-            # Generic fallback
             "$SELECTED_TERMINAL" -e bash -c "$DAEMON_CMD" &
             ;;
     esac
@@ -85,10 +139,10 @@ else
     echo "[INFO] Launching the AI Phone Assistant daemon in the background of the current terminal..."
     
     # Run in the background of the current terminal
+    export GEMINI_API_KEY="$GEMINI_API_KEY"
     python3 phone_assistant.py &
     DAEMON_PID=$!
     
-    # Ensure the background daemon is killed if the user closes Streamlit (Ctrl+C)
     trap "echo '[INFO] Stopping background daemon...'; kill $DAEMON_PID 2>/dev/null" EXIT
 fi
 
