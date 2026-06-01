@@ -82,7 +82,7 @@ This code interacts directly with Linux D-Bus and PipeWire, making it a robust s
 
 *   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases.
 *   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). However, **be warned**: doing so can trigger unforeseen side effects or cause the AI to ignore structural commands like hanging up or saving messages.
-*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values.
+*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. In determinated cases you could modify slightly the default prompts, for example, change "If they suggest leaving it with a neighbour, give permission for this" instead of "If they suggest leaving it with a neighbour, NEVER give permission for this". Depending on your regional slang you can extend or shorten the word list related to a variable.
 
 ### Recommended Operating Profile
 For privacy-sensitive or legally cautious deployments, the safest default profile is generally:
