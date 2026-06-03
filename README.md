@@ -40,7 +40,7 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
   </tr>
 </table>
 
-Author: Antonio R. | Version: 1.0 | License: GPL 3.0
+Author: Antonio R. | Version: 1.2 | License: GPL 3.0
 ---
 
 ## 📸 Screenshots

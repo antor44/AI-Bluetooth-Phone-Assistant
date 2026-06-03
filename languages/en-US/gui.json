@@ -47,6 +47,10 @@
     "caller": "Only Caller",
     "assistant": "Only Assistant"
   },
+  
+  "allow_pc_mic_label": "Allow PC Microphone",
+  "allow_pc_mic_desc": "The PC microphone is isolated to prevent accidental audio leaks and echo.",
+  "allow_pc_mic_warning": "⚠ Warning: If this is enabled, the caller might hear whatever is spoken near the PC microphone without your knowledge.",
 
   "ui_in_progress": "🟢 IN PROGRESS",
   "ui_general_call": "🟡 GENERAL CALL",
@@ -65,6 +69,14 @@
   "ui_toast_phrase_updated": "Phrase updated",
   "ui_toast_phrase_deleted": "Phrase deleted",
   "ui_no_calls": "No calls recorded yet.",
+  
+  "ui_cleanup_title": "Auto-Cleanup",
+  "ui_cleanup_audio_label": "Delete audio recordings older than (days):",
+  "ui_cleanup_audio_btn": "🗑️ Delete Recordings",
+  "ui_cleanup_records_label": "Delete records + transcripts older than (days):",
+  "ui_cleanup_records_btn": "❌ Delete Records & Transcripts",
+  "ui_cleanup_audio_done": "Recordings deleted: {count}",
+  "ui_cleanup_records_done": "Records deleted: {count}",
   
   "ui_form_phone": "Phone Number (e.g. +123456...):",
   "ui_form_category": "Category:",

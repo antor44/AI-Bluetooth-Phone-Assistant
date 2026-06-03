@@ -47,6 +47,10 @@
     "caller": "Solo Llamante",
     "assistant": "Solo Secretaria"
   },
+  
+  "allow_pc_mic_label": "Permitir micrófono del PC",
+  "allow_pc_mic_desc": "El micrófono del PC está aislado para evitar filtraciones de audio y eco.",
+  "allow_pc_mic_warning": "⚠ Advertencia: Si activa esto, el llamante podría escuchar lo que se hable cerca del micrófono del PC sin que usted se entere.",
 
   "ui_in_progress": "🟢 EN CURSO",
   "ui_general_call": "🟡 LLAMADA GENERAL",
@@ -65,6 +69,14 @@
   "ui_toast_phrase_updated": "Frase actualizada",
   "ui_toast_phrase_deleted": "Frase eliminada",
   "ui_no_calls": "No hay llamadas registradas todavía.",
+  
+  "ui_cleanup_title": "Limpieza Automática de Datos",
+  "ui_cleanup_audio_label": "Borrar grabaciones de audio anteriores a (días):",
+  "ui_cleanup_audio_btn": "🗑️ Borrar Grabaciones",
+  "ui_cleanup_records_label": "Borrar registros + transcripciones anteriores a (días):",
+  "ui_cleanup_records_btn": "❌ Borrar Registros y Transcripciones",
+  "ui_cleanup_audio_done": "Grabaciones eliminadas: {count}",
+  "ui_cleanup_records_done": "Registros eliminados: {count}",
   
   "ui_form_phone": "Número de Teléfono (ej. +34600...):",
   "ui_form_category": "Categoría:",

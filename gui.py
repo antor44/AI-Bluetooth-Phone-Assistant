@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations and logs
 Displays transcripts, handles settings configuration, and manages category logic.
 
 Author: Antonio R.
-Version: 1.0
+Version: 1.2
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -27,6 +27,8 @@ import streamlit as st
 import sqlite3
 import os
 import json
+import datetime
+import re
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
@@ -53,6 +55,7 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'realtime')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'both')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'es-ES')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
     
     conn.commit()
     conn.close()
@@ -124,7 +127,6 @@ trans = load_language_data(current_lang, "gui.json")
 if not get_config("assistant_name", ""):
     apply_language_defaults(current_lang)
 
-# Initialize the database key 'initial_greeting' with the translation default if empty
 if not get_config("initial_greeting", ""):
     set_config("initial_greeting", trans.get("default_legal_warning", ""))
 
@@ -136,6 +138,13 @@ st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant
 st.markdown("""
 <style>
     div[data-testid="stExpander"] { margin-bottom: 10px; }
+    .cleanup-container { 
+        border: 1px solid #444; 
+        border-radius: 8px; 
+        padding: 15px; 
+        margin-bottom: 20px; 
+        background-color: rgba(255, 255, 255, 0.05); 
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -209,7 +218,7 @@ col1, col2, col3 = st.columns([1.5, 1.1, 1.2])
 with col1:
     st.subheader(trans.get("call_log_title", "Call Log & Recordings"))
     show_system_msg = st.checkbox(trans.get("show_system_msg_label", "Show system messages"), value=True, key="toggle_sys_msg")
-    
+
     conn = sqlite3.connect(DB_PATH)
     calls = conn.execute("SELECT id, number, date, spam_score, transcript, audio_path, tag, client_name, company FROM calls ORDER BY id DESC").fetchall()
     conn.close()
@@ -217,16 +226,20 @@ with col1:
     if calls:
         for call in calls:
             id_call, number, date, spam_score, transcript, audio_path, tag, client_name, company = call
-            
+
             in_progress_str = trans.get("ui_in_progress", "IN PROGRESS")
-            prefix = in_progress_str if in_progress_str in transcript else "📞"
+            # The "in progress" badge reflects the call's real status stored in the tag column.
+            if tag and tag.strip() == in_progress_str:
+                prefix = in_progress_str
+            else:
+                prefix = "📞"
             
             caller_display = ""
             if client_name and company: caller_display = f" — {client_name} ({company})"
             elif client_name: caller_display = f" — {client_name}"
             elif company: caller_display = f" — {company}"
                 
-            tag_display = tag if tag else trans.get("ui_general_call", "GENERAL CALL")
+            tag_display = tag if tag and tag != in_progress_str else trans.get("ui_general_call", "GENERAL CALL")
             
             with st.expander(f"{prefix} {number}{caller_display} — {date} | {tag_display} (Risk: {spam_score}/100)"):
                 st.write(f"**{trans.get('ui_transcript', 'Transcript:')}**")
@@ -243,8 +256,7 @@ with col1:
                     is_user = block.startswith("🗣")
                     is_assistant = block.startswith("📞")
 
-                    import re as _re
-                    m_ts = _re.match(r'^[🗣📞]\s*\[(\d{2}:\d{2}:\d{2})\]:\s*(.*)', block, _re.DOTALL)
+                    m_ts = re.match(r'^[🗣📞]\s*\[(\d{2}:\d{2}:\d{2})\]:\s*(.*)', block, re.DOTALL)
                     if m_ts:
                         ts_str = f"[{m_ts.group(1)}]"
                         pure_text = m_ts.group(2).strip()
@@ -311,7 +323,11 @@ with col1:
                                         st.session_state[del_confirm_key] = False; st.rerun()
 
                 if audio_path and os.path.exists(audio_path):
-                    st.audio(audio_path, format="audio/wav")
+                    try:
+                        with open(audio_path, "rb") as f:
+                            st.audio(f.read(), format="audio/wav")
+                    except Exception:
+                        pass
                 
                 st.write("---")
                 c_edit1, c_edit2 = st.columns([2, 2])
@@ -413,6 +429,67 @@ with col3:
         confirm_language_dialog()
 
     st.write("---")
+    
+    # Auto-Cleanup logic properly styled and isolated in the settings column
+    st.markdown(f"**🗑️ {trans.get('ui_cleanup_title', 'Auto-Cleanup Data')}**")
+    with st.container(border=True):
+        cl1, cl2 = st.columns(2)
+        with cl1:
+            days_audio = st.number_input(
+                trans.get("ui_cleanup_audio_label", "Delete audio older than (days):"),
+                min_value=1, max_value=3650, value=30, step=1, key="cleanup_audio_days"
+            )
+            if st.button(trans.get("ui_cleanup_audio_btn", "🗑️ Delete Audio"), key="btn_cleanup_audio"):
+                cutoff_audio = datetime.datetime.now() - datetime.timedelta(days=int(days_audio))
+                recs_dir = os.path.join(BASE_DIR, "recordings")
+                deleted_audio = 0
+                if os.path.exists(recs_dir):
+                    for fname in os.listdir(recs_dir):
+                        fpath = os.path.join(recs_dir, fname)
+                        if os.path.isfile(fpath):
+                            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
+                            if mtime < cutoff_audio:
+                                try: os.remove(fpath); deleted_audio += 1
+                                except Exception: pass
+                # Also clear audio_path in DB for removed files
+                conn_cl = sqlite3.connect(DB_PATH)
+                all_audio = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
+                for row in all_audio:
+                    aid, ap, cap = row
+                    if ap and not os.path.exists(ap):
+                        conn_cl.execute("UPDATE calls SET audio_path='' WHERE id=?", (aid,))
+                    if cap and not os.path.exists(cap):
+                        conn_cl.execute("UPDATE calls SET client_audio_path='' WHERE id=?", (aid,))
+                conn_cl.commit(); conn_cl.close()
+                st.toast(trans.get("ui_cleanup_audio_done", "Recordings deleted: {count}").format(count=deleted_audio))
+                st.rerun()
+
+        with cl2:
+            days_records = st.number_input(
+                trans.get("ui_cleanup_records_label", "Delete records older than (days):"),
+                min_value=1, max_value=3650, value=30, step=1, key="cleanup_record_days"
+            )
+            if st.button(trans.get("ui_cleanup_records_btn", "❌ Delete Records"), key="btn_cleanup_records"):
+                cutoff_rec = datetime.datetime.now() - datetime.timedelta(days=int(days_records))
+                conn_cl = sqlite3.connect(DB_PATH)
+                old_rows = conn_cl.execute(
+                    "SELECT id, audio_path, client_audio_path FROM calls WHERE date < ?",
+                    (cutoff_rec.strftime('%Y-%m-%d %H:%M:%S'),)
+                ).fetchall()
+                deleted_recs = 0
+                for row in old_rows:
+                    rid, ap, cap = row
+                    for fpath in [ap, cap]:
+                        if fpath and os.path.exists(fpath):
+                            try: os.remove(fpath)
+                            except Exception: pass
+                    conn_cl.execute("DELETE FROM calls WHERE id=?", (rid,))
+                    deleted_recs += 1
+                conn_cl.commit(); conn_cl.close()
+                st.toast(trans.get("ui_cleanup_records_done", "Records deleted: {count}").format(count=deleted_recs))
+                st.rerun()
+
+    st.write("---")
     current_wait = int(get_config("wait_seconds", "0"))
     wait_slider = st.slider(trans.get("wait_seconds_label", "Wait before answer:"), min_value=0, max_value=15, value=current_wait)
     if wait_slider != current_wait: set_config("wait_seconds", wait_slider)
@@ -502,6 +579,8 @@ with col3:
     if selected_monitor_mode != current_monitor_mode:
         set_config("monitor_mode", selected_monitor_mode)
         st.rerun()
+        
+    st.caption(trans.get("allow_pc_mic_desc", "PC microphone is isolated to prevent leakage and echo."))
 
     st.write("---")
     st.subheader(trans.get("whisper_model_label", "Whisper Local Model (GGML)"))

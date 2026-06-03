@@ -5,7 +5,7 @@ The application detects incoming calls via D-Bus/oFono, manages audio routing th
 transcribes caller intent, applies dynamic security policies, and interacts in real-time.
 
 Author: Antonio R.
-Version: 1.0
+Version: 1.2
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -83,7 +83,7 @@ ICON_AUDIO    = "🎙  " if USE_EMOJI else "[AUDIO]  "
 ICON_WARN     = "⚠  " if USE_EMOJI else "[ALERT]  "
 ICON_ERR      = "✖  " if USE_EMOJI else "[ERROR]  "
 ICON_OK       = "✔  " if USE_EMOJI else "[OK]     "
-ICON_INFO     = "⚠  " if USE_EMOJI else "[SYSTEM] "
+ICON_INFO     = "ℹ️  " if USE_EMOJI else "[SYSTEM] "
 ICON_USER_STR = ""
 ICON_ASST     = ""
 
@@ -195,13 +195,14 @@ def ensure_database_exists() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('software_echo_suppression', 'false')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'realtime')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'both')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'es-ES')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'en-US')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
     conn.commit(); conn.close()
 
     try:
         conn = sqlite3.connect(DB_PATH)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
-        current_lang = res_lang[0] if res_lang else "es-ES"
+        current_lang = res_lang[0] if res_lang else "en-US"
         res_asst = conn.execute("SELECT value FROM settings WHERE key=?", (f"{current_lang}_assistant_name",)).fetchone()
         conn.close()
         if res_asst is None: apply_language_defaults(current_lang)
@@ -234,8 +235,12 @@ def ensure_system_dependencies() -> None:
 
     config_changed = False
     for wp_dir, wp_file, content in [(wp4_dir, wp4_file, wp4_content), (wp5_dir, wp5_file, wp5_content)]:
-        if not os.path.exists(wp_file):
-            os.makedirs(wp_dir, exist_ok=True)
+        os.makedirs(wp_dir, exist_ok=True)
+        needs_write = True
+        if os.path.exists(wp_file):
+            with open(wp_file, "r") as f:
+                needs_write = (f.read().strip() != content.strip())
+        if needs_write:
             with open(wp_file, "w") as f: f.write(content)
             config_changed = True
 
@@ -244,7 +249,7 @@ def ensure_system_dependencies() -> None:
         os.remove(blocker)
         config_changed = True
 
-    if config_changed: print(f"{_C_SERVER}{ICON_OK}WirePlumber configurations created.{_R}")
+    if config_changed: print(f"{_C_SERVER}{ICON_OK}WirePlumber configurations applied.{_R}")
 
     systemd_dir = os.path.join(home_dir, ".config", "systemd", "user")
     null_sink_file = os.path.join(systemd_dir, "null-sink.service")
@@ -262,7 +267,12 @@ ExecStop=/usr/bin/pactl unload-module module-null-sink
 [Install]
 WantedBy=default.target"""
 
-    if not os.path.exists(null_sink_file):
+    needs_write = True
+    if os.path.exists(null_sink_file):
+        with open(null_sink_file, "r") as f:
+            needs_write = (f.read().strip() != null_sink_content.strip())
+            
+    if needs_write:
         os.makedirs(systemd_dir, exist_ok=True)
         with open(null_sink_file, "w") as f: f.write(null_sink_content)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, stderr=subprocess.DEVNULL)
@@ -287,8 +297,8 @@ def ensure_null_sink() -> None:
     """Creates a temporary null sink if it does not exist, used for audio monitoring isolation."""
     try:
         res = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True)
-        if "AssistantMonitor" not in res.stdout:
-            subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=AssistantMonitor", "sink_properties=device.description=AssistantMonitor"], capture_output=True)
+        if "auto_null" not in res.stdout:
+            subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=auto_null", "sink_properties=device.description=NullSink"], capture_output=True)
     except Exception: pass
 
 def initialize_ofono_modems(retries: int = 3) -> None:
@@ -346,21 +356,25 @@ def get_timestamp() -> str:
 
 def get_config(key: str, default_value: str) -> str:
     """Retrieves a configuration value from the SQLite settings table, handling localized keys."""
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
-        current_lang = res_lang[0] if res_lang else "es-ES"
+        current_lang = res_lang[0] if res_lang else "en-US"
 
         localized_keys = ["boss_name", "assistant_name", "assistant_gender", "owner_type", "priority_keywords", "memory_rules", "business_description", "expected_calls", "initial_greeting", "extra_prompt", "text_model"]
         if key in localized_keys:
             res = conn.execute("SELECT value FROM settings WHERE key=?", (f"{current_lang}_{key}",)).fetchone()
             if res is not None:
-                conn.close(); return res[0]
+                return res[0]
 
         res_global = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-        conn.close()
         return res_global[0] if res_global is not None else default_value
-    except Exception: return default_value
+    except Exception: 
+        return default_value
+    finally:
+        if conn:
+            conn.close()
 
 def load_language_data(lang_code: str, file_name: str = "assistant.json") -> dict:
     """Loads a JSON configuration file from the specified language directory."""
@@ -519,11 +533,8 @@ class PhoneAssistant:
         self.hanging_up = False
         self.forced_goodbye_active = False
         
-        # Track origin of hangup ("tool" vs "cut_words") to prevent question detection
-        # logic from inadvertently cancelling a valid tool-initiated hangup.
         self.hangup_source = ""
         
-        # Accumulator buffer for streaming transcription chunks (solves word-splitting issues)
         self._asst_chunk_buffer = ""
         self._asst_chunk_last_time = 0.0
         
@@ -533,6 +544,9 @@ class PhoneAssistant:
         self.hangup_triggered_time = 0.0
         self.hangup_reason = "completed"
         self.hangup_message_appended = False
+
+        self.user_takeover = False
+        self.mic_node_active = False
 
         self.on_hold = False
         self.priority_call = False
@@ -558,6 +572,9 @@ class PhoneAssistant:
         self.call_start_time = time.time()
         
         self.first_mic_time = 0.0
+        self.last_mic_data_time = 0.0
+        self._total_mic_silence_injected = 0.0
+        
         self.network_spam_score = 0
         self.state_update_lock = asyncio.Lock()
         
@@ -632,15 +649,17 @@ class PhoneAssistant:
                                     types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
                                     types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")
                                 ]
-                                prompt = (f"Analyze this raw text extracted from a phone lookup website for the phone number {clean_num}.\n\n"
-                                          f"CRITICAL RULES FOR EVALUATION:\n"
-                                          f"1. IGNORE BOILERPLATE: Do NOT flag the number based on website UI text.\n"
-                                          f"2. NO DATA = CLEAN: If the text says '0 denuncias', 'neutral', output is_spam=false and risk_score=0.\n"
-                                          f"3. CONTRADICTORY COMMENTS: Require an overwhelming majority (>75%) of negative/spam comments to flag it.\n"
-                                          f"4. LOW VOLUME: If there are only 1 to 3 comments, evaluate their severity.\n"
-                                          f"5. THRESHOLD: Only set is_spam=true if the true user-generated risk is very high.\n\n"
-                                          f"RAW TEXT TO ANALYZE:\n{clean_text}\n\n"
-                                          f"Based strictly on the actual user reports and specific metrics for THIS number, return the JSON.")
+                                prompt = (
+                                    f"Analyze this raw text extracted from a phone number lookup website for the number {clean_num}.\n\n"
+                                    f"EVALUATION RULES:\n"
+                                    f"1. IGNORE BOILERPLATE: Do not flag based on website navigation text, ads, or generic UI.\n"
+                                    f"2. NO USER REPORTS = CLEAN: If there are zero complaints or reports about this number, output is_spam=false and risk_score=0.\n"
+                                    f"3. CONTRADICTORY REPORTS: Require an overwhelming majority (>75%) of negative reports to flag as spam.\n"
+                                    f"4. LOW VOLUME: If there are only 1 to 3 reports, evaluate their individual severity carefully.\n"
+                                    f"5. THRESHOLD: Only set is_spam=true if the genuine user-generated risk is clearly high.\n\n"
+                                    f"RAW TEXT TO ANALYZE:\n{clean_text}\n\n"
+                                    f"Based strictly on actual user reports for THIS number, return the JSON."
+                                )
                                 config = types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=schema, temperature=0.0, safety_settings=safety_settings, thinking_config=types.ThinkingConfig(thinking_budget=0))
                             
                             buf = io.StringIO()
@@ -719,6 +738,8 @@ class PhoneAssistant:
         """Background daemon that mirrors call audio to PC speakers dynamically based on settings."""
         while self.running:
             mode = get_config("monitor_mode", "both")
+            allow_pc_mic = get_config("allow_pc_mic", "false") == "true"
+            
             if mode in ["both", "assistant"]:
                 if self.asst_pacat is None or self.asst_pacat.poll() is not None:
                     self.asst_pacat = subprocess.Popen(["pacat", "--format=s16le", "--rate=24000", "--channels=1", "--raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -737,34 +758,41 @@ class PhoneAssistant:
                 if self.caller_pacat and self.caller_pacat.poll() is None:
                     self.caller_pacat.terminate(); self.caller_pacat = None
 
-            if mode not in ["both", "caller"]:
-                try:
-                    proc = await asyncio.create_subprocess_exec("pw-link", "-l", "--id", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-                    out, _ = await proc.communicate()
-                    text = out.decode("utf-8", errors="ignore")
-                    src_is_bluez = False
-                    for line in text.splitlines():
-                        m_src = re.match(r'^\s{1,4}\d+\s+([\w.\-]+):[\w_]+\s*$', line)
-                        if m_src:
-                            src_is_bluez = "bluez_input" in m_src.group(1)
-                            continue
-                        m_dst = re.match(r'^\s+(\d+)\s+\|->\s+\d+\s+([\w.\-]+):[\w_]+\s*$', line)
-                        if m_dst and src_is_bluez:
-                            link_id = m_dst.group(1)
-                            dst_name = m_dst.group(2)
+            try:
+                proc = await asyncio.create_subprocess_exec("pw-link", "-l", "--id", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                out, _ = await proc.communicate()
+                text = out.decode("utf-8", errors="ignore")
+                src_name = ""
+                for line in text.splitlines():
+                    m_src = re.match(r'^\s{1,4}\d+\s+([\w.\-]+):[\w_]+\s*$', line)
+                    if m_src:
+                        src_name = m_src.group(1)
+                        continue
+                    m_dst = re.match(r'^\s+(\d+)\s+\|->\s+\d+\s+([\w.\-]+):[\w_]+\s*$', line)
+                    if m_dst and src_name:
+                        link_id = m_dst.group(1)
+                        dst_name = m_dst.group(2)
+                        
+                        # Disconnect local PC microphone from Bluetooth outputs to prevent audio leaks and echo
+                        if not allow_pc_mic and "bluez_output" in dst_name and ("alsa_input" in src_name or "pci" in src_name or "usb" in src_name):
+                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        
+                        # Disconnect Bluetooth input from PC speakers if requested
+                        if "bluez_input" in src_name and mode not in ["both", "caller"]:
                             sink = get_default_sink()
                             if ("alsa_output" in dst_name) or (sink and sink in dst_name):
                                 await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception: pass
+            except Exception: pass
             
-            await asyncio.sleep(0.3 if mode not in ["both", "caller"] else 1.0)
+            # FIX: Relax polling to 2.0s to prevent aggressive audio probing which causes in-call clicking
+            await asyncio.sleep(2.0)
 
         for pacat in [self.caller_pacat, self.asst_pacat]:
             if pacat:
                 try:
                     if pacat.stdin: pacat.stdin.close()
                     pacat.kill(); pacat.wait()
-                except: pass
+                except Exception: pass
 
     # ==========================================
     # DB AND D-BUS HANDLERS
@@ -772,7 +800,7 @@ class PhoneAssistant:
     def log_system_message(self, message_text: str, emoji_prefix: str = "⚠") -> None:
         """Logs internal system events to the console and appends them to the call transcript."""
         ts = get_timestamp()
-        clean_msg = message_text.replace("⏳", "").replace("⚠", "").replace("❌", "").replace("⏸", "").replace("[SYSTEM]", "").replace(":", "").strip()
+        clean_msg = message_text.replace("⏳", "").replace("⚠", "").replace("❌", "").replace("⏸", "").replace("▶️", "").replace("[SYSTEM]", "").replace(":", "").strip()
         
         # Prepend "> " if the system is currently on hold.
         prefix = "> " if getattr(self, "on_hold", False) else ""
@@ -786,9 +814,13 @@ class PhoneAssistant:
         """Initializes a new row in the database for the current incoming call."""
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        in_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
-        initial = f"{in_lbl}: connecting to {self.assistant_name}..."
+        
+        # Use generic system icon to prevent GUI from mapping to AI.
+        initial = f"⚠ [{get_timestamp()}]: [SYSTEM]: Call Connected."
         self.accumulated_transcript = initial
+        
+        in_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
+        
         c.execute(
             "INSERT INTO calls (number, date, duration, spam_score, transcript, audio_path, client_audio_path, tag) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -809,10 +841,15 @@ class PhoneAssistant:
         if self.call_id:
             msg_fmt = self.assistant_data.get("ui_saved_message", "Message from {name}: {message}")
             final_msg = msg_fmt.format(name=name, message=message)
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("UPDATE calls SET transcript=? WHERE id=?", (final_msg, self.call_id))
-            conn.commit(); conn.close()
-            print(f"\n\n{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[DB] Message saved.{_R}")
+            
+            # Add the message to the internal memory with a highlighted format
+            recado_visual = f"\n\n📝 [{get_timestamp()}]: [SYSTEM]: *** {final_msg} ***"
+            self.accumulated_transcript += recado_visual
+            
+            # Update the database safely
+            self.update_transcription_db()
+            
+            print(f"\n{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[DB] {final_msg}{_R}")
 
     def answer_call(self) -> None:
         """Answers the incoming D-Bus oFono call."""
@@ -836,38 +873,89 @@ class PhoneAssistant:
     async def send_mic_audio(self, session) -> None:
         """Continuously reads PCM data from the Bluetooth microphone node and streams it to Gemini."""
         print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_AUDIO}[Mic] Active on node: {self.pw_record_target}{_R}")
-        backends = [
-            ["pw-record", f"--target={self.pw_record_target}", "--format=s16", "--rate=16000", "--channels=1", "-"],
-            ["parec",     f"--device={self.pw_record_target}", "--format=s16le", "--rate=16000", "--channels=1", "--raw"],
-        ]
-        for backend_cmd in backends:
-            backend_name = backend_cmd[0]
-            try: proc = await asyncio.create_subprocess_exec(*backend_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            except Exception: continue
+        cmd = ["pw-record", f"--target={self.pw_record_target}", "-P", '{"node.dont-reconnect": true}', "--format=s16", "--rate=16000", "--channels=1", "-"]
+        env = os.environ.copy()
+        env["PW_DEBUG"] = "0"
+        
+        takeover_notified = False
+        base_target = re.sub(r'\.\d+$', '', self.pw_record_target)
 
-            print(f"{_C_AUDIO}[{get_timestamp()}] [Mic] Backend: {backend_name}{_R}")
-            chunks_read = chunks_above_gate = chunks_sent = 0
-            silence_detected = False
+        while self.running:
+            if self.hanging_up:
+                await asyncio.sleep(0.1); continue
+
+            # FIX CLICKS: Check if Bluetooth node exists using native pw-link to prevent audio graph crashes
+            check_proc = await asyncio.create_subprocess_exec("pw-link", "-o", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await check_proc.communicate()
+            if base_target not in out.decode("utf-8"):
+                if not takeover_notified:
+                    self.log_system_message("Audio routed to handset (Takeover). AI paused...", "⏸")
+                    takeover_notified = True
+                await asyncio.sleep(1.0)
+                continue
+
+            try: 
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
+            except Exception: 
+                if not takeover_notified:
+                    self.log_system_message("Audio routed to handset (Takeover). AI paused...", "⏸")
+                    takeover_notified = True
+                await asyncio.sleep(1.0)
+                continue
+
             background_energy = 40.0
+            consecutive_empty = 0
+            valid_chunks = 0
 
             try:
                 while self.running:
                     if self.hanging_up:
-                        await asyncio.sleep(0.05); continue
-                    try: data = await asyncio.wait_for(proc.stdout.read(512), timeout=0.5)
-                    except asyncio.TimeoutError: continue
+                        await asyncio.sleep(0.1); continue
+                        
+                    try: 
+                        data = await asyncio.wait_for(proc.stdout.read(512), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        break
 
                     if not data:
-                        await asyncio.sleep(0.1); continue
+                        consecutive_empty += 1
+                        if consecutive_empty > 2:
+                            break
+                        continue
+                        
+                    consecutive_empty = 0
+                    valid_chunks += 1
+                    self.mic_node_active = True
+                    now = time.time()
+                    
+                    if takeover_notified and valid_chunks > 15:
+                        self.log_system_message("Audio restored to Bluetooth. AI resumed...", "▶️")
+                        takeover_notified = False
+                        self.last_user_spoke_time = now
+                        if self.current_wait_start > 0:
+                            self.current_wait_start = now
+                        
+                        return_prompt = self.prompts_data.get("hold_return_prompt", "[SYSTEM: The caller has returned to the line. Break the silence and respond immediately.]")
+                        await session.send_realtime_input(text=return_prompt)
 
-                    chunks_read += 1
                     count = len(data) // 2
                     if count > 0:
                         samples = struct.unpack(f"<{count}h", data)
                         samples = [max(min(s * 3, 32767), -32768) for s in samples]
                         data = struct.pack(f"<{count}h", *samples)
                     
-                    if not self.caller_recording_buffer: self.first_mic_time = time.time()
+                    if not self.caller_recording_buffer: 
+                        self.first_mic_time = now
+                        self.last_mic_data_time = now
+                    else:
+                        time_gap = now - self.last_mic_data_time
+                        if time_gap > 0.5:
+                            silence_bytes = int(time_gap * 16000) * 2
+                            if silence_bytes > 0:
+                                self.caller_recording_buffer.append(b"\x00" * silence_bytes)
+                                self._total_mic_silence_injected += time_gap
+                                
+                    self.last_mic_data_time = now
                     self.caller_recording_buffer.append(data)
                     
                     if self.caller_pacat and self.caller_pacat.poll() is None:
@@ -882,49 +970,79 @@ class PhoneAssistant:
                     adaptive_gate = max(10, min(45, int(10 + (background_energy * 0.4))))
                     noise_gate = min(60, adaptive_gate + 15) if self.on_hold else adaptive_gate
 
-                    if chunks_read >= 80 and chunks_above_gate == 0 and not silence_detected:
-                        silence_detected = True
-                        print(f"{_C_WARN}[{get_timestamp()}] [Mic/{backend_name}] Only silence — switching to fallback backend.{_R}")
-                        break
+                    is_silence = (rms < noise_gate)
+                    is_echo = (self.software_echo_suppression and self.currently_playing)
 
-                    if rms < noise_gate:
-                        await asyncio.sleep(0.01); continue
+                    if is_silence or is_echo:
+                        data = b"\x00" * len(data)
+                    else:
+                        self.user_turn_audio.append(data)
 
-                    chunks_above_gate += 1
-                    if self.software_echo_suppression and self.currently_playing:
-                        await asyncio.sleep(0.01); continue
-
-                    chunks_sent += 1
-                    self.user_turn_audio.append(data)
                     await session.send_realtime_input(audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000"))
 
             except Exception: pass
             finally:
-                try: proc.kill(); proc.wait()
+                self.mic_node_active = False
+                try: 
+                    proc.kill()
+                    await proc.wait()
                 except Exception: pass
-
-            if not silence_detected: break
+            
+            if self.running and not takeover_notified and not self.mic_node_active:
+                self.log_system_message("Audio routed to handset (Takeover). AI paused...", "⏸")
+                takeover_notified = True
+                
+            await asyncio.sleep(1.0)
 
     def sync_playback_loop(self) -> None:
         """Reads audio generated by Gemini from a queue and pipes it to the Bluetooth speaker node."""
-        cmd = ["pw-play", f"--target={self.pw_playback_target}", "--format=s16", "--rate=24000", "--channels=1", "-"]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        cmd = ["pw-play", f"--target={self.pw_playback_target}", "-P", '{"node.dont-reconnect": true}', "--format=s16", "--rate=24000", "--channels=1", "-"]
+        env = os.environ.copy()
+        env["PW_DEBUG"] = "0"
+        proc = None
+        
         try:
             while self.running or not self.audio_out_queue.empty():
+                
+                # FIX CLICKS: If handset is in Takeover, do not force the player. Flush the queue quietly.
+                if not getattr(self, "mic_node_active", True):
+                    try:
+                        while True:
+                            self.audio_out_queue.get_nowait()
+                            self.audio_out_queue.task_done()
+                    except queue.Empty: pass
+                    time.sleep(0.2)
+                    continue
+
                 try:
                     chunk = self.audio_out_queue.get(timeout=0.1)
                     self.currently_playing = True
-                    proc.stdin.write(chunk)
-                    proc.stdin.flush()
-                    self.last_chunk_audio_time = time.time()
+                    
+                    if proc is None or proc.poll() is not None:
+                        if proc:
+                            try:
+                                proc.kill()
+                                proc.wait()
+                            except Exception: pass
+                        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+                        
+                    try:
+                        proc.stdin.write(chunk)
+                        proc.stdin.flush()
+                        self.last_chunk_audio_time = time.time()
+                    except Exception:
+                        pass
+                    
                     self.audio_out_queue.task_done()
                 except queue.Empty: self.currently_playing = False
                 except Exception: self.currently_playing = False
         finally:
-            try:
-                if proc.stdin: proc.stdin.close()
-                proc.kill(); proc.wait()
-            except Exception: pass
+            if proc:
+                try:
+                    if proc.stdin: proc.stdin.close()
+                    proc.kill()
+                    proc.wait()
+                except Exception: pass
 
     # ==========================================
     # HYBRID WHISPER LOGIC & JSON DATA
@@ -1011,9 +1129,11 @@ class PhoneAssistant:
 
     def execute_blocking_generate_content(self, complete_transcript: str) -> None:
         """Sends transcript history to LLM model to deduce caller identity and risks (JSON mapping)."""
-        raw = self.assistant_data.get("output_schema_instruction", "Analyze the transcript.")
-        try: instruction = raw.format(boss_name=self.boss_name, assistant_name=self.assistant_name)
-        except Exception: instruction = raw
+        raw_instruction = self.assistant_data.get("output_schema_instruction", "Analyze the transcript.")
+        try:
+            instruction = raw_instruction.format(boss_name=self.boss_name, assistant_name=self.assistant_name)
+        except (KeyError, ValueError):
+            instruction = raw_instruction
 
         is_gemma = "gemma" in self.model_text.lower()
         
@@ -1092,13 +1212,25 @@ class PhoneAssistant:
         while self.running:
             # Evaluate graceful exit sequences.
             if self.hanging_up and self.audio_out_queue.empty():
-                if time.time() - self.last_chunk_audio_time > 3.0 or time.time() - getattr(self, "hangup_triggered_time", time.time()) > 7.0:
+                # Cut the call after 3.5 seconds or if AI does not stop speaking
+                if time.time() - self.last_chunk_audio_time > 1.0 or time.time() - getattr(self, "hangup_triggered_time", time.time()) > 3.5:
+                    
                     print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Final goodbye audio finished playing. Cutting call.{_R}")
-                    await asyncio.sleep(2.0); self.running = False; break
+                    # Execute network disconnect directly
+                    self.hangup_call()
+                    await asyncio.sleep(0.5)
+                    self.running = False
+                    break
 
             # Maintain active status while assistant speaks.
             if self.currently_playing: 
                 self.last_user_spoke_time = time.time()
+
+            # Freeze inactivity timers while owner takes over the call locally
+            if not self.mic_node_active:
+                self.last_user_spoke_time = time.time()
+                if self.current_wait_start > 0:
+                    self.current_wait_start = time.time()
 
             # Dynamic Inactivity Loop Execution
             if not self.hanging_up:
@@ -1199,10 +1331,9 @@ class PhoneAssistant:
                                 self.last_user_spoke_time = now  # Reset the inactivity timer!
                                 if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
                                     self.last_renewal_printed_time = now
-                                    self.log_system_message(self.labels_data.get("hold_renewed_caller", "⏳ Hold time renewed by caller (Limit {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
+                                    self.log_system_message(self.words_data.get("hold_renewed_caller", "⏳ [SYSTEM]: Wait time renewed by caller request (Limit: {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
 
                             # --- Check return from hold ---
-                            # Prevent instant exit by evaluating on the original (un-safened) text, but only if they didn't just activate it.
                             if not self._check_wait_return(itx.text):
                                 ts = get_timestamp()
                                 self.log_system_message(f"Active Hold Ignored background noise / TV '{itx.text}'", "⏸")
@@ -1212,7 +1343,6 @@ class PhoneAssistant:
                                 else: self.user_turn_audio.clear()
                                 itx = None  
                             elif not self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
-                                # Only exit hold if they didn't ALSO say a hold-renew word in the exact same sentence.
                                 self.log_system_message("Return from hold detected. Resuming conversation...", "⏳")
                                 self.on_hold = False
                                 if self.current_wait_start > 0: self.accumulated_wait_time += (time.time() - self.current_wait_start)
@@ -1307,10 +1437,9 @@ class PhoneAssistant:
                             if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
                                 self.last_renewal_printed_time = now
                                 self.log_system_message(
-                                    self.labels_data.get("hold_renewed_assistant", "⏳ Wait renewed by assistant (Limit {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
+                                    self.words_data.get("hold_renewed_assistant", "⏳ [SYSTEM]: Wait time renewed by assistant response (Limit: {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
 
                         # --- GOODBYE detection on accumulated eval_text ---
-                        # EXCLUDE detection if we are actively executing a system-prompted warning (hello_question or grace period).
                         if not self.hangup_triggered and not self.waiting_definitive_cut and not self.hello_question_sent and self._matches_any_phrase(eval_text, self.words_data.get("cut_words", [])):
                             self.hanging_up = self.hangup_triggered = True
                             self.hangup_triggered_time = time.time()
@@ -1386,30 +1515,36 @@ class PhoneAssistant:
     async def post_process_call(self) -> None:
         """Final cleanup execution. Merges audio channels, parses labels and tags, outputs result logic."""
         print(f"\n{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Saving recordings and evaluating categories...{_R}")
-        if self.caller_recording_buffer:
+        
+        # Consolida los buffers antes de escribir para evitar corrupciones
+        caller_pcm_raw = b"".join(self.caller_recording_buffer) if self.caller_recording_buffer else b""
+        asst_pcm_raw = bytes(self.recording_buffer_wav)
+        
+        if caller_pcm_raw:
             try:
                 with wave.open(self.client_recording_path, 'wb') as wf:
                     wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
-                    for chunk in self.caller_recording_buffer: wf.writeframes(chunk)
+                    wf.writeframes(caller_pcm_raw)
             except Exception: pass
             
-        if self.caller_recording_buffer and self.recording_buffer_wav:
+        if caller_pcm_raw and asst_pcm_raw:
             try:
-                raw_caller_pcm = b"".join(self.caller_recording_buffer)
+                # Compensar si la IA tardó en contestar al principio
                 if self.first_mic_time > 0 and self.call_start_time > 0:
                     mic_offset_bytes = int(max(0.0, self.first_mic_time - self.call_start_time) * 16000) * 2
-                    if mic_offset_bytes > 0: raw_caller_pcm = (b"\x00" * mic_offset_bytes) + raw_caller_pcm
+                    if mic_offset_bytes > 0: 
+                        caller_pcm_raw = (b"\x00" * mic_offset_bytes) + caller_pcm_raw
                 
-                caller_pcm = upsample_16k_to_24k(raw_caller_pcm)
-                asst_pcm = bytes(self.recording_buffer_wav)
+                caller_pcm = upsample_16k_to_24k(caller_pcm_raw)
                 
-                max_len = max(len(caller_pcm), len(asst_pcm))
+                # Nivelar longitudes para el estéreo
+                max_len = max(len(caller_pcm), len(asst_pcm_raw))
                 if len(caller_pcm) < max_len: caller_pcm += b"\x00" * (max_len - len(caller_pcm))
-                if len(asst_pcm) < max_len: asst_pcm += b"\x00" * (max_len - len(asst_pcm))
+                if len(asst_pcm_raw) < max_len: asst_pcm_raw += b"\x00" * (max_len - len(asst_pcm_raw))
                 
                 num_samples = max_len // 2
                 c_samp = struct.unpack(f"<{num_samples}h", caller_pcm)
-                a_samp = struct.unpack(f"<{num_samples}h", asst_pcm)
+                a_samp = struct.unpack(f"<{num_samples}h", asst_pcm_raw)
                 
                 stereo_data = [val for pair in zip(c_samp, a_samp) for val in pair]
                 with wave.open(self.recording_path, 'wb') as wf:
@@ -1417,20 +1552,26 @@ class PhoneAssistant:
                     wf.writeframes(struct.pack(f"<{num_samples * 2}h", *stereo_data))
                 print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[Audio] Call synchronized stereo recording saved: {self.recording_path}{_R}")
             except Exception as e: print(f"{_C_WARN}[{get_timestamp()}] Error mixing stereo audio: {e}{_R}")
-        elif self.recording_buffer_wav:
+        elif asst_pcm_raw:
             try:
                 with wave.open(self.recording_path, 'wb') as wf:
                     wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
-                    for chunk in self.recording_buffer_wav: wf.writeframes(chunk)
+                    wf.writeframes(asst_pcm_raw)
             except Exception: pass
             
-        if getattr(self, "hangup_triggered", False) and not getattr(self, "hangup_message_appended", False):
+        # Add a clear closing system message if one doesn't exist, correctly stating who hung up.
+        if not getattr(self, "hangup_message_appended", False):
             self.hangup_message_appended = True
-            lbl = self.labels_data.get("call_spam", "Call automatically hung up due to network SPAM detection.") if getattr(self, "hangup_reason", "completed") == "spam" else self.labels_data.get("call_finished", "Call successfully finished and saved.")
+            if getattr(self, "hangup_triggered", False):
+                lbl = self.words_data.get("call_spam", "❌ [SYSTEM]: Call automatically hung up due to network SPAM detection.") if getattr(self, "hangup_reason", "completed") == "spam" else self.words_data.get("call_finished", "❌ [SYSTEM]: Call successfully finished and saved.")
+            else:
+                lbl = self.words_data.get("call_finished", "❌ [SYSTEM]: Call disconnected by caller and saved.")
+                
             clean_lbl = lbl.replace("❌ [SYSTEM]:", "").replace("❌", "").replace("[SYSTEM]:", "").replace("❌ [SISTEMA]:", "").replace("[SISTEMA]:", "").strip()
             self.accumulated_transcript += f"\n\n❌ [{get_timestamp()}]: [SYSTEM]: {clean_lbl}"
         
-        final_trans = self.accumulated_transcript.replace(f"{self.gui_data.get('ui_in_progress', 'IN PROGRESS')}: connecting", "📞")
+        final_trans = re.sub(r"\[SYSTEM\]:\s*.*?-\s*Call Connected\.", "[SYSTEM]: Call Connected.", self.accumulated_transcript)
+        
         try: await asyncio.to_thread(self.execute_blocking_generate_content, final_trans)
         except Exception as e: print(f"{_C_ERR}[Post-Processing] Final state extraction failed: {e}{_R}")
         
@@ -1495,12 +1636,16 @@ class PhoneAssistant:
         if not self.running:
             print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Delay] Call aborted by caller before answering.{_R}"); return
 
-        instruction = self.assistant_data.get("system_instruction", "").format(
-            assistant_name=self.assistant_name, 
-            role_assistant=self.assistant_data.get("role_mappings", {}).get("female" if "fem" in self.assistant_gender.lower() else "male", "Secretary"),
-            owner_desc=self.assistant_data.get("owner_type_mappings", {}).get(self.owner_type, "Private"), 
-            boss_name=self.boss_name, business_details=self.business_description
-        )
+        raw_instruction = self.assistant_data.get("system_instruction", "")
+        try:
+            instruction = raw_instruction.format(
+                assistant_name=self.assistant_name, 
+                role_assistant=self.assistant_data.get("role_mappings", {}).get("female" if "fem" in self.assistant_gender.lower() else "male", "Secretary"),
+                owner_desc=self.assistant_data.get("owner_type_mappings", {}).get(self.owner_type, "Private"), 
+                boss_name=self.boss_name, business_details=self.business_description
+            )
+        except (KeyError, ValueError):
+            instruction = raw_instruction
 
         if last_rec and self.gui_data.get("ui_in_progress", "IN PROGRESS") not in last_rec[0] and "IN PROGRESS" not in last_rec[0]:
             try: instruction += self.assistant_data.get("history_injection", "").format(date_str=last_rec[1], last_transcript=last_rec[0])
@@ -1514,7 +1659,7 @@ class PhoneAssistant:
 
         tools_list = [types.Tool(function_declarations=[
             types.FunctionDeclaration(name="hangup", description="Terminates the call immediately if spam or successfully finished.", parameters_json_schema={"type": "object", "properties": {"reason": {"type": "string"}}}),
-            types.FunctionDeclaration(name="save_message", description="Saves a logical message or appointment details for the owner.", parameters_json_schema={"type": "object", "properties": {"caller_name": {"type": "string"}, "message_text": {"type": "string"}}, "required": ["caller_name", "message_text"]})
+            types.FunctionDeclaration(name="save_message", description="MANDATORY: Execute this tool to save ANY actionable message, task, delivery notice, or completed appointment details for the owner. Do not say it is noted without invoking this tool.", parameters_json_schema={"type": "object", "properties": {"caller_name": {"type": "string"}, "message_text": {"type": "string"}}, "required": ["caller_name", "message_text"]})
         ])]
 
         config = types.LiveConnectConfig(
@@ -1564,22 +1709,23 @@ class PhoneAssistant:
                     while self.running:
                         if spam_task.done():
                             try:
-                                if spam_task.result() and get_config("auto_block_spam", "true") == "true":
+                                if spam_task.result() and get_config("auto_block_spam", "false") == "true":
                                     print(f"\n{_C_WARN}[{get_timestamp()}] [SpamCheck] SPAM confirmed. Terminating call (Auto-Block ON)...{_R}")
+                                    self.hangup_reason = "spam"
+                                    self.hangup_triggered = True
                                     self.accumulated_transcript += "\n\n❌ [SYSTEM]: Call hung up — network SPAM detected."
                                     self.update_transcription_db()
                                     await session.send_realtime_input(text=self.prompts_data.get("spam_detected", ""))
-                                    await asyncio.sleep(4); self.running = False; break
+                                    await asyncio.sleep(4)
+                                    self.hangup_call()
+                                    self.running = False
+                                    break
                             except Exception: pass
                             break
                         await asyncio.sleep(0.5)
 
                 await asyncio.gather(self.send_mic_audio(session), self.receive_audio_and_tools(session), monitor_spam())
                 
-                self.running = False; self.hangup_call()
-                if not getattr(self, "_post_processed", False):
-                    self._post_processed = True; await self.post_process_call()
-
         except Exception as e:
             print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Session] Unexpected error: {e}{_R}")
             if not getattr(self, "answered_call", False): print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[AI Engine] Gemini Live is unavailable. Delegating call to native phone handler.{_R}")
@@ -1587,8 +1733,6 @@ class PhoneAssistant:
             self.running = False
             if getattr(self, "answered_call", False):
                 self.hangup_call()
-                if not getattr(self, "_post_processed", False):
-                    self._post_processed = True; await self.post_process_call()
 
 def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
     """Listens for CallAdded and CallRemoved events over D-Bus from oFono."""
@@ -1607,8 +1751,12 @@ def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
     def on_call_removed(path: str) -> None:
         global ACTIVE_ASSISTANT
         if ACTIVE_ASSISTANT and ACTIVE_ASSISTANT.dbus_path == path:
-            print(f"\n{_C_WARN}[{get_timestamp()}] [D-Bus] Call hung up by the caller.{_R}")
+            print(f"\n{_C_WARN}[{get_timestamp()}] [D-Bus] Call hung up.{_R}")
             ACTIVE_ASSISTANT.running = False
+            # Execute post-processing HERE. Guarantees 100% execution when line drops.
+            if not getattr(ACTIVE_ASSISTANT, "_post_processed", False):
+                ACTIVE_ASSISTANT._post_processed = True
+                asyncio.run_coroutine_threadsafe(ACTIVE_ASSISTANT.post_process_call(), main_loop)
 
     try:
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -1636,8 +1784,6 @@ if __name__ == "__main__":
         subprocess.run(["systemctl", "--user", "restart", "wireplumber", "pipewire", "pipewire-pulse"], check=True, stderr=subprocess.DEVNULL)
         time.sleep(2.0)
     except Exception as e: print(f"{_C_WARN}{ICON_WARN}Warning: Could not restart audio services: {e}{_R}")
-
-    ensure_null_sink()
 
     main_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(main_loop)
