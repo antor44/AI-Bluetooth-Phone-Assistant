@@ -3,3 +3,5 @@ aiohttp
 streamlit
 dbus-python
 PyGObject
+# Pin protobuf to avoid conflicts between streamlit (<7) and google-genai (>=5)
+protobuf>=5.26.1,<7.0.0

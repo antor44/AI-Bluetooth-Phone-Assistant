@@ -329,27 +329,63 @@ ok "All models ready in $PROJECT_MODELS_DIR"
 
 # ============================================================
 #  STEP 8 — Python pip dependencies
+#
+#  RECOMMENDED: run this script with a venv that has access to
+#  system packages. This way dbus-python and PyGObject (installed
+#  above via apt/dnf/pacman) are visible inside the venv without
+#  needing to recompile them from pip wheels, which often fail on
+#  Linux due to missing system headers.
+#
+#    python3 -m venv --system-site-packages venv
+#    source venv/bin/activate
+#    pip install -r requirements.txt
+#
+#  Other supported environments:
+#
+#  System Python (Ubuntu 24.04+)
+#    pip requires --break-system-packages outside a venv (PEP 668).
+#    The script handles this automatically.
+#
+#  Plain venv (isolated, no --system-site-packages)
+#    Works for google-genai / aiohttp / streamlit, but dbus-python
+#    and PyGObject must be available via system packages (already
+#    installed in step 3 above).
+#
+#  Conda / Anaconda
+#    The --break-system-packages flag is not needed and is silently
+#    ignored via the fallback. Watch out for protobuf version
+#    conflicts with other packages in the base environment; using
+#    a dedicated conda env avoids this:
+#      conda create -n phone_assistant python=3.12 -y
+#      conda activate phone_assistant
+#      pip install -r requirements.txt
+#
+#  protobuf is pinned to >=5.26.1,<7.0.0 to satisfy both:
+#    streamlit     (requires protobuf < 7)
+#    grpcio-status (requires protobuf >= 5.26.1)
+#  Without this pin, pip may downgrade protobuf and break google-genai.
 # ============================================================
 step "STEP 8/8 — Python pip dependencies"
 progress "Installing google-genai, aiohttp, streamlit..."
 
-# Outside a venv, --break-system-packages is required on
-# Ubuntu 24.04+ / modern distros with PEP 668 enforcement.
-# We try it first and fall back silently for distros that
-# don't need or support that flag (e.g. Arch).
-pip install --break-system-packages \
-    "google-genai" \
-    "aiohttp" \
-    "streamlit" \
-    2>/dev/null \
-|| pip install \
-    "google-genai" \
-    "aiohttp" \
+PIP_PACKAGES=(
+    "google-genai"
+    "aiohttp"
     "streamlit"
+    "protobuf>=5.26.1,<7.0.0"
+)
 
-ok "google-genai installed."
-ok "aiohttp installed."
-ok "streamlit installed."
+# Try with --break-system-packages first (required on Ubuntu 24.04+
+# outside a venv). Falls back without the flag for Conda/venv/other
+# distros that do not enforce PEP 668.
+if pip install --break-system-packages "${PIP_PACKAGES[@]}" 2>/dev/null; then
+    ok "pip packages installed (system Python)."
+elif pip install "${PIP_PACKAGES[@]}"; then
+    ok "pip packages installed (Conda/venv)."
+else
+    err "pip install failed. Run manually:"
+    err "  pip install ${PIP_PACKAGES[*]}"
+fi
 
 # ============================================================
 #  Final summary
