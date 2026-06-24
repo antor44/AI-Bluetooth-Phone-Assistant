@@ -6,21 +6,29 @@
 
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini Live** for conversational AI and **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages, sets context-aware memory for repeat callers, and provides a sleek Web GUI to manage your communications.
 
-> ⚠️ **EXPERIMENTAL SOFTWARE / NO WARRANTY / LEGAL NOTICE**
-> This project is an **experimental AI phone assistant** for technically competent users. It is distributed **as-is**, without warranty, and may contain bugs, missed-call scenarios, transcription errors, privacy-impacting failures, or other unsafe edge cases.
+> ⚠️ **EXPERIMENTAL SOFTWARE — USE AT YOUR OWN RISK**
+> This is an experimental project distributed as-is, without warranty. It may contain bugs, missed-call scenarios, transcription errors, or other untested edge cases. Several advanced features — specifically **real-time SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions** — are implemented but have not been thoroughly verified in real-world conditions.
 >
-> If you deploy, repackage, integrate, modify, or operate it in a real environment, **you** are responsible for compliance with local law, including caller notice, recording/transcription rules, retention, access control, and any sector-specific requirements. This repository is a technical project, not legal advice and not a guarantee that any particular deployment is lawful or production-safe.
->
-> In practice, the safest profile is usually: **incoming calls only**, clear first-message disclosure, minimal data retention, and a conservative assistant configuration.
->
-> 🧪 **EXPERIMENTAL & UNTESTED FEATURES WARNING**
-> Please note that several advanced features—specifically **real-time network SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions**—are considered **highly experimental and largely untested**. While the code framework is implemented, they have not undergone thorough real-world verification. They may fail to trigger, parse incorrectly, or behave unpredictably under certain conditions.
+> Users are responsible for compliance with applicable local laws regarding call recording, transcription, and AI-assisted call handling. The safest default profile is: **incoming calls only**, clear first-message disclosure to the caller, and minimal data retention.
 
-## 🌟 Why use this? (Use Cases)
+---
+
+## 🌟 Why use this?
+
+<div align="center">
+  <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant4.jpg" width="80%">
+  <br><b>😲 The demonstration that Google CEO Sundar Pichai gave during the Google I/O 2018 conference.</b>
+</div>
+
+<br>
+
+In May 2018, Google introduced its Duplex technology as a revolutionary AI assistant capable of holding natural phone conversations by simulating human speech. Despite its initial impact, the service was deployed with severe limitations, being available in only a few countries and initially restricted to Google Pixel devices. Subsequent solutions like Google Call Screen have carried similar barriers, being limited by regional blocks, carrier restrictions, and predefined functions that do not allow the user to freely customize responses or call handling.
+
+To overcome these commercial barriers, I have developed this Python application that operates as an independent orchestrator from any PC or Linux SBC (single-board computer). By connecting to the mobile phone via Bluetooth, the system acts as a supercharged version of Google's solutions that allows answering calls (only answering, to avoid most legal restrictions for normal users) without suffering geographical blocks or depending on specific mobile hardware. This architecture offers complete and unrestricted control to manage bidirectional audio, transcribe conversations, and generate real-time responses using AI. Furthermore, it provides full control over the call history, and at any moment, the user can interrupt the AI to take manual control of the call, among many other improvements that will be added in the future.
 
 <div align="center">
   <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant1.jpg" width="80%">
-  <br><b>🏖️ Free time call answered</b>
+  <br><b>🏖️ Free time call answered.</b>
 </div>
 
 <br>
@@ -41,6 +49,7 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 </table>
 
 Author: Antonio R. | Version: 1.2 | License: GPL 3.0
+
 ---
 
 ## 📸 Screenshots
@@ -59,7 +68,6 @@ Author: Antonio R. | Version: 1.2 | License: GPL 3.0
 ![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy1.jpg)
 ![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy3.jpg)
 ![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy2.jpg)
-
 
 ---
 
@@ -81,19 +89,17 @@ This code interacts directly with Linux D-Bus and PipeWire, making it a robust s
 ## 🧠 Tuning & Personality
 
 *   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases.
-*   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). However, **be warned**: doing so can trigger unforeseen side effects or cause the AI to ignore structural commands like hanging up or saving messages.
-*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. In determinated cases you could modify slightly the default prompts, for example, change "If they suggest leaving it with a neighbour, give permission for this" instead of "If they suggest leaving it with a neighbour, NEVER give permission for this". Depending on your regional slang you can extend or shorten the word list related to a variable.
+*   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). Note that significant personality changes may affect the reliability of structural commands like hanging up or saving messages.
+*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. In some cases you could slightly modify the default prompts — for example, changing "If they suggest leaving it with a neighbour, give permission for this" instead of "If they suggest leaving it with a neighbour, NEVER give permission for this". Depending on your regional slang you can extend or shorten word lists related to a given variable.
 
 ### Recommended Operating Profile
-For privacy-sensitive or legally cautious deployments, the safest default profile is generally:
-*   concise,
-*   neutral,
-*   non-chatty,
-*   inbound-call focused,
-*   resistant to oversharing,
-*   and limited to call handling, message capture, hold management, and basic classification.
+For a balanced default experience, the recommended profile is:
+*   Concise and neutral tone
+*   Inbound-call focused
+*   Limited to call handling, message capture, hold management, and basic classification
+*   Resistant to oversharing personal or schedule details
 
-A more playful, emotionally warm, or highly compliant personality may sound nicer, but it can also increase the risk of over-disclosure, prompt drift, or ambiguous behavior during real calls.
+A more expressive or conversational personality sounds nicer, but may reduce reliability for structural commands during real calls.
 
 ---
 
@@ -102,25 +108,25 @@ A more playful, emotionally warm, or highly compliant personality may sound nice
 While the application is structurally designed to support translation locales via JSON files, there are technical limitations in the current codebase regarding non-Latin scripts, Asian languages, and Right-to-Left (RTL) languages:
 
 ### 1. Hardcoded Character Filtering (CJK Languages)
-At the code level, the daemon employs a regex-based noise filter in the is_valid_text function to discard transcription artifacts caused by Bluetooth static. This filter explicitly blocks and discards any text containing character ranges for:
+At the code level, the daemon employs a regex-based noise filter in the `is_valid_text` function to discard transcription artifacts caused by Bluetooth static. This filter explicitly blocks character ranges for:
 
-Chinese (Kanji/Hanzi: \u4e00-\u9fff)
-Japanese (Hiragana/Katakana: \u3040-\u30ff)
-Korean (Hangul: \uac00-\ud7a3 / \u1100-\u11ff)
+- Chinese (Kanji/Hanzi: `\u4e00-\u9fff`)
+- Japanese (Hiragana/Katakana: `\u3040-\u30ff`)
+- Korean (Hangul: `\uac00-\ud7a3` / `\u1100-\u11ff`)
 
-If a caller speaks in Chinese, Japanese, or Korean, the daemon will classify the input as noise, skip the processing branch entirely, and produce no response to the caller.
+If a caller speaks in Chinese, Japanese, or Korean, the daemon will classify the input as noise and produce no response.
 
 ### 2. Word Tokenization Failure (CJK Languages)
-The _calculate_text_similarity helper splits text using Python's str.split(), which tokenizes by whitespace. Chinese and Japanese writing systems do not use spaces between words, so this function will always return 0.0 similarity for CJK input, breaking the hallucination-detection and deduplication logic that depends on it. Adapting the system for CJK languages requires replacing the whitespace tokenizer with a dedicated segmenter.
+The `_calculate_text_similarity` helper splits text using Python's `str.split()`, which tokenizes by whitespace. Chinese and Japanese writing systems do not use spaces between words, so this function will always return `0.0` similarity for CJK input, breaking the hallucination-detection and deduplication logic. Adapting the system for CJK languages requires replacing the whitespace tokenizer with a dedicated segmenter.
 
 ### 3. Right-to-Left (RTL) Languages (Arabic, Hebrew)
-Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment glitches, displaced punctuation, and inverted text ordering in live terminal logs and Web GUI logs.
+Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment issues in live terminal logs and Web GUI logs.
 
 ### 4. Voice Synthesis (TTS) Restrictions
-The Gemini Live connection is hardcoded to use only two voices (Aoede for female, Puck for male). While Gemini Live does handle many languages with these voices, quality varies significantly for non-Western languages. If you configure the system prompt to operate in languages like Russian, Hindi, or Arabic, the voice synthesizer may sound heavily accented or produce noticeably degraded output. For best results, change the voice_name in phone_assistant.py to a voice optimized for your target language.
+The Gemini Live connection is hardcoded to use only two voices (Aoede for female, Puck for male). While Gemini Live handles many languages with these voices, quality varies significantly for non-Western languages. For best results, change the `voice_name` in `phone_assistant.py` to a voice optimized for your target language.
 
 ### 5. Planned Support & Future Roadmap
-Expanding native, out-of-the-box compatibility for non-Latin scripts, localized voice mapping, and multi-language SPAM filtering is planned for future releases. These updates will be integrated progressively as development resources and API capabilities permit.
+Expanding native compatibility for non-Latin scripts, localized voice mapping, and multi-language SPAM filtering is planned for future releases. These updates will be integrated progressively as development resources and API capabilities permit.
 
 ---
 
@@ -153,19 +159,19 @@ This app uses a hybrid approach: Gemini Live for conversational speed, and a loc
 2. **Compile it:**
    *   **CPU only:** `make`
    *   **NVIDIA GPU (CUDA):** `make GGML_CUDA=1`
-   *   *(Other accelerations like OpenVINO or Vulkan are supported, check the whisper.cpp documentation).*
+   *   *(Other accelerations like OpenVINO or Vulkan are supported — check the whisper.cpp documentation).*
 3. **Move the executable:**
    Copy the compiled `whisper-cli` (or `main`) executable into the root directory of *this* application, or ensure it's in a `./build/bin/` subfolder.
 4. **Download Models:**
    Create a `models/` folder in the root of this app and download the `.bin` models (e.g., `ggml-medium.bin`). The GUI allows you to select which model and quantization to use.
 
 ### 4. Bluetooth Mobile Pairing (Crucial for Ubuntu 24.04 / Modern GNOME)
-On modern Linux distributions like **Ubuntu 24.04** (and other desktops using modern GNOME or KDE Plasma), pairing your mobile phone using the default desktop Settings GUI often fails to establish the necessary telephony integration. The desktop GUI frequently pairs devices solely as media audio players (A2DP), ignoring or blocking the **Hands-Free Profile (HFP)** required by `oFono` to detect incoming calls.
+On modern Linux distributions like **Ubuntu 24.04**, pairing your mobile phone using the default desktop Settings GUI often fails to establish the necessary telephony integration. The desktop GUI frequently pairs devices solely as media audio players (A2DP), ignoring the **Hands-Free Profile (HFP)** required by `oFono` to detect incoming calls.
 
-To ensure your phone is recognized correctly as a telephony gateway, **you must pair, trust, and connect the device via the terminal using direct `bluetoothctl` commands**:
+To ensure your phone is recognized correctly, **pair, trust, and connect the device via the terminal using direct `bluetoothctl` commands**:
 
 1. **Find your phone's Bluetooth MAC address:**
-   Turn on Bluetooth on your phone and make it discoverable. Note your phone's MAC address (which looks like `50:2F:BB:89:0C:BE`).
+   Turn on Bluetooth on your phone and make it discoverable. Note your phone's MAC address (e.g., `50:2F:BB:89:0C:BE`).
 
 2. **Execute the pairing sequence directly from your terminal:**
    Replace `XX:XX:XX:XX:XX:XX` with your phone's actual MAC address:
@@ -191,7 +197,7 @@ To ensure your phone is recognized correctly as a telephony gateway, **you must 
 
 ## 🔑 API Key Setup, Pricing & Privacy
 
-This application relies on the **Google Gemini API** to function. It uses the groundbreaking `gemini-3.1-flash-live-preview` model for real-time, low-latency bidirectional voice communication over Bluetooth, and secondary text models (like `gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation and post-call JSON transcript structuring.
+This application relies on the **Google Gemini API** to function. It uses `gemini-3.1-flash-live-preview` for real-time, low-latency bidirectional voice communication, and secondary text models (like `gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation and post-call JSON transcript structuring.
 
 ### 1. How to Obtain and Set Your API Key
 1. Go to **[Google AI Studio](https://aistudio.google.com/)**.
@@ -204,12 +210,12 @@ This application relies on the **Google Gemini API** to function. It uses the gr
    ```
    *(Tip: Add this line to your `~/.bashrc` or `~/.profile` so it loads automatically).*
 
-### 2. ⚠️ Privacy Warning: Free Tier vs. Paid Tier
-Google AI Studio offers a generous Free Tier, but it comes with a critical privacy trade-off:
-*   **Free Tier:** By using the free API, you agree to Google's terms which allow them to collect and use your conversation data (anonymously) to train and improve their AI models. If you are handling sensitive personal or business phone calls, **do not use the Free Tier**.
-*   **Paid Tier (Pay-As-You-Go):** When you set up a billing account, **your data is strictly private**. Google explicitly states that Paid API data is *not* used to train their models. 
+### 2. Free Tier vs. Paid Tier — Privacy Considerations
+Google AI Studio offers a generous Free Tier, but it comes with a privacy trade-off:
+*   **Free Tier:** Google may use conversation data (anonymously) to improve their AI models. If you are handling sensitive personal or business phone calls, consider using the Paid Tier instead.
+*   **Paid Tier (Pay-As-You-Go):** Your data is strictly private — Google explicitly states that Paid API data is *not* used to train their models.
 
-**For a privacy-focused phone switchboard, enabling the Paid Tier is highly recommended.** 
+**For a privacy-focused deployment, the Paid Tier is recommended.**
 
 ### 3. Approximate Pricing (Pay-As-You-Go)
 The Paid API operates strictly on a pay-per-use basis: if you don't receive calls, you pay nothing. For normal personal or small-business use, the cost is exceptionally low (typically just a few cents per day).
@@ -223,26 +229,23 @@ The Paid API operates strictly on a pay-per-use basis: if you don't receive call
     *   *Cost:* ~$0.50 per 1 Million input tokens and ~$3.00 per 1 Million output tokens. This equates to fractions of a cent per call.
 
 ### 4. Offline Text Processing & Final Transcription Selection
-The GUI provides flexibility in how post-call tasks (SPAM checks, JSON state extraction, and final audio alignment) are handled:
+The GUI provides flexibility in how post-call tasks are handled:
 
 *   **Text Processing Models (`gemini` vs `gemma-4`):**
-    *   **`gemini-3-flash-preview`:** The default and most stable choice for text processing. It perfectly balances speed, reliability, and low cost.
-    *   **`gemma-4` Family (`gemma-4-31b-it` / `gemma-4-26b-a4b-it`):** You can opt for these open-weight models. The 31B version is slightly more comprehensive, while the 26B provides faster response times. *(Warning: online API endpoints for the Gemma-4 family currently exhibit lower stability compared to native Gemini endpoints).*
+    *   **`gemini-3-flash-preview`:** The default and most stable choice for text processing.
+    *   **`gemma-4` Family (`gemma-4-31b-it` / `gemma-4-26b-a4b-it`):** Open-weight alternatives. The 31B version is slightly more comprehensive; the 26B provides faster response times. *(Note: online API endpoints for the Gemma-4 family currently exhibit lower stability compared to native Gemini endpoints).*
 *   **Final Audio Transcription (Whisper vs Online AI):**
-    By default, the app uses a local `whisper.cpp` executable to perform the final cleanup and alignment of the call transcript without relying on the cloud. However, **you can change this in the GUI** to use the online API instead (selecting *"Gemini at end"*). 
-    *   If you select the online option, the app uploads the isolated caller audio to `gemini-3-flash-preview` for final processing. 
+    By default, the app uses a local `whisper.cpp` executable for the final cleanup and alignment of the call transcript. You can change this in the GUI to use the online API instead (selecting *"Gemini at end"*), which uploads the isolated caller audio to `gemini-3-flash-preview` for final processing.
 
-### 5. Understanding Free Tier Limits in Real-World Calls
-If you choose to test the application on the Free Tier, the limits provided by Google are **more than sufficient** for a standard phone switchboard environment. Human speech is slow in terms of token generation:
+### 5. Free Tier Limits in Real-World Calls
+If you choose to test on the Free Tier, the limits are more than sufficient for a standard personal switchboard. Human speech is slow in terms of token generation:
 
-*   **Voice Limits (Gemini 3.1 Flash Live):** Google converts audio at a rate of 25 tokens per second (1,500 tokens per minute). The Free Tier limit is 150,000 Tokens Per Minute (TPM). You would need **100 active phone calls simultaneously** to hit this limit.
-*   **Text Limits (Gemma 4 / Gemini 3 Flash):** SPAM checks and transcript summaries require 1 or 2 HTTP requests per call. Even the strictest model limit (Gemma 4 at 30 Requests Per Minute) means you would need to receive **more than 15 incoming calls in a single 60-second window** before the API temporarily blocks the request.
-   
+*   **Voice Limits (Gemini 3.1 Flash Live):** Google converts audio at ~25 tokens per second (1,500 tokens/minute). The Free Tier limit is 150,000 TPM — you would need **100 active simultaneous calls** to hit this limit.
+*   **Text Limits (Gemma 4 / Gemini 3 Flash):** SPAM checks and transcript summaries require 1–2 HTTP requests per call. Even the strictest model limit (Gemma 4 at 30 RPM) means you would need more than **15 incoming calls within a single 60-second window** before the API temporarily throttles the request.
+
 ---
 
 ## 📂 Project Directory Structure
-
-Below is the directory scheme of the installation, showing where the main daemon, the SQLite database, the Whisper models, translations, and generated recordings are located:
 
 ```text
 /AI-Bluetooth-Phone-Assistant
@@ -281,15 +284,11 @@ Below is the directory scheme of the installation, showing where the main daemon
         └── whisper-cli         # Original compiled path of the whisper-cli executable
 ```
 
-### Directory Components Breakdown:
-*   **`switchboard.db`:** The SQL database created automatically at runtime. It holds the active calls history, whitelist/blacklist rules, and persistent GUI configuration settings.
-*   **`/models`:** This is where you place the offline GGML model binaries downloaded for `whisper.cpp`. 
-    *   *Tip:* For English-only installations, using the specialized English-only models (e.g., **`ggml-medium.en.bin`** or **`ggml-base.en.bin`**) provides significantly better performance, lower resource usage, and higher accuracy compared to their standard multilingual counterparts.
-*   **`/languages`:** Contains separate directory folders for each translation locale. Adding a new language (like the `/fr-FR` example) is as simple as creating a folder, copying the JSON files, and translating their text values while preserving the original JSON parameter keys.
-*   **`/recordings`:** This directory holds the audio files of the processed calls. For every call, it generates a clean mono caller track (used for post-call Whisper transcription) and a high-quality synchronized stereo master containing both speaker channels separated.
-
-### Data Storage & Sensitivity Note
-The presence of call audio, transcripts, and per-number history means this directory structure should be treated as sensitive local data. Real deployments should think about file permissions, disk encryption, backup scope, retention limits, and explicit deletion workflows rather than indefinite accumulation.
+**Key notes:**
+*   **`switchboard.db`:** Auto-created at runtime. Holds call history, whitelist/blacklist rules, and persistent GUI configuration settings.
+*   **`/models`:** For English-only installations, specialized English-only models (e.g., `ggml-medium.en.bin`) provide significantly better performance and accuracy than their multilingual counterparts.
+*   **`/languages`:** Adding a new language is as simple as creating a folder, copying the JSON files, and translating the text values while preserving the original JSON parameter keys.
+*   **`/recordings`:** Generates a clean mono caller track (for post-call Whisper transcription) and a synchronized stereo master with both speaker channels separated. Manage these files according to your privacy preferences.
 
 ---
 
@@ -312,62 +311,49 @@ python3 phone_assistant.py
 ```
 *You must provide your Gemini API key via the environment variable `GEMINI_API_KEY`.*
 
-### Deployment Caution
-The GUI makes the system highly configurable, but legal or privacy compliance does **not** come from merely having an option available in the interface. In live operation, disclosure, recording rules, retention, and personality constraints should be treated as deployment requirements, not decorative toggles.
-
 ### Suggested Greeting Pattern
-A safer default greeting for many jurisdictions is something close to:
+A safe and clear default greeting for most jurisdictions:
 
-> “Hello. You are speaking with an AI assistant. This call may be recorded and transcribed to handle your request. Please do not share unnecessary sensitive information.”
+> "Hello. You are speaking with an AI assistant. This call may be recorded and transcribed to handle your request. Please do not share unnecessary sensitive information."
 
 ---
 
 ## 🔒 Dynamic Call Memory & Context Isolation
 
-The application features a "Call Memory" system that allows the assistant to maintain continuity by referencing the last conversation when a caller calls back. It is important to understand how this is handled technically and its exact scope:
+The application features a "Call Memory" system that maintains continuity by referencing the last conversation when a caller calls back.
 
-### 1. Data Isolation & Sandbox Scope
+### Data Isolation & Sandbox Scope
 *   **Zero System Integration:** Neither the AI nor the application has access to your personal files, emails, calendar, contacts, or any other private operating system data.
 *   **Explicit Context Only:** The assistant's entire knowledge base is strictly sandboxed. It only knows what you explicitly configure in the Web GUI (such as the boss's name, expected calls, and business description) and the SQLite call logs database.
 
-### 2. Default Guarded Behavior (Concise & Neutral)
-By default, the assistant is configured with a **highly professional, guarded, and straight-to-the-point personality**. 
+### Default Guarded Behavior (Concise & Neutral)
+By default, the assistant is configured with a **highly professional, guarded, and straight-to-the-point personality**.
 *   It does not volunteer or reveal any information about the owner (such as last names, current location, or schedule).
 *   It focuses strictly on taking messages or managing hold requests, keeping interactions brief and direct.
 
-### 3. Personality Tuning & Behavioral Edge Cases
-While the default profile is highly secure, the Web GUI allows you to modify the assistant's personality. If you configure a highly talkative, jovial, or over-compliant personality, certain edge cases can theoretically occur in rare circumstances:
-*   **Over-Compliance:** A highly friendly personality might be more prone to becoming talkative if pressed by an inquisitive caller.
-*   **Shared Office Numbers (Caller ID Matching):** The system retrieves the last conversation based strictly on the caller's phone number (`SELECT transcript FROM calls WHERE number=?`). If multiple people call your assistant from the exact same corporate switchboard or shared office number, the background context of the second call will contain the transcript of the first call. Under a highly compliant custom personality, the AI could reference past details if the new caller explicitly asks about them.
-
-### 4. Safer Memory Practices
-If you plan to deploy this beyond hobby testing, a more cautious approach is usually better:
-*   keep only the minimum context required,
-*   separate short message memory from general free-form memory,
-*   expire old call history automatically where possible,
-*   avoid keeping sensitive context unless there is a clear operational reason,
-*   and do not assume that caller ID always maps to one real human being.
+### Shared Number Edge Case
+The system retrieves the last conversation based strictly on the caller's phone number (`SELECT transcript FROM calls WHERE number=?`). If multiple people call from the exact same corporate switchboard or shared office number, the background context of the second call will contain the transcript of the first. This is an expected technical limitation for shared lines.
 
 ---
 
-## 🏗️ Architecture & Design Philosophy (Why not just let the LLM do everything?)
+## 🏗️ Architecture & Design Philosophy
 
-At first glance, the main `phone_assistant.py` daemon is a dense, monolithic script containing numerous hardcoded rules, timeouts, and state trackers. A common question when working with advanced models like Gemini Live is: *Why build such complex "spaghetti" logic around the AI? Shouldn't a sufficiently prompted LLM handle edge cases naturally?*
+At first glance, the main `phone_assistant.py` daemon is a dense, monolithic script containing numerous hardcoded rules, timeouts, and state trackers. A common question when working with advanced models like Gemini Live is: *Why build such complex logic around the AI? Shouldn't a sufficiently prompted LLM handle edge cases naturally?*
 
-The answer is a definitive **no**. Relying purely on the LLM to manage a physical, real-time telephony environment is unreliable. This application was built using a **Monolithic State Machine** approach functioning as a robust Telephony Middleware. Here is why this architecture was absolutely necessary:
+The answer is a definitive **no**. Relying purely on the LLM to manage a physical, real-time telephony environment is unreliable. This application was built using a **Monolithic State Machine** approach functioning as a robust Telephony Middleware. Here is why:
 
 ### 1. LLMs Have No Perception of Time (The Silence Problem)
-Gemini Live generates text and audio based on input, but it has no internal clock. If a caller goes silent, the LLM simply waits indefinitely. The dense logic loops in this script act as the "nervous system", actively tracking seconds of inactivity (`time_without_user`) and artificially forcing the AI to prompt the user (e.g., *"Are you still there?"*) or initiating a grace-period termination. 
+Gemini Live generates text and audio based on input, but it has no internal clock. If a caller goes silent, the LLM simply waits indefinitely. The state machine actively tracks seconds of inactivity (`time_without_user`) and artificially forces the AI to prompt the user (e.g., *"Are you still there?"*) or initiating a grace-period termination.
 
 ### 2. Deterministic Guardrails vs. Probabilistic AI
-LLMs are probabilistic. If you instruct an AI via system prompt to *"Never hang up while the user is on hold"*, it will obey 90% of the time. But if background noise occurs, the AI might hallucinate a goodbye and hang up. 
+LLMs are probabilistic. If you instruct an AI via system prompt to *"Never hang up while the user is on hold"*, it will obey 90% of the time. But if background noise occurs, the AI might hallucinate a goodbye and hang up.
 This project implements a `CallPolicyEngine` (Deterministic Guardrails). When the AI attempts to use a tool (like `hangup`), the engine intercepts the request and verifies the hardcoded system state. If `self.on_hold == True`, the code explicitly denies the AI's request. **Business rules must be hardcoded; they cannot be left purely to neural network probability.**
 
 ### 3. The Fragmentation of Streaming APIs
 Real-time streaming APIs deliver text in fragmented chunks. The AI might send `"Good"`, and 500ms later send `"bye"`. If the code evaluated chunks individually to detect call-termination triggers, it would fail. The script employs an accumulator buffer (`_asst_chunk_buffer`) with a 2.5-second sliding window to properly reconstruct and evaluate semantic intent before triggering physical hardware actions.
 
 ### 4. Hardware Actuation & Hallucination Curation
-Gemini Live cannot physically hang up a Linux modem; the Python code must translate semantic AI intent into `oFono` D-Bus signals. Furthermore, live audio over Bluetooth HFP is prone to noise, causing Gemini to hallucinate bizarre foreign words. The integration of local `whisper.cpp` acts as an asynchronous post-processor to heal the database logs, ensuring the resulting transcripts are clean and usable for future memory injection.
+Gemini Live cannot physically hang up a Linux modem; the Python code must translate semantic AI intent into `oFono` D-Bus signals. Furthermore, live audio over Bluetooth HFP is prone to noise, causing Gemini to hallucinate bizarre foreign words. The integration of local `whisper.cpp` acts as an asynchronous post-processor to clean the database logs, ensuring transcripts are usable for future memory injection.
 
 In summary, this codebase bridges the gap between a "disembodied AI brain" and the physical realities of Bluetooth radio, acoustic noise, and strict telephony protocols.
 
