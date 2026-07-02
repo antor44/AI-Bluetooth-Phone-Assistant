@@ -132,62 +132,99 @@ Expanding native compatibility for non-Latin scripts, localized voice mapping, a
 
 ## 🛠️ Installation & Setup
 
-### 1. System Dependencies (Ubuntu 24.04 / Debian)
+### 1. Clone the Assistant Repository
+First, download this project to your machine and navigate into its folder. This folder will be the root for the rest of the installation:
+```bash
+git clone https://github.com/antor44/AI-Bluetooth-Phone-Assistant.git
+cd AI-Bluetooth-Phone-Assistant
+```
+
+### 2. System Dependencies
+
+**A) For standard desktop Linux (Ubuntu 24.04 / Debian):**
 You need PipeWire, WirePlumber, oFono, and BlueZ working together.
 ```bash
 sudo apt update
-sudo apt install ofono ofono-scripts bluez pipewire wireplumber libportaudio2 libasound2-dev pactl sqlite3
+sudo apt install ofono ofono-scripts bluez pipewire wireplumber libportaudio2 libasound2-dev pulseaudio-utils sqlite3
 ```
-*Note: Ensure your user is in the `bluetooth` and `audio` groups.*
 
-### 2. Python Environment
-Requires Python 3.10+.
+**B) For Minimal Systems (Orange Pi Zero 3 / Armbian / DietPi / Debian Trixie):**
+Since minimal distributions lack basic compilation, Bluetooth plugins, and audio routing tools out of the box, you must install the complete PipeWire stack, `rfkill`, and `build-essential`.
+```bash
+sudo apt update
+sudo apt install ofono ofono-scripts bluez pipewire wireplumber pipewire-pulse libportaudio2 libasound2-dev pulseaudio-utils sqlite3 libspa-0.2-bluetooth rtkit python3-venv rfkill build-essential cmake git
+```
+
+*Note: Ensure your user is in the `bluetooth` and `audio` groups in either system.*
+
+### 3. Python Environment
+Requires Python 3.10+. On modern Debian/Ubuntu systems (PEP 668), you must use a virtual environment:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install google-genai aiohttp streamlit
 ```
 
-### 3. Installing `whisper.cpp` (Hybrid Transcription)
+### 4. Installing `whisper.cpp` (Hybrid Transcription)
 This app uses a hybrid approach: Gemini Live for conversational speed, and a local `whisper.cpp` executable for post-call audio alignment and noise filtering.
 
-1. Clone the repository:
+1. Clone the `whisper.cpp` repository (you can do this in your home directory or outside the assistant folder):
    ```bash
+   cd ~
    git clone https://github.com/ggerganov/whisper.cpp.git
    cd whisper.cpp
    ```
 2. **Compile it:**
-   *   **CPU only:** `make`
+   *   **Using CMake (Recommended for Orange Pi/Minimal):**
+       ```bash
+       cmake -B build
+       cmake --build build -j --config Release
+       ```
+   *   **Using Make (Standard CPU):** `make`
    *   **NVIDIA GPU (CUDA):** `make GGML_CUDA=1`
-   *   *(Other accelerations like OpenVINO or Vulkan are supported — check the whisper.cpp documentation).*
-3. **Move the executable:**
-   Copy the compiled `whisper-cli` (or `main`) executable into the root directory of *this* application, or ensure it's in a `./build/bin/` subfolder.
+3. **Move the executables:**
+   Copy the compiled `whisper-cli` (or `main`) **AND** the `quantize` executable (required if you plan to use quantized models) into the root directory of the **AI-Bluetooth-Phone-Assistant** repository you cloned in Step 1.
 4. **Download Models:**
-   Create a `models/` folder in the root of this app and download the `.bin` models (e.g., `ggml-medium.bin`). The GUI allows you to select which model and quantization to use.
+   Create a `models/` folder in the root of the AI assistant app and download the `.bin` models (e.g., `ggml-medium.bin`). The GUI allows you to select which model and quantization to use.
 
-### 4. Bluetooth Mobile Pairing (Crucial for Ubuntu 24.04 / Modern GNOME)
-On modern Linux distributions like **Ubuntu 24.04**, pairing your mobile phone using the default desktop Settings GUI often fails to establish the necessary telephony integration. The desktop GUI frequently pairs devices solely as media audio players (A2DP), ignoring the **Hands-Free Profile (HFP)** required by `oFono` to detect incoming calls.
+### 5. Bluetooth Mobile Pairing
+On modern Linux distributions (like Ubuntu 24.04 GNOME) or minimal headless setups (like Armbian), pairing your mobile phone using desktop GUIs often fails to establish the necessary **Hands-Free Profile (HFP)** required by `oFono`. 
 
 To ensure your phone is recognized correctly, **pair, trust, and connect the device via the terminal using direct `bluetoothctl` commands**:
 
-1. **Find your phone's Bluetooth MAC address:**
-   Turn on Bluetooth on your phone and make it discoverable. Note your phone's MAC address (e.g., `50:2F:BB:89:0C:BE`).
-
-2. **Execute the pairing sequence directly from your terminal:**
-   Replace `XX:XX:XX:XX:XX:XX` with your phone's actual MAC address:
-
+1. **Unblock Bluetooth (Minimal/Headless systems only):**
+   If your Bluetooth chip is soft-blocked by power saving, unblock it first:
    ```bash
-   # 1. Pair the device (accept any numeric confirmation prompts on your phone)
-   bluetoothctl pair XX:XX:XX:XX:XX:XX
-
-   # 2. Trust the device so it can reconnect automatically in the future
-   bluetoothctl trust XX:XX:XX:XX:XX:XX
-
-   # 3. Establish the connection manually
-   bluetoothctl connect XX:XX:XX:XX:XX:XX
+   sudo /usr/sbin/rfkill unblock bluetooth
    ```
 
-3. **Verification through the Assistant:**
+2. **Find your phone's Bluetooth MAC address:**
+   Turn on Bluetooth on your phone and make it discoverable. Note your phone's MAC address (e.g., `50:2F:BB:89:0C:BE`).
+
+3. **Execute the pairing sequence directly from your terminal:**
+   Enter the utility by typing `bluetoothctl`. Inside the prompt, type:
+   ```text
+   power on
+   agent on
+   default-agent
+   scan on
+   ```
+   Wait for your phone to appear. Replace `XX:XX:XX:XX:XX:XX` with your phone's MAC address:
+   ```text
+   # 1. Pair the device (accept any numeric confirmation prompts on your phone)
+   pair XX:XX:XX:XX:XX:XX
+
+   # 2. Trust the device so it can reconnect automatically in the future
+   trust XX:XX:XX:XX:XX:XX
+
+   # 3. Establish the connection manually
+   connect XX:XX:XX:XX:XX:XX
+   
+   # Exit the utility
+   quit
+   ```
+
+4. **Verification through the Assistant:**
    Once paired, when you run the `phone_assistant.py` script, it will automatically attempt to detect and connect to your phone via oFono. Watch the terminal output for the status:
    *   `[OK] oFono modem ready: /hfp/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX` (If successful).
    *   `[INFO] oFono: no modems found. Ensure your phone is connected via Bluetooth.` (If it fails).
@@ -254,6 +291,7 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 ├── switchboard.db              # SQLite Database (Auto-generated on first launch)
 ├── requirements.txt            # Python package dependencies
 ├── whisper-cli                 # Compiled whisper.cpp executable (or symlink in root)
+├── quantize                    # Compiled quantize executable (for .bin models)
 │
 ├── /models                     # Whisper.cpp Model Folder
 │   ├── ggml-medium.bin         # Multilingual model (ideal for Spanish/bilingual setups)
