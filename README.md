@@ -174,24 +174,73 @@ pip install google-genai aiohttp streamlit
 ### 4. Installing `whisper.cpp` (Hybrid Transcription)
 This app uses a hybrid approach: Gemini Live for conversational speed, and a local `whisper.cpp` executable for post-call audio alignment and noise filtering.
 
-1. Clone the `whisper.cpp` repository (you can do this in your home directory or outside the assistant folder):
+To compile and optimize `whisper.cpp` for your hardware, follow these steps:
+
+1. **Clone the repository:**
+   Download the source code of `whisper.cpp` from your home directory:
    ```bash
    cd ~
    git clone https://github.com/ggerganov/whisper.cpp.git
    cd whisper.cpp
    ```
-2. **Compile it:**
-   *   **Using CMake (Recommended for Orange Pi/Minimal):**
-       ```bash
-       cmake -B build
-       cmake --build build -j --config Release
-       ```
-   *   **Using Make (Standard CPU):** `make`
-   *   **NVIDIA GPU (CUDA):** `make GGML_CUDA=1`
-3. **Move the executables:**
-   Copy the compiled `whisper-cli` (or `main`) **AND** the `quantize` executable (required if you plan to use quantized models) into the root directory of the **AI-Bluetooth-Phone-Assistant** repository you cloned in Step 1.
-4. **Download Models:**
-   Create a `models/` folder in the root of the AI assistant app and download the `.bin` models (e.g., `ggml-medium.bin`). The GUI allows you to select which model and quantization to use.
+
+2. **Compile the executables:**
+   Choose the option that matches your system architecture:
+
+   * **Option A: CPU-only Mode (Recommended for Orange Pi / Armbian / Standard CPU)**
+     Using CMake (Modern):
+     ```bash
+     cmake -B build
+     cmake --build build -j --config Release
+     ```
+     Or using standard Make:
+     ```bash
+     make -j
+     ```
+
+   * **Option B: NVIDIA GPU Acceleration (CUDA - High Concurrency)**
+     Requires the NVIDIA CUDA Toolkit.
+     Using CMake:
+     ```bash
+     cmake -B build -DGGML_CUDA=1
+     cmake --build build -j --config Release
+     ```
+     Or using standard Make:
+     ```bash
+     make GGML_CUDA=1 -j
+     ```
+
+3. **Move the binaries to the Assistant root folder:**
+   You must move the compiled transcriber and quantization binaries into the root folder of the `AI-Bluetooth-Phone-Assistant` directory so the Python daemon can call them directly:
+   ```bash
+   # Go to your AI-Bluetooth-Phone-Assistant folder
+   cd ~/AI-Bluetooth-Phone-Assistant
+
+   # Copy the main whisper executable
+   # (If compiled with CMake, copy from build/bin/. If compiled with Make, copy from root of whisper.cpp)
+   cp ~/whisper.cpp/build/bin/whisper-cli ./whisper-cli 2>/dev/null || cp ~/whisper.cpp/main ./whisper-cli
+
+   # Copy the quantization executable (required to run quantized .bin models like Q8_0)
+   cp ~/whisper.cpp/build/bin/whisper-quantize ./whisper-quantize 2>/dev/null || cp ~/whisper.cpp/quantize ./whisper-quantize
+   ```
+
+4. **Download and prepare Model Files:**
+   Create a `models/` directory in the root of the assistant app, download a standard GGML model, and optionally quantize it to save RAM:
+   ```bash
+   # Create the models folder inside the assistant directory
+   mkdir -p ~/AI-Bluetooth-Phone-Assistant/models
+
+   # Download the model (e.g. 'medium' which is great for Spanish/multilingual setups, or 'medium.en')
+   sh ~/whisper.cpp/models/download-ggml-model.sh medium
+
+   # Move the standard model file into your assistant models folder
+   mv ~/whisper.cpp/models/ggml-medium.bin ~/AI-Bluetooth-Phone-Assistant/models/
+
+   # (Optional but Highly Recommended) Quantize to Q8_0 to reduce VRAM/RAM consumption by 50%
+   # This speeds up inference and allows multiple concurrent sessions without crashes
+   cd ~/AI-Bluetooth-Phone-Assistant
+   ./whisper-quantize models/ggml-medium.bin models/ggml-medium-q8_0.bin q8_0
+   ```
 
 ### 5. Bluetooth Mobile Pairing
 On modern Linux distributions (like Ubuntu 24.04 GNOME) or minimal headless setups (like Armbian), pairing your mobile phone using desktop GUIs often fails to establish the necessary **Hands-Free Profile (HFP)** required by `oFono`. 
@@ -297,7 +346,7 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 ├── switchboard.db              # SQLite Database (Auto-generated on first launch)
 ├── requirements.txt            # Python package dependencies
 ├── whisper-cli                 # Compiled whisper.cpp executable (or symlink in root)
-├── quantize                    # Compiled quantize executable (for .bin models)
+├── whisper-quantize            # Compiled quantize executable (for .bin models)
 │
 ├── /models                     # Whisper.cpp Model Folder
 │   ├── ggml-medium.bin         # Multilingual model (ideal for Spanish/bilingual setups)
