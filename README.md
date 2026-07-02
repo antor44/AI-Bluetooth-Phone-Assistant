@@ -155,7 +155,13 @@ sudo apt update
 sudo apt install ofono ofono-scripts bluez pipewire wireplumber pipewire-pulse libportaudio2 libasound2-dev pulseaudio-utils sqlite3 libspa-0.2-bluetooth rtkit python3-venv rfkill build-essential cmake git
 ```
 
-*Note: Ensure your user is in the `bluetooth` and `audio` groups in either system.*
+**Crucial Permissions Step (Mandatory for non-root users):**
+If you run this assistant under a standard user account, you **must** grant it hardware permissions to communicate with Bluetooth and PipeWire audio. Run the following command and then reboot to apply the changes:
+```bash
+sudo usermod -aG bluetooth,audio $USER
+sudo reboot
+```
+*(Note: If you are logged in as `root` but configuring a different user account, replace `$USER` with that specific username, for example: `sudo usermod -aG bluetooth,audio dietpi`)*.
 
 ### 3. Python Environment
 Requires Python 3.10+. On modern Debian/Ubuntu systems (PEP 668), you must use a virtual environment:
