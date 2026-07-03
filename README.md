@@ -134,9 +134,8 @@ Expanding native compatibility for non-Latin scripts, localized voice mapping, a
 
 
 > ⚠️ **WARNING FOR SBC USERS (Orange Pi Zero 3, Raspberry Pi, etc.):**
-> **It is highly recommended to install a FULL Desktop version of Linux (e.g., Ubuntu 24.04 Desktop)** on your Single-Board Computer instead of a Minimal/Headless distribution like Armbian Minimal or DietPi. 
-> 
-> Minimal OS versions often have missing dependencies and struggle with proper PipeWire audio routing and Bluetooth pairing out of the box. To guarantee stability and avoid complex manual configurations, please install an OS with a full desktop environment, even if you plan to run the device remotely without a monitor.
+> SBCs not tested; for now, they might not be supported due to different system software.
+
 
 ### 1. Clone the Assistant Repository
 First, download this project to your machine and navigate into its folder:
@@ -147,19 +146,13 @@ cd AI-Bluetooth-Phone-Assistant
 
 ### 2. System Dependencies
 
-**A) For standard Desktop Linux (Ubuntu 24.04):**
+**For standard Desktop Linux (Ubuntu 24.04):**
 You need PipeWire, WirePlumber, oFono, and BlueZ working together.
 ```bash
 sudo apt update
-sudo apt install ofono ofono-scripts bluez pipewire wireplumber libportaudio2 libasound2-dev pulseaudio-utils sqlite3
+sudo apt install ofono ofono-scripts bluez pipewire wireplumber libportaudio2 libasound2-dev pulseaudio-utils sqlite3 python3.12-venv build-essential cmake
 ```
 
-**B) For Advanced/Headless Users (Only if strictly required):**
-If you run this on a minimal install (Debian Trixie / DietPi), you must explicitly install audio routing and permissions, and manually pair DBus interactively:
-```bash
-sudo apt update
-sudo apt install ofono ofono-scripts bluez pipewire wireplumber pipewire-pulse libportaudio2 libasound2-dev pulseaudio-utils sqlite3 libspa-0.2-bluetooth rtkit python3-venv rfkill build-essential cmake git dbus-user-session
-```
 **Crucial Permissions Step (Mandatory for non-root/Headless users):**
 ```bash
 sudo usermod -aG bluetooth,audio $USER
