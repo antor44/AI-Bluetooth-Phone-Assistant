@@ -132,8 +132,14 @@ Expanding native compatibility for non-Latin scripts, localized voice mapping, a
 
 ## 🛠️ Installation & Setup
 
+
+> ⚠️ **WARNING FOR SBC USERS (Orange Pi Zero 3, Raspberry Pi, etc.):**
+> **It is highly recommended to install a FULL Desktop version of Linux (e.g., Ubuntu 24.04 Desktop)** on your Single-Board Computer instead of a Minimal/Headless distribution like Armbian Minimal or DietPi. 
+> 
+> Minimal OS versions often have missing dependencies and struggle with proper PipeWire audio routing and Bluetooth pairing out of the box. To guarantee stability and avoid complex manual configurations, please install an OS with a full desktop environment, even if you plan to run the device remotely without a monitor.
+
 ### 1. Clone the Assistant Repository
-First, download this project to your machine and navigate into its folder. This folder will be the root for the rest of the installation:
+First, download this project to your machine and navigate into its folder:
 ```bash
 git clone https://github.com/antor44/AI-Bluetooth-Phone-Assistant.git
 cd AI-Bluetooth-Phone-Assistant
@@ -141,32 +147,29 @@ cd AI-Bluetooth-Phone-Assistant
 
 ### 2. System Dependencies
 
-**A) For standard desktop Linux (Ubuntu 24.04 / Debian):**
+**A) For standard Desktop Linux (Ubuntu 24.04):**
 You need PipeWire, WirePlumber, oFono, and BlueZ working together.
 ```bash
 sudo apt update
 sudo apt install ofono ofono-scripts bluez pipewire wireplumber libportaudio2 libasound2-dev pulseaudio-utils sqlite3
 ```
 
-**B) For Minimal Systems (Orange Pi Zero 3 / Armbian / DietPi / Debian Trixie):**
-Since minimal distributions lack basic compilation, Bluetooth plugins, and audio routing tools out of the box, you must install the complete PipeWire stack, `rfkill`, and `build-essential`.
+**B) For Advanced/Headless Users (Only if strictly required):**
+If you run this on a minimal install (Debian Trixie / DietPi), you must explicitly install audio routing and permissions, and manually pair DBus interactively:
 ```bash
 sudo apt update
-sudo apt install ofono ofono-scripts bluez pipewire wireplumber pipewire-pulse libportaudio2 libasound2-dev pulseaudio-utils sqlite3 libspa-0.2-bluetooth rtkit python3-venv rfkill build-essential cmake git
+sudo apt install ofono ofono-scripts bluez pipewire wireplumber pipewire-pulse libportaudio2 libasound2-dev pulseaudio-utils sqlite3 libspa-0.2-bluetooth rtkit python3-venv rfkill build-essential cmake git dbus-user-session
 ```
-
-**Crucial Permissions Step (Mandatory for non-root users):**
-If you run this assistant under a standard user account, you **must** grant it hardware permissions to communicate with Bluetooth and PipeWire audio. Run the following command and then reboot to apply the changes:
+**Crucial Permissions Step (Mandatory for non-root/Headless users):**
 ```bash
 sudo usermod -aG bluetooth,audio $USER
 sudo reboot
 ```
-*(Note: If you are logged in as `root` but configuring a different user account, replace `$USER` with that specific username, for example: `sudo usermod -aG bluetooth,audio dietpi`)*.
 
 ### 3. Python Environment
-Requires Python 3.10+. On modern Debian/Ubuntu systems (PEP 668), you must use a virtual environment:
+Requires Python 3.10+. On modern Debian/Ubuntu systems (PEP 668), use a virtual environment giving it access to system-site-packages so `dbus-python` functions properly:
 ```bash
-python3 -m venv venv
+python3 -m venv --system-site-packages venv
 source venv/bin/activate
 pip install google-genai aiohttp streamlit
 ```
@@ -177,7 +180,6 @@ This app uses a hybrid approach: Gemini Live for conversational speed, and a loc
 To compile and optimize `whisper.cpp` for your hardware, follow these steps:
 
 1. **Clone the repository:**
-   Download the source code of `whisper.cpp` from your home directory:
    ```bash
    cd ~
    git clone https://github.com/ggerganov/whisper.cpp.git
@@ -187,37 +189,25 @@ To compile and optimize `whisper.cpp` for your hardware, follow these steps:
 2. **Compile the executables:**
    Choose the option that matches your system architecture:
 
-   * **Option A: CPU-only Mode (Recommended for Orange Pi / Armbian / Standard CPU)**
-     Using CMake (Modern):
+   * **Option A: CPU-only Mode (Recommended for SBCs/Standard CPU)**
      ```bash
      cmake -B build
      cmake --build build -j --config Release
      ```
-     Or using standard Make:
-     ```bash
-     make -j
-     ```
+     Or using standard Make: `make -j`
 
-   * **Option B: NVIDIA GPU Acceleration (CUDA - High Concurrency)**
-     Requires the NVIDIA CUDA Toolkit.
-     Using CMake:
+   * **Option B: NVIDIA GPU Acceleration (CUDA)**
      ```bash
      cmake -B build -DGGML_CUDA=1
      cmake --build build -j --config Release
      ```
-     Or using standard Make:
-     ```bash
-     make GGML_CUDA=1 -j
-     ```
 
 3. **Move the binaries to the Assistant root folder:**
-   You must move the compiled transcriber and quantization binaries into the root folder of the `AI-Bluetooth-Phone-Assistant` directory so the Python daemon can call them directly:
    ```bash
    # Go to your AI-Bluetooth-Phone-Assistant folder
    cd ~/AI-Bluetooth-Phone-Assistant
 
    # Copy the main whisper executable
-   # (If compiled with CMake, copy from build/bin/. If compiled with Make, copy from root of whisper.cpp)
    cp ~/whisper.cpp/build/bin/whisper-cli ./whisper-cli 2>/dev/null || cp ~/whisper.cpp/main ./whisper-cli
 
    # Copy the quantization executable (required to run quantized .bin models like Q8_0)
@@ -225,65 +215,47 @@ To compile and optimize `whisper.cpp` for your hardware, follow these steps:
    ```
 
 4. **Download and prepare Model Files:**
-   Create a `models/` directory in the root of the assistant app, download a standard GGML model, and optionally quantize it to save RAM:
+   Create a `models/` directory in the root of the assistant app, download a GGML model, and (optionally) quantize it to save RAM:
    ```bash
-   # Create the models folder inside the assistant directory
    mkdir -p ~/AI-Bluetooth-Phone-Assistant/models
-
-   # Download the model (e.g. 'medium' which is great for Spanish/multilingual setups, or 'medium.en')
    sh ~/whisper.cpp/models/download-ggml-model.sh medium
-
-   # Move the standard model file into your assistant models folder
    mv ~/whisper.cpp/models/ggml-medium.bin ~/AI-Bluetooth-Phone-Assistant/models/
 
-   # (Optional but Highly Recommended) Quantize to Q8_0 to reduce VRAM/RAM consumption by 50%
-   # This speeds up inference and allows multiple concurrent sessions without crashes
+   # (Optional) Quantize to Q8_0 to drastically reduce VRAM/RAM consumption
    cd ~/AI-Bluetooth-Phone-Assistant
    ./whisper-quantize models/ggml-medium.bin models/ggml-medium-q8_0.bin q8_0
    ```
 
-### 5. Bluetooth Mobile Pairing
-On modern Linux distributions (like Ubuntu 24.04 GNOME) or minimal headless setups (like Armbian), pairing your mobile phone using desktop GUIs often fails to establish the necessary **Hands-Free Profile (HFP)** required by `oFono`. 
+### 5. Bluetooth Mobile Pairing (Crucial!)
+Establishing an active, unencrypted bidirectional Hand-Free profile between Linux and your smartphone requires explicit "agent authentication".
 
-To ensure your phone is recognized correctly, **pair, trust, and connect the device via the terminal using direct `bluetoothctl` commands**:
+*Desktop environments (GNOME/Ubuntu) typically handle the secure PIN confirmation automatically. However, if relying on the terminal, **you MUST explicitly approve the pin**.*
 
-1. **Unblock Bluetooth (Minimal/Headless systems only):**
-   If your Bluetooth chip is soft-blocked by power saving, unblock it first:
+1. **Launch `bluetoothctl` terminal tool:**
    ```bash
-   sudo /usr/sbin/rfkill unblock bluetooth
+   bluetoothctl
    ```
-
-2. **Find your phone's Bluetooth MAC address:**
-   Turn on Bluetooth on your phone and make it discoverable. Note your phone's MAC address (e.g., `50:2F:BB:89:0C:BE`).
-
-3. **Execute the pairing sequence directly from your terminal:**
-   Enter the utility by typing `bluetoothctl`. Inside the prompt, type:
+2. **Execute pairing sequence securely:**
    ```text
    power on
    agent on
    default-agent
    scan on
    ```
-   Wait for your phone to appear. Replace `XX:XX:XX:XX:XX:XX` with your phone's MAC address:
+   Wait for your phone to appear. Then run:
    ```text
-   # 1. Pair the device (accept any numeric confirmation prompts on your phone)
    pair XX:XX:XX:XX:XX:XX
+   ```
+   **CRUCIAL STEP:** In the terminal, it will ask `[agent] Confirm passkey XXXXXX (yes/no):`. **You MUST type `yes`** on the PC console *and immediately press Confirm/Accept on your Smartphone's screen at the same time!* Failing to validate the agent breaks the SCO voice sub-channel.
 
-   # 2. Trust the device so it can reconnect automatically in the future
+3. **Establish final trust:**
+   ```text
    trust XX:XX:XX:XX:XX:XX
-
-   # 3. Establish the connection manually
    connect XX:XX:XX:XX:XX:XX
-   
-   # Exit the utility
    quit
    ```
 
-4. **Verification through the Assistant:**
-   Once paired, when you run the `phone_assistant.py` script, it will automatically attempt to detect and connect to your phone via oFono. Watch the terminal output for the status:
-   *   `[OK] oFono modem ready: /hfp/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX` (If successful).
-   *   `[INFO] oFono: no modems found. Ensure your phone is connected via Bluetooth.` (If it fails).
-   *   *Tip:* If your phone is connected but not detected by oFono, restart the Bluetooth service (`sudo systemctl restart bluetooth`) to trigger a clean re-scan.
+> **WirePlumber config mismatch notice:** This script edits your routing config dynamically. If running older OS setups (Ubuntu 24.04), WirePlumber <0.5 configs reside in `.lua`. For bleeding-edge distros (Trixie/Ubuntu 24.10) using WirePlumber 0.5+, configs exist as `.conf`. This script modifies files transparently behind the scenes, mapping `backend="ofono"` to handle voice hardware effectively over Pulse/PipeWire constraints.
 
 ---
 
@@ -342,6 +314,7 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 ```text
 /AI-Bluetooth-Phone-Assistant
 ├── phone_assistant.py          # Main daemon (handles HFP, D-Bus, and Gemini Live)
+├── my_gui.sh                   # Main GUI Launcher Script (Network and Env aware)
 ├── gui.py                      # Web Control Panel (Streamlit GUI interface)
 ├── switchboard.db              # SQLite Database (Auto-generated on first launch)
 ├── requirements.txt            # Python package dependencies
@@ -350,7 +323,7 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 │
 ├── /models                     # Whisper.cpp Model Folder
 │   ├── ggml-medium.bin         # Multilingual model (ideal for Spanish/bilingual setups)
-│   └── ggml-medium.en.bin      # Highly optimized English-only model (recommended for English)
+│   └── ggml-medium-q8_0.bin    # Optimized low-RAM English model 
 │
 ├── /languages                  # Localization JSON files
 │   ├── /en-US                  # English Default Locale
@@ -362,24 +335,15 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 │   │   ├── assistant.json
 │   │   ├── gui.json
 │   │   └── spam.json
-│   │
-│   └── /fr-FR                  # [Example of adding a new language]
-│       ├── assistant.json      # Simply translate the text values while
-│       ├── gui.json            # keeping the exact same variable keys intact!
-│       └── spam.json
 │
 ├── /recordings                 # Call audio logs directory (Auto-created)
 │   ├── call_1234_client.wav    # Isolated caller audio (16kHz mono, used for offline Whisper)
 │   └── call_1234.wav           # Mixed synchronized call recording (24kHz stereo: Left=Caller, Right=AI)
-│
-└── /build                      # Optional whisper.cpp compilation tree (if cloned in the same folder)
-    └── /bin
-        └── whisper-cli         # Original compiled path of the whisper-cli executable
 ```
 
 **Key notes:**
 *   **`switchboard.db`:** Auto-created at runtime. Holds call history, whitelist/blacklist rules, and persistent GUI configuration settings.
-*   **`/models`:** For English-only installations, specialized English-only models (e.g., `ggml-medium.en.bin`) provide significantly better performance and accuracy than their multilingual counterparts.
+*   **`/models`:** For English-only installations, specialized English-only models (e.g., `ggml-medium.en.bin`) provide significantly better performance and accuracy than their multilingual counterparts. Use quantization explicitly if loading huge models inside an SBC logic framework.
 *   **`/languages`:** Adding a new language is as simple as creating a folder, copying the JSON files, and translating the text values while preserving the original JSON parameter keys.
 *   **`/recordings`:** Generates a clean mono caller track (for post-call Whisper transcription) and a synchronized stereo master with both speaker channels separated. Manage these files according to your privacy preferences.
 
@@ -387,22 +351,17 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 
 ## ⚙️ Configuration & GUI Options
 
-Run the Control Panel:
+Run the combined script inside your directory:
 ```bash
-streamlit run gui.py
+./my_gui.sh
 ```
+*Note: In headless (Server Mode/SBC), it natively outputs your Local Network URL (ex: `http://192.168.1.100:8501`) directly through `my_gui.sh --lan` / 0.0.0.0 detection so you can administer calls out of network boundaries properly.*
 
 ### GUI Highlights:
 *   **Call Log & Transcripts:** View full stereo recordings and transcripts. You can edit or delete specific phrases if the AI hallucinated.
 *   **SPAM Protection:** Configure external URLs to check phone numbers against SPAM databases in real-time. The AI analyzes the HTML of the provider using a text model to decide if it should hang up automatically.
 *   **Category Memory:** Define keywords (e.g., "doctor", "lawyer") and set specific wait times (hold limits) before the AI hangs up.
-*   **Audio Mode:** Toggle software echo suppression if your Bluetooth setup causes audio feedback.
-
-To start the actual phone assistant daemon:
-```bash
-python3 phone_assistant.py
-```
-*You must provide your Gemini API key via the environment variable `GEMINI_API_KEY`.*
+*   **Audio Mode:** Toggle software echo suppression if your Bluetooth setup causes audio feedback (which uses internal backend `both` default commands copying mic lines). Change settings per GUI layout if interference occurs across speakers!
 
 ### Suggested Greeting Pattern
 A safe and clear default greeting for most jurisdictions:
