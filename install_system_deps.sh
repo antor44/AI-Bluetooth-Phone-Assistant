@@ -11,7 +11,7 @@
 # Models downloaded : base  base.en  medium  medium.en
 #
 # Author: Antonio R.
-# Version: 1.2
+# Version: 1.5
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -28,6 +28,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 
 set -e
 
@@ -109,28 +110,24 @@ step "STEP 2/8 — Python and build tools"
 case "$PKG_MGR" in
     apt)
         pkg_install python3 python3-pip python3-venv \
-            build-essential cmake git pkg-config
+            build-essential cmake git pkg-config rfkill
         ;;
     dnf)
         pkg_install python3 python3-pip python3-virtualenv \
-            gcc gcc-c++ make cmake git pkgconf-pkg-config
+            gcc gcc-c++ make cmake git pkgconf-pkg-config rfkill
         ;;
     pacman)
-        pkg_install python python-pip cmake git base-devel pkgconf
+        pkg_install python python-pip cmake git base-devel pkgconf rfkill
         ;;
     zypper)
         pkg_install python3 python3-pip python3-virtualenv \
-            gcc gcc-c++ make cmake git pkg-config
+            gcc gcc-c++ make cmake git pkg-config rfkill
         ;;
 esac
-ok "Python and build tools installed."
+ok "Python, rfkill, and build tools installed."
 
 # ============================================================
 #  STEP 3 — D-Bus and GLib / GObject introspection
-#  Installed via system package manager — pip wheels for
-#  dbus-python and PyGObject frequently fail on Linux due to
-#  missing system headers. The apt/dnf/pacman packages are
-#  the reliable path on all distros.
 # ============================================================
 step "STEP 3/8 — D-Bus and GLib/GObject bindings"
 progress "Installing system-level dbus-python and PyGObject..."
@@ -154,12 +151,9 @@ case "$PKG_MGR" in
         ;;
 esac
 ok "D-Bus and GLib/GObject bindings installed."
-warn "Note: dbus-python / PyGObject are listed in requirements.txt for"
-warn "      documentation purposes. On Linux always use the system packages"
-warn "      installed above — do NOT reinstall them with pip."
 
 # ============================================================
-#  STEP 4 — Bluetooth + oFono  (HFP/HSP SCO for phone calls)
+#  STEP 4 — Bluetooth + oFono (HFP/HSP SCO for phone calls)
 # ============================================================
 step "STEP 4/8 — Bluetooth and oFono"
 progress "Installing BlueZ and oFono daemon..."
@@ -170,6 +164,13 @@ case "$PKG_MGR" in
     zypper) pkg_install bluez ofono ;;
 esac
 
+# Force unblock bluetooth in minimal OS
+if command -v rfkill &>/dev/null; then
+    sudo rfkill unblock bluetooth || true
+elif [ -f /usr/sbin/rfkill ]; then
+    sudo /usr/sbin/rfkill unblock bluetooth || true
+fi
+
 sudo systemctl enable ofono
 sudo systemctl start ofono
 ok "BlueZ installed."
@@ -177,38 +178,37 @@ ok "oFono daemon enabled and started."
 
 # ============================================================
 #  STEP 5 — Audio: PipeWire + WirePlumber + PulseAudio compat.
-#  pacat and pactl are called directly by phone_assistant.py
 # ============================================================
 step "STEP 5/8 — PipeWire / WirePlumber / PulseAudio"
 case "$PKG_MGR" in
     apt)
         pkg_install pipewire pipewire-pulse pipewire-audio \
-            wireplumber pulseaudio-utils
+            wireplumber pulseaudio-utils libspa-0.2-bluetooth rtkit
         ;;
     dnf)
         pkg_install pipewire pipewire-pulseaudio \
-            wireplumber pulseaudio-utils
+            wireplumber pulseaudio-utils rtkit
         ;;
     pacman)
-        pkg_install pipewire pipewire-pulse wireplumber
+        pkg_install pipewire pipewire-pulse wireplumber rtkit
         ;;
     zypper)
-        pkg_install pipewire pipewire-pulseaudio wireplumber
+        pkg_install pipewire pipewire-pulseaudio wireplumber rtkit
         ;;
 esac
 
-systemctl --user daemon-reload
+systemctl --user daemon-reload || true
 systemctl --user restart pipewire pipewire-pulse wireplumber || true
-ok "PipeWire and WirePlumber installed and restarted."
-ok "pacat / pactl available."
+ok "PipeWire, WirePlumber, and Bluetooth plugins installed."
 
 # ============================================================
-#  STEP 6 — whisper.cpp: auto-detect best acceleration + build
+#  STEP 6 — whisper.cpp: RAM-aware build & compile
 # ============================================================
 step "STEP 6/8 — Detecting hardware acceleration"
 
 ACCEL="CPU"
 CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF"
+ARCH=$(uname -m)
 
 # --- CUDA (NVIDIA GPU) ---
 if command -v nvidia-smi &>/dev/null || command -v nvcc &>/dev/null; then
@@ -228,8 +228,7 @@ if command -v nvidia-smi &>/dev/null || command -v nvcc &>/dev/null; then
     fi
 
 # --- Vulkan (AMD / Intel / NVIDIA) ---
-elif command -v vulkaninfo &>/dev/null \
-     || ldconfig -p 2>/dev/null | grep -q libvulkan; then
+elif (command -v vulkaninfo &>/dev/null || ldconfig -p 2>/dev/null | grep -q libvulkan) && [ "$ARCH" != "aarch64" ]; then
     CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_VULKAN=1"
     ACCEL="Vulkan"
 
@@ -238,14 +237,30 @@ elif ldconfig -p 2>/dev/null | grep -q libopenblas; then
     CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_BLAS=1"
     ACCEL="OpenBLAS"
 
-# --- CPU fallback ---
+# --- CPU / ARM NEON fallback ---
 else
-    warn "No GPU acceleration detected. Building for plain CPU."
-    ACCEL="CPU (no hardware acceleration)"
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        ACCEL="ARM NEON (Optimized ARM64 CPU)"
+    else
+        warn "No GPU acceleration detected. Building for plain CPU."
+        ACCEL="CPU (no hardware acceleration)"
+    fi
 fi
 
 ok "Selected acceleration : ${C_GREEN}${ACCEL}${C_RESET}"
 ok "cmake flags           : $CMAKE_FLAGS"
+
+# --- Defensive Coding: RAM limits to prevent compiler freezes on SBCs ---
+TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+if [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
+    JOBS=1
+    warn "Low RAM detected ($((TOTAL_RAM_KB / 1024)) MB). Limiting compiler to $JOBS core to prevent system freeze."
+elif [ "$TOTAL_RAM_KB" -lt 2500000 ]; then
+    JOBS=2
+    warn "Moderate RAM detected ($((TOTAL_RAM_KB / 1024)) MB). Limiting compiler to $JOBS cores to prevent system freeze."
+else
+    JOBS=$(nproc)
+fi
 
 # --- Clone / update whisper.cpp ---
 WHISPER_DIR="$HOME/whisper.cpp"
@@ -261,25 +276,30 @@ fi
 
 cd "$WHISPER_DIR"
 
-# --- Build ---
 progress "Running cmake configure..."
 # shellcheck disable=SC2086
 cmake -B build $CMAKE_FLAGS
 
-progress "Compiling whisper-cli using $(nproc) cores — this may take a few minutes..."
-cmake --build build --config Release -j"$(nproc)"
+progress "Compiling whisper-cli and quantize tools using $JOBS cores..."
+cmake --build build --config Release -j"$JOBS"
 
-# --- Install binary ---
+# --- Install binaries ---
 sudo ln -sf "$WHISPER_DIR/build/bin/whisper-cli" /usr/local/bin/whisper-cli
 ok "whisper-cli installed at /usr/local/bin/whisper-cli"
+
+# Also symlink the quantization binary
+if [ -f "$WHISPER_DIR/build/bin/whisper-quantize" ]; then
+    sudo ln -sf "$WHISPER_DIR/build/bin/whisper-quantize" /usr/local/bin/whisper-quantize
+    ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
+elif [ -f "$WHISPER_DIR/build/bin/quantize" ]; then
+    sudo ln -sf "$WHISPER_DIR/build/bin/quantize" /usr/local/bin/whisper-quantize
+    ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
+fi
 
 cd -
 
 # ============================================================
 #  STEP 7 — Download Whisper models
-#  Models are saved to $WHISPER_DIR/models/ and then symlinked
-#  into ./models/ (next to phone_assistant.py) so the assistant
-#  can find them at the expected path ./models/ggml-<name>.bin
 # ============================================================
 step "STEP 7/8 — Downloading Whisper models"
 
@@ -304,6 +324,12 @@ for i in "${!MODELS_TO_DOWNLOAD[@]}"; do
     if [ -f "$BIN_FILE" ]; then
         ok "Already downloaded — skipping: ggml-${MODEL}.bin"
     else
+        # Only download large medium models if RAM is sufficient
+        if { [ "$MODEL" = "medium" ] || [ "$MODEL" = "medium.en" ]; } && [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
+            warn "System has low RAM ($((TOTAL_RAM_KB / 1024)) MB). Skipping heavy medium model."
+            continue
+        fi
+
         progress "Downloading ggml-${MODEL}.bin ..."
         bash "$WHISPER_DIR/models/download-ggml-model.sh" "$MODEL"
 
@@ -314,59 +340,16 @@ for i in "${!MODELS_TO_DOWNLOAD[@]}"; do
         fi
     fi
 
-    # Symlink into the project ./models/ directory
-    if [ -f "$BIN_FILE" ] && [ ! -e "$LINK_FILE" ]; then
-        ln -sf "$BIN_FILE" "$LINK_FILE"
-        ok "Symlinked into project: models/ggml-${MODEL}.bin"
-    elif [ -L "$LINK_FILE" ]; then
-        ok "Symlink already exists: models/ggml-${MODEL}.bin"
+    # Ensure link is established
+    if [ -f "$BIN_FILE" ] && [ ! -f "$LINK_FILE" ]; then
+        ln -s "$BIN_FILE" "$LINK_FILE"
     fi
-
-    echo ""
 done
 
-ok "All models ready in $PROJECT_MODELS_DIR"
-
 # ============================================================
-#  STEP 8 — Python pip dependencies
-#
-#  RECOMMENDED: run this script with a venv that has access to
-#  system packages. This way dbus-python and PyGObject (installed
-#  above via apt/dnf/pacman) are visible inside the venv without
-#  needing to recompile them from pip wheels, which often fail on
-#  Linux due to missing system headers.
-#
-#    python3 -m venv --system-site-packages venv
-#    source venv/bin/activate
-#    pip install -r requirements.txt
-#
-#  Other supported environments:
-#
-#  System Python (Ubuntu 24.04+)
-#    pip requires --break-system-packages outside a venv (PEP 668).
-#    The script handles this automatically.
-#
-#  Plain venv (isolated, no --system-site-packages)
-#    Works for google-genai / aiohttp / streamlit, but dbus-python
-#    and PyGObject must be available via system packages (already
-#    installed in step 3 above).
-#
-#  Conda / Anaconda
-#    The --break-system-packages flag is not needed and is silently
-#    ignored via the fallback. Watch out for protobuf version
-#    conflicts with other packages in the base environment; using
-#    a dedicated conda env avoids this:
-#      conda create -n phone_assistant python=3.12 -y
-#      conda activate phone_assistant
-#      pip install -r requirements.txt
-#
-#  protobuf is pinned to >=5.26.1,<7.0.0 to satisfy both:
-#    streamlit     (requires protobuf < 7)
-#    grpcio-status (requires protobuf >= 5.26.1)
-#  Without this pin, pip may downgrade protobuf and break google-genai.
+#  STEP 8 — Python pip dependencies (Using --system-site-packages)
 # ============================================================
 step "STEP 8/8 — Python pip dependencies"
-progress "Installing google-genai, aiohttp, streamlit..."
 
 PIP_PACKAGES=(
     "google-genai"
@@ -375,16 +358,25 @@ PIP_PACKAGES=(
     "protobuf>=5.26.1,<7.0.0"
 )
 
-# Try with --break-system-packages first (required on Ubuntu 24.04+
-# outside a venv). Falls back without the flag for Conda/venv/other
-# distros that do not enforce PEP 668.
-if pip install --break-system-packages "${PIP_PACKAGES[@]}" 2>/dev/null; then
-    ok "pip packages installed (system Python)."
-elif pip install "${PIP_PACKAGES[@]}"; then
-    ok "pip packages installed (Conda/venv)."
+# MANDATORY: We use --system-site-packages so the venv can inherit the pre-compiled 
+# dbus-python and PyGObject modules installed via APT in Step 3.
+if [ ! -d "venv" ]; then
+    progress "Creating a Python virtual environment with system package access (venv)..."
+    python3 -m venv --system-site-packages venv
+fi
+
+# Activate environment and install dependencies
+# shellcheck disable=SC1091
+source venv/bin/activate
+
+progress "Updating pip..."
+pip3 install --upgrade pip --quiet
+
+progress "Installing packages into virtual environment..."
+if pip3 install "${PIP_PACKAGES[@]}"; then
+    ok "Python pip dependencies successfully installed inside venv."
 else
-    err "pip install failed. Run manually:"
-    err "  pip install ${PIP_PACKAGES[*]}"
+    err "pip installation failed."
 fi
 
 # ============================================================
@@ -396,23 +388,24 @@ echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete!${C_RE
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  Acceleration : ${C_GREEN}${ACCEL}${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  whisper-cli  : /usr/local/bin/whisper-cli"
+echo -e "${C_BLUE}║${C_RESET}  quantize     : /usr/local/bin/whisper-quantize"
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}Models downloaded:${C_RESET}"
 for MODEL in "${MODELS_TO_DOWNLOAD[@]}"; do
     BIN="$PROJECT_MODELS_DIR/ggml-${MODEL}.bin"
     if [ -e "$BIN" ]; then
         echo -e "${C_BLUE}║${C_RESET}    ${C_GREEN}✔${C_RESET}  models/ggml-${MODEL}.bin"
-    else
-        echo -e "${C_BLUE}║${C_RESET}    ${C_RED}✘${C_RESET}  models/ggml-${MODEL}.bin  (download failed)"
     fi
 done
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}Next steps:${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  1. Set your Gemini API key:"
+echo -e "${C_BLUE}║${C_RESET}  1. Activate your virtual environment:"
+echo -e "${C_BLUE}║${C_RESET}       source venv/bin/activate"
+echo -e "${C_BLUE}║${C_RESET}  2. Set your Gemini API key:"
 echo -e "${C_BLUE}║${C_RESET}       export GEMINI_API_KEY='your_key_here'"
-echo -e "${C_BLUE}║${C_RESET}  2. Pair your phone via Bluetooth (HFP profile)"
-echo -e "${C_BLUE}║${C_RESET}  3. Launch the assistant:"
+echo -e "${C_BLUE}║${C_RESET}  3. Pair your phone via Bluetooth (HFP profile)"
+echo -e "${C_BLUE}║${C_RESET}  4. Launch the assistant:"
 echo -e "${C_BLUE}║${C_RESET}       python3 phone_assistant.py"
-echo -e "${C_BLUE}║${C_RESET}  4. Launch the Streamlit dashboard (new terminal):"
+echo -e "${C_BLUE}║${C_RESET}  5. Launch the Streamlit dashboard (new terminal):"
 echo -e "${C_BLUE}║${C_RESET}       streamlit run gui.py"
 echo -e "${C_BLUE}╚══════════════════════════════════════════════════════╝${C_RESET}"

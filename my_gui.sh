@@ -1,8 +1,6 @@
-#!/bin/bash
-
-# my_gui.sh v. 1.0 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 1.5 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
-# daemon in an emoji-supported terminal, and starts the Streamlit Control Panel.
+# daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #
 # Copyright (c) 2026 Antonio R.
 #
@@ -33,6 +31,17 @@ PREFERRED_TERMINALS=("xfce4-terminal" "gnome-terminal" "mate-terminal")
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# ---------------------------------------------------------------------------
+# ARGUMENT PARSING
+# ---------------------------------------------------------------------------
+FORCE_HEADLESS=0
+for arg in "$@"; do
+    if [ "$arg" == "--headless" ] || [ "$arg" == "--lan" ]; then
+        FORCE_HEADLESS=1
+        echo "[INFO] Manual argument detected: Forcing Headless/LAN mode."
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # API KEY EXTRACTION (Bypassing non-interactive shell limitations)
@@ -116,7 +125,7 @@ done
 DAEMON_CMD="export GEMINI_API_KEY=\"$GEMINI_API_KEY\"; cd \"$SCRIPT_DIR\"; $ACTIVATION_CMD; python3 phone_assistant.py; echo \"\"; echo \"[Process Stopped] Press Enter to exit...\"; read"
 
 # Launch the daemon
-if [ -n "$SELECTED_TERMINAL" ]; then
+if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0" ]; then
     echo "[INFO] Found emoji-supported terminal: $SELECTED_TERMINAL"
     echo "[INFO] Starting AI Phone Assistant daemon in a new window..."
     
@@ -135,8 +144,12 @@ if [ -n "$SELECTED_TERMINAL" ]; then
             ;;
     esac
 else
-    echo "[WARNING] No preferred emoji-supported terminal found."
-    echo "[INFO] Launching the AI Phone Assistant daemon in the background of the current terminal..."
+    if [ "$FORCE_HEADLESS" = "1" ]; then
+        echo "[INFO] Headless mode forced. Skipping GUI terminal launch."
+    else
+        echo "[WARNING] No desktop environment or preferred terminal found (Headless Mode)."
+    fi
+    echo "[INFO] Launching the AI Phone Assistant daemon in the background..."
     
     # Run in the background of the current terminal
     export GEMINI_API_KEY="$GEMINI_API_KEY"
@@ -148,4 +161,18 @@ fi
 
 # Launch the Streamlit application in the current terminal
 echo "[INFO] Starting AI Switchboard Web Interface..."
-streamlit run gui.py
+
+# If running on a headless server (or if --headless/--lan is passed), bind to 0.0.0.0 for LAN access
+if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
+    LOCAL_IP=$(hostname -I | awk '{print $1}')
+    if [ -z "$LOCAL_IP" ]; then
+        LOCAL_IP="YOUR_DEVICE_IP"
+    fi
+    echo "[INFO] Headless/LAN server mode enabled. Streamlit configured for Remote LAN access."
+    echo "[INFO] ===================================================================="
+    echo "[INFO] Open your PC browser and go to:  http://$LOCAL_IP:8501"
+    echo "[INFO] ===================================================================="
+    streamlit run gui.py --server.headless=true --server.address=0.0.0.0
+else
+    streamlit run gui.py
+fi
