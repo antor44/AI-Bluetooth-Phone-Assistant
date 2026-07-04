@@ -229,7 +229,7 @@ To compile and optimize `whisper.cpp` for your hardware, follow these steps:
 ### 5. Bluetooth Mobile Pairing (Crucial!)
 Establishing an active, unencrypted bidirectional Hand-Free profile between Linux and your smartphone requires explicit "agent authentication".
 
-*Desktop environments (GNOME/Ubuntu) typically fail to handle the secure PIN confirmation automatically. However, if relying on the terminal, ** you MUST explicitly approve the PIN **.*
+*Desktop environments (GNOME/Ubuntu) typically fail to handle the secure PIN confirmation automatically. However, if relying on the terminal, **you MUST explicitly approve the PIN**.*
 
 1. **Launch `bluetoothctl` terminal tool:**
    ```bash
