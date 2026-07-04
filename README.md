@@ -134,7 +134,7 @@ Expanding native compatibility for non-Latin scripts, localized voice mapping, a
 
 
 > ⚠️ **WARNING FOR SBC USERS (Orange Pi Zero 3, Raspberry Pi, etc.):**
-> SBCs not tested; for now, they might not be supported due to different system software.
+> SBCs not tested; for now, they might not be supported due to different system software/hardware.
 
 
 ### 1. Clone the Assistant Repository
@@ -190,6 +190,17 @@ To compile and optimize `whisper.cpp` for your hardware, follow these steps:
      Or using standard Make: `make -j`
 
    * **Option B: NVIDIA GPU Acceleration (CUDA)**
+      - **Requirements**: Install CUDA toolkit (https://developer.nvidia.com/cuda-downloads).  
+      - **Compilation**:  
+      ```bash
+      cmake -B build -DGGML_CUDA=1
+      cmake --build build -j --config Release
+      ```
+        - For newer GPUs (e.g., RTX 5000+ series):  
+      ```bash
+      cmake -B build -DGGML_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="86"
+      cmake --build build -j --config Release
+     
      ```bash
      cmake -B build -DGGML_CUDA=1
      cmake --build build -j --config Release
@@ -222,7 +233,7 @@ To compile and optimize `whisper.cpp` for your hardware, follow these steps:
 ### 5. Bluetooth Mobile Pairing (Crucial!)
 Establishing an active, unencrypted bidirectional Hand-Free profile between Linux and your smartphone requires explicit "agent authentication".
 
-*Desktop environments (GNOME/Ubuntu) typically handle the secure PIN confirmation automatically. However, if relying on the terminal, **you MUST explicitly approve the pin**.*
+*Desktop environments (GNOME/Ubuntu) typically fail to handle the secure PIN confirmation automatically. However, if relying on the terminal, ** you MUST explicitly approve the PIN **.*
 
 1. **Launch `bluetoothctl` terminal tool:**
    ```bash
@@ -336,7 +347,7 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 
 **Key notes:**
 *   **`switchboard.db`:** Auto-created at runtime. Holds call history, whitelist/blacklist rules, and persistent GUI configuration settings.
-*   **`/models`:** For English-only installations, specialized English-only models (e.g., `ggml-medium.en.bin`) provide significantly better performance and accuracy than their multilingual counterparts. Use quantization explicitly if loading huge models inside an SBC logic framework.
+*   **`/models`:** For English-only installations, specialized English-only models (e.g., `ggml-medium.en.bin`) provide significantly better performance and accuracy than their multilingual counterparts.
 *   **`/languages`:** Adding a new language is as simple as creating a folder, copying the JSON files, and translating the text values while preserving the original JSON parameter keys.
 *   **`/recordings`:** Generates a clean mono caller track (for post-call Whisper transcription) and a synchronized stereo master with both speaker channels separated. Manage these files according to your privacy preferences.
 
