@@ -323,7 +323,7 @@ If you choose to test on the Free Tier, the limits are more than sufficient for 
 │
 ├── /models                     # Whisper.cpp Model Folder
 │   ├── ggml-medium.bin         # Multilingual model (ideal for Spanish/bilingual setups)
-│   └── ggml-medium-q8_0.bin    # Optimized low-RAM English model 
+│   └── ggml-base.en-q8_0.bin   # Highly optimized low-RAM English model 
 │
 ├── /languages                  # Localization JSON files
 │   ├── /en-US                  # English Default Locale
