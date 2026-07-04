@@ -200,11 +200,7 @@ To compile and optimize `whisper.cpp` for your hardware, follow these steps:
       ```bash
       cmake -B build -DGGML_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="86"
       cmake --build build -j --config Release
-     
-     ```bash
-     cmake -B build -DGGML_CUDA=1
-     cmake --build build -j --config Release
-     ```
+      ```
 
 3. **Move the binaries to the Assistant root folder:**
    ```bash
