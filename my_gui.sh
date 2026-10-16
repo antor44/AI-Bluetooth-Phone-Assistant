@@ -1,4 +1,5 @@
-# my_gui.sh v. 1.5 - AI Switchboard Web GUI & Daemon Launcher
+#!/usr/bin/env bash
+# my_gui.sh v. 1.6 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #
@@ -25,6 +26,10 @@ set -e
 # SAFETY TRAP
 trap 'echo ""; echo "[FATAL ERROR] The launcher terminated unexpectedly."; echo "Press Enter to close this window..."; read' ERR
 
+# Ensure PipeWire and D-Bus user session variables are exported in SSH/headless sessions
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+
 # User Configurable List: Standard Linux terminals with proper Emoji/UTF-8 support.
 PREFERRED_TERMINALS=("xfce4-terminal" "gnome-terminal" "mate-terminal")
 
@@ -46,12 +51,10 @@ done
 # ---------------------------------------------------------------------------
 # API KEY EXTRACTION (Bypassing non-interactive shell limitations)
 # ---------------------------------------------------------------------------
-# If the key is not already set, we grep it directly from common config files.
 if [ -z "$GEMINI_API_KEY" ]; then
     echo "[INFO] Searching for GEMINI_API_KEY in user profile files..."
     for file in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zshrc"; do
         if [ -f "$file" ]; then
-            # Extract the line containing the key, strip 'export', quotes, and spaces
             EXTRACTED_KEY=$(grep -E "^(export )?GEMINI_API_KEY=" "$file" | tail -n 1 | cut -d'=' -f2- | tr -d '"' | tr -d "'")
             if [ -n "$EXTRACTED_KEY" ]; then
                 export GEMINI_API_KEY="$EXTRACTED_KEY"
@@ -87,7 +90,7 @@ for dir in "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/miniforge3" "$HOME/mambaf
 done
 
 # 3. ENVIRONMENT ACTIVATION: Activate the detected environment
-ACTIVATION_CMD="true" # Default fallback (do nothing)
+ACTIVATION_CMD="true"
 
 if [ -n "$VENV_DIR" ]; then
     echo "[INFO] Activating local Python virtual environment ($VENV_DIR)..."
@@ -121,8 +124,7 @@ for term in "${PREFERRED_TERMINALS[@]}"; do
 done
 
 # Command to execute inside the chosen terminal
-# We explicitly inject the extracted GEMINI_API_KEY into the new terminal's environment
-DAEMON_CMD="export GEMINI_API_KEY=\"$GEMINI_API_KEY\"; cd \"$SCRIPT_DIR\"; $ACTIVATION_CMD; python3 phone_assistant.py; echo \"\"; echo \"[Process Stopped] Press Enter to exit...\"; read"
+DAEMON_CMD="export GEMINI_API_KEY=\"$GEMINI_API_KEY\"; export XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\"; export DBUS_SESSION_BUS_ADDRESS=\"$DBUS_SESSION_BUS_ADDRESS\"; cd \"$SCRIPT_DIR\"; $ACTIVATION_CMD; python3 phone_assistant.py; echo \"\"; echo \"[Process Stopped] Press Enter to exit...\"; read"
 
 # Launch the daemon
 if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0" ]; then
@@ -151,7 +153,6 @@ else
     fi
     echo "[INFO] Launching the AI Phone Assistant daemon in the background..."
     
-    # Run in the background of the current terminal
     export GEMINI_API_KEY="$GEMINI_API_KEY"
     python3 phone_assistant.py &
     DAEMON_PID=$!
@@ -162,7 +163,6 @@ fi
 # Launch the Streamlit application in the current terminal
 echo "[INFO] Starting AI Switchboard Web Interface..."
 
-# If running on a headless server (or if --headless/--lan is passed), bind to 0.0.0.0 for LAN access
 if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
     LOCAL_IP=$(hostname -I | awk '{print $1}')
     if [ -z "$LOCAL_IP" ]; then

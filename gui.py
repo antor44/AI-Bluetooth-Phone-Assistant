@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations and logs
 Displays transcripts, handles settings configuration, and manages category logic.
 
 Author: Antonio R.
-Version: 1.2
+Version: 1.6
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -148,20 +148,22 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.components.v1.html(
-    """
-    <script>
-    const runLiveRefresh = () => {
-        setTimeout(() => {
-            window.parent.document.querySelector('section.main').click();
-            runLiveRefresh();
-        }, 3000);
-    };
-    runLiveRefresh();
-    </script>
-    """,
-    height=0
-)
+_live_refresh_html = """
+<script>
+const runLiveRefresh = () => {
+    setTimeout(() => {
+        window.parent.document.querySelector('section.main').click();
+        runLiveRefresh();
+    }, 3000);
+};
+runLiveRefresh();
+</script>
+"""
+
+if hasattr(st, "iframe"):
+    st.iframe(_live_refresh_html, height=1)
+else:
+    st.components.v1.html(_live_refresh_html, height=0)
 
 pending_lang = st.session_state.get("pending_lang", None)
 target_trans = load_language_data(pending_lang, "gui.json") if pending_lang else trans
@@ -228,7 +230,6 @@ with col1:
             id_call, number, date, spam_score, transcript, audio_path, tag, client_name, company = call
 
             in_progress_str = trans.get("ui_in_progress", "IN PROGRESS")
-            # The "in progress" badge reflects the call's real status stored in the tag column.
             if tag and tag.strip() == in_progress_str:
                 prefix = in_progress_str
             else:
@@ -430,7 +431,6 @@ with col3:
 
     st.write("---")
     
-    # Auto-Cleanup logic properly styled and isolated in the settings column
     st.markdown(f"**🗑️ {trans.get('ui_cleanup_title', 'Auto-Cleanup Data')}**")
     with st.container(border=True):
         cl1, cl2 = st.columns(2)
@@ -451,7 +451,6 @@ with col3:
                             if mtime < cutoff_audio:
                                 try: os.remove(fpath); deleted_audio += 1
                                 except Exception: pass
-                # Also clear audio_path in DB for removed files
                 conn_cl = sqlite3.connect(DB_PATH)
                 all_audio = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
                 for row in all_audio:

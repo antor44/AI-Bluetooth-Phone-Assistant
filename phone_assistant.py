@@ -5,7 +5,7 @@ The application detects incoming calls via D-Bus/oFono, manages audio routing th
 transcribes caller intent, applies dynamic security policies, and interacts in real-time.
 
 Author: Antonio R.
-Version: 1.2
+Version: 1.6
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -123,7 +123,7 @@ def get_default_sink() -> str:
         return res.stdout.strip() if res.returncode == 0 else ""
     except Exception: return ""
 
-MODEL_LIVE  = "gemini-3.1-flash-live-preview"
+MODEL_LIVE  = "gemini-3.8-live"
 API_KEY = os.environ.get("GEMINI_API_KEY")
 
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
@@ -216,25 +216,51 @@ def ensure_system_dependencies() -> None:
     wp4_dir = os.path.join(home_dir, ".config", "wireplumber", "bluetooth.lua.d")
     wp4_file = os.path.join(wp4_dir, "50-bluez-config.lua")
     wp4_content = """bluez_monitor.properties = {
+  ["with-logind"]             = false,
   ["bluez5.enable-sbc-xq"]    = true,
-  ["bluez5.enable-msbc"]      = true,
+  ["bluez5.enable-msbc"]      = false,
   ["bluez5.enable-hw-volume"] = true,
   ["bluez5.headset-roles"]    = "[ hsp_hs hsp_ag hfp_hf hfp_ag ]",
-  ["bluez5.hfphsp-backend"]   = "native"
+  ["bluez5.hfphsp-backend"]   = "ofono"
 }"""
 
     wp5_dir = os.path.join(home_dir, ".config", "wireplumber", "wireplumber.conf.d")
     wp5_file = os.path.join(wp5_dir, "50-bluez-config.conf")
-    wp5_content = """monitor.bluez.properties = {
+    wp5_content = """wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+
+monitor.bluez.properties = {
   bluez5.enable-sbc-xq    = true
-  bluez5.enable-msbc      = true
+  bluez5.enable-msbc      = false
   bluez5.enable-hw-volume = true
-  bluez5.headset-roles    = [ hsp_hs hsp_ag hfp_hf hfp_ag ]
-  bluez5.hfphsp-backend   = "native"
+  bluez5.roles            = [ a2dp_sink a2dp_source hsp_hs hsp_ag hfp_hf hfp_ag ]
+  bluez5.hfphsp-backend   = "ofono"
 }"""
 
+    wp_alsa_dir = os.path.join(home_dir, ".config", "wireplumber", "main.lua.d")
+    wp_alsa_file = os.path.join(wp_alsa_dir, "51-disable-onboard-alsa.lua")
+    wp_alsa_content = """if alsa_monitor and alsa_monitor.rules then
+  table.insert(alsa_monitor.rules, {
+    matches = {
+      {
+        { "device.name", "matches", "alsa_card.platform-*" },
+      },
+    },
+    apply_properties = {
+      ["device.disabled"] = true,
+    },
+  })
+end"""
+
     config_changed = False
-    for wp_dir, wp_file, content in [(wp4_dir, wp4_file, wp4_content), (wp5_dir, wp5_file, wp5_content)]:
+    for wp_dir, wp_file, content in [
+        (wp4_dir, wp4_file, wp4_content),
+        (wp5_dir, wp5_file, wp5_content),
+        (wp_alsa_dir, wp_alsa_file, wp_alsa_content)
+    ]:
         os.makedirs(wp_dir, exist_ok=True)
         needs_write = True
         if os.path.exists(wp_file):
@@ -244,10 +270,11 @@ def ensure_system_dependencies() -> None:
             with open(wp_file, "w") as f: f.write(content)
             config_changed = True
 
-    blocker = os.path.join(wp4_dir, "51-no-autolink.lua")
-    if os.path.exists(blocker):
-        os.remove(blocker)
-        config_changed = True
+    for extra_lua in ["51-no-autolink.lua", "52-headless-fix.lua"]:
+        extra_path = os.path.join(wp4_dir, extra_lua)
+        if os.path.exists(extra_path):
+            os.remove(extra_path)
+            config_changed = True
 
     if config_changed: print(f"{_C_SERVER}{ICON_OK}WirePlumber configurations applied.{_R}")
 
@@ -257,6 +284,7 @@ def ensure_system_dependencies() -> None:
 Description=PipeWire Null Sink for AI Switchboard
 After=pipewire-pulse.service
 Requires=pipewire-pulse.service
+PartOf=pipewire-pulse.service
 
 [Service]
 Type=oneshot
@@ -752,7 +780,7 @@ class PhoneAssistant:
                     sink = get_default_sink()
                     cmd = ["pacat", "--format=s16le", "--rate=16000", "--channels=1", "--raw"]
                     if sink: cmd.append(f"--device={sink}")
-                    else: cmd.append("--device=alsa_output.pci-0000_10_00.6.analog-stereo")
+                    else: cmd.append("--device=auto_null")
                     self.caller_pacat = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
             else:
                 if self.caller_pacat and self.caller_pacat.poll() is None:
@@ -775,16 +803,15 @@ class PhoneAssistant:
                         
                         # Disconnect local PC microphone from Bluetooth outputs to prevent audio leaks and echo
                         if not allow_pc_mic and "bluez_output" in dst_name and ("alsa_input" in src_name or "pci" in src_name or "usb" in src_name):
-                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
                         
                         # Disconnect Bluetooth input from PC speakers if requested
                         if "bluez_input" in src_name and mode not in ["both", "caller"]:
                             sink = get_default_sink()
                             if ("alsa_output" in dst_name) or (sink and sink in dst_name):
-                                await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             except Exception: pass
             
-            # FIX: Relax polling to 2.0s to prevent aggressive audio probing which causes in-call clicking
             await asyncio.sleep(2.0)
 
         for pacat in [self.caller_pacat, self.asst_pacat]:
@@ -842,11 +869,9 @@ class PhoneAssistant:
             msg_fmt = self.assistant_data.get("ui_saved_message", "Message from {name}: {message}")
             final_msg = msg_fmt.format(name=name, message=message)
             
-            # Add the message to the internal memory with a highlighted format
             recado_visual = f"\n\n📝 [{get_timestamp()}]: [SYSTEM]: *** {final_msg} ***"
             self.accumulated_transcript += recado_visual
             
-            # Update the database safely
             self.update_transcription_db()
             
             print(f"\n{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[DB] {final_msg}{_R}")
@@ -884,7 +909,6 @@ class PhoneAssistant:
             if self.hanging_up:
                 await asyncio.sleep(0.1); continue
 
-            # FIX CLICKS: Check if Bluetooth node exists using native pw-link to prevent audio graph crashes
             check_proc = await asyncio.create_subprocess_exec("pw-link", "-o", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             out, _ = await check_proc.communicate()
             if base_target not in out.decode("utf-8"):
@@ -1004,7 +1028,6 @@ class PhoneAssistant:
         try:
             while self.running or not self.audio_out_queue.empty():
                 
-                # FIX CLICKS: If handset is in Takeover, do not force the player. Flush the queue quietly.
                 if not getattr(self, "mic_node_active", True):
                     try:
                         while True:
@@ -1101,7 +1124,6 @@ class PhoneAssistant:
             if pat in self.accumulated_transcript:
                 self.accumulated_transcript = self.accumulated_transcript.replace(pat, f"🗣 [{turn_ts}]: {combined}")
             
-            # Visual update only for console output (does not affect state logic)
             _C_WHISPER = "\033[33m" if SUPPORTS_COLOR else ""
             whisper_display = whisper_txt if wv else "[Noise Filtered]"
             print(f"\n{_C_WHISPER}· [Whisper/{turn_ts}]: {whisper_display}{_R}", flush=True)
@@ -1212,11 +1234,9 @@ class PhoneAssistant:
         while self.running:
             # Evaluate graceful exit sequences.
             if self.hanging_up and self.audio_out_queue.empty():
-                # Cut the call after 3.5 seconds or if AI does not stop speaking
                 if time.time() - self.last_chunk_audio_time > 1.0 or time.time() - getattr(self, "hangup_triggered_time", time.time()) > 3.5:
                     
                     print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Final goodbye audio finished playing. Cutting call.{_R}")
-                    # Execute network disconnect directly
                     self.hangup_call()
                     await asyncio.sleep(0.5)
                     self.running = False
@@ -1256,14 +1276,14 @@ class PhoneAssistant:
                 elif time_without_user > silence_threshold and not self.hello_question_sent and not self.waiting_definitive_cut:
                     self.log_system_message(f"{int(silence_threshold)}s without response. Asking if someone is there...", "⏳")
                     self.hello_question_sent = True
-                    self.last_user_spoke_time = time.time()  # Reset the inactivity timer to wait exactly 15s from now
+                    self.last_user_spoke_time = time.time()
                     await session.send_realtime_input(text=self.prompts_data.get("hello_question", ""))
                 
                 # Extended Silence (15 seconds after Assistant finished asking hello) -> Grace Warning
                 elif self.hello_question_sent and not self.waiting_definitive_cut and time_without_user > 15.0:
                     self.waiting_definitive_cut = True
                     self.cut_warning_time = time.time()
-                    self.last_user_spoke_time = time.time()  # Reset timer to wait another 15s properly
+                    self.last_user_spoke_time = time.time()
                     self.log_system_message("Continued silence. Starting 15s grace period...", "⏳")
                     await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
 
@@ -1328,7 +1348,7 @@ class PhoneAssistant:
 
                             if self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
                                 now = time.time()
-                                self.last_user_spoke_time = now  # Reset the inactivity timer!
+                                self.last_user_spoke_time = now
                                 if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
                                     self.last_renewal_printed_time = now
                                     self.log_system_message(self.words_data.get("hold_renewed_caller", "⏳ [SYSTEM]: Wait time renewed by caller request (Limit: {limit}s).").format(limit=int(self.category_wait_seconds)), "⏳")
@@ -1414,9 +1434,7 @@ class PhoneAssistant:
 
                         self.update_transcription_db()
 
-                        # --- Accumulate streaming chunks in a larger time window (2.5 secs) ---
-                        # Gemini Live sends the assistant transcription in partial chunks.
-                        # We use 2.5s to ensure the sentence is fully completed before evaluating it.
+                        # --- Accumulate streaming chunks in a 2.5s window ---
                         now_chunk = time.time()
                         if now_chunk - self._asst_chunk_last_time < 2.5:
                             self._asst_chunk_buffer += " " + clean_otx
@@ -1433,7 +1451,7 @@ class PhoneAssistant:
                         # --- HOLD renewal: assistant speaks while on hold ---
                         if self.on_hold and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", [])):
                             now = time.time()
-                            self.last_user_spoke_time = now  # Reset the inactivity timer!
+                            self.last_user_spoke_time = now
                             if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
                                 self.last_renewal_printed_time = now
                                 self.log_system_message(
@@ -1516,7 +1534,6 @@ class PhoneAssistant:
         """Final cleanup execution. Merges audio channels, parses labels and tags, outputs result logic."""
         print(f"\n{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Saving recordings and evaluating categories...{_R}")
         
-        # Consolida los buffers antes de escribir para evitar corrupciones
         caller_pcm_raw = b"".join(self.caller_recording_buffer) if self.caller_recording_buffer else b""
         asst_pcm_raw = bytes(self.recording_buffer_wav)
         
@@ -1529,7 +1546,6 @@ class PhoneAssistant:
             
         if caller_pcm_raw and asst_pcm_raw:
             try:
-                # Compensar si la IA tardó en contestar al principio
                 if self.first_mic_time > 0 and self.call_start_time > 0:
                     mic_offset_bytes = int(max(0.0, self.first_mic_time - self.call_start_time) * 16000) * 2
                     if mic_offset_bytes > 0: 
@@ -1537,7 +1553,6 @@ class PhoneAssistant:
                 
                 caller_pcm = upsample_16k_to_24k(caller_pcm_raw)
                 
-                # Nivelar longitudes para el estéreo
                 max_len = max(len(caller_pcm), len(asst_pcm_raw))
                 if len(caller_pcm) < max_len: caller_pcm += b"\x00" * (max_len - len(caller_pcm))
                 if len(asst_pcm_raw) < max_len: asst_pcm_raw += b"\x00" * (max_len - len(asst_pcm_raw))
@@ -1559,7 +1574,6 @@ class PhoneAssistant:
                     wf.writeframes(asst_pcm_raw)
             except Exception: pass
             
-        # Add a clear closing system message if one doesn't exist, correctly stating who hung up.
         if not getattr(self, "hangup_message_appended", False):
             self.hangup_message_appended = True
             if getattr(self, "hangup_triggered", False):
@@ -1753,7 +1767,6 @@ def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
         if ACTIVE_ASSISTANT and ACTIVE_ASSISTANT.dbus_path == path:
             print(f"\n{_C_WARN}[{get_timestamp()}] [D-Bus] Call hung up.{_R}")
             ACTIVE_ASSISTANT.running = False
-            # Execute post-processing HERE. Guarantees 100% execution when line drops.
             if not getattr(ACTIVE_ASSISTANT, "_post_processed", False):
                 ACTIVE_ASSISTANT._post_processed = True
                 asyncio.run_coroutine_threadsafe(ACTIVE_ASSISTANT.post_process_call(), main_loop)
@@ -1783,6 +1796,7 @@ if __name__ == "__main__":
     try:
         subprocess.run(["systemctl", "--user", "restart", "wireplumber", "pipewire", "pipewire-pulse"], check=True, stderr=subprocess.DEVNULL)
         time.sleep(2.0)
+        ensure_null_sink()
     except Exception as e: print(f"{_C_WARN}{ICON_WARN}Warning: Could not restart audio services: {e}{_R}")
 
     main_loop = asyncio.new_event_loop()

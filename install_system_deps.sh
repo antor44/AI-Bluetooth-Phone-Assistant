@@ -11,7 +11,7 @@
 # Models downloaded : base  base.en  medium  medium.en
 #
 # Author: Antonio R.
-# Version: 1.5
+# Version: 1.6
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -28,7 +28,6 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 
 set -e
 
@@ -84,7 +83,7 @@ ok "Pkg mgr   : $PKG_MGR"
 # ============================================================
 pkg_install() {
     case "$PKG_MGR" in
-        apt)    sudo apt install -y "$@" ;;
+        apt)    sudo apt install -y --install-recommends "$@" ;;
         dnf)    sudo dnf install -y "$@" ;;
         pacman) sudo pacman -S --noconfirm "$@" ;;
         zypper) sudo zypper install -y "$@" ;;
@@ -110,18 +109,18 @@ step "STEP 2/8 — Python and build tools"
 case "$PKG_MGR" in
     apt)
         pkg_install python3 python3-pip python3-venv \
-            build-essential cmake git pkg-config rfkill
+            build-essential cmake git pkg-config rfkill curl wget
         ;;
     dnf)
         pkg_install python3 python3-pip python3-virtualenv \
-            gcc gcc-c++ make cmake git pkgconf-pkg-config rfkill
+            gcc gcc-c++ make cmake git pkgconf-pkg-config rfkill curl wget
         ;;
     pacman)
-        pkg_install python python-pip cmake git base-devel pkgconf rfkill
+        pkg_install python python-pip cmake git base-devel pkgconf rfkill curl wget
         ;;
     zypper)
         pkg_install python3 python3-pip python3-virtualenv \
-            gcc gcc-c++ make cmake git pkg-config rfkill
+            gcc gcc-c++ make cmake git pkg-config rfkill curl wget
         ;;
 esac
 ok "Python, rfkill, and build tools installed."
@@ -135,7 +134,7 @@ case "$PKG_MGR" in
     apt)
         pkg_install python3-dbus python3-gi python3-gi-cairo \
             gir1.2-glib-2.0 libdbus-1-dev libglib2.0-dev \
-            libgirepository1.0-dev
+            libgirepository1.0-dev dbus-user-session
         ;;
     dnf)
         pkg_install python3-dbus python3-gobject \
@@ -164,17 +163,65 @@ case "$PKG_MGR" in
     zypper) pkg_install bluez ofono ;;
 esac
 
-# Force unblock bluetooth in minimal OS
+# Install full USB Bluetooth firmware package on Armbian SBCs if available
+if [ -f /etc/armbian-release ] && [ "$PKG_MGR" = "apt" ]; then
+    progress "Armbian detected: installing armbian-firmware-full for external USB Bluetooth support..."
+    sudo apt install -y armbian-firmware-full || true
+fi
+
+# Blacklist broken onboard Spreadtrum UART Bluetooth driver on Allwinner H616/H618 SBCs
+if lsmod | grep -q "sprdbt_tty" || modinfo sprdbt_tty &>/dev/null; then
+    progress "Disabling onboard UART Bluetooth module (sprdbt_tty) in favor of external USB Bluetooth..."
+    sudo tee /etc/modprobe.d/blacklist-onboard-bt.conf > /dev/null << 'EOF'
+blacklist sprdbt_tty
+install sprdbt_tty /bin/false
+EOF
+fi
+
+# Configure D-Bus permissions for non-root oFono control
+sudo tee /etc/dbus-1/system.d/ofono-user.conf > /dev/null << 'EOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy group="bluetooth">
+    <allow send_destination="org.ofono"/>
+  </policy>
+  <policy group="sudo">
+    <allow send_destination="org.ofono"/>
+  </policy>
+</busconfig>
+EOF
+
+# Configure Polkit permissions for remote desktop / headless management
+if [ -d /etc/polkit-1/rules.d ]; then
+    sudo tee /etc/polkit-1/rules.d/50-remotebluetooth.rules > /dev/null << 'EOF'
+polkit.addRule(function(action, subject) {
+    if ((action.id.indexOf("org.blueman.") == 0 ||
+         action.id.indexOf("org.bluez.") == 0 ||
+         action.id.indexOf("org.freedesktop.NetworkManager.") == 0 ||
+         action.id.indexOf("org.freedesktop.policykit.exec") == 0 ||
+         action.id.indexOf("com.ubuntu.pkexec.") == 0) &&
+        subject.isInGroup("sudo")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+fi
+
+# Add current user to required hardware groups
+sudo usermod -aG bluetooth,audio,video,netdev,plugdev,dialout,sudo "$USER" 2>/dev/null || true
+
+# Force unblock bluetooth
 if command -v rfkill &>/dev/null; then
     sudo rfkill unblock bluetooth || true
 elif [ -f /usr/sbin/rfkill ]; then
     sudo /usr/sbin/rfkill unblock bluetooth || true
 fi
 
+sudo systemctl reload dbus || true
 sudo systemctl enable ofono
 sudo systemctl start ofono
-ok "BlueZ installed."
-ok "oFono daemon enabled and started."
+ok "BlueZ and oFono daemon configured and started."
 
 # ============================================================
 #  STEP 5 — Audio: PipeWire + WirePlumber + PulseAudio compat.
@@ -182,8 +229,8 @@ ok "oFono daemon enabled and started."
 step "STEP 5/8 — PipeWire / WirePlumber / PulseAudio"
 case "$PKG_MGR" in
     apt)
-        pkg_install pipewire pipewire-pulse pipewire-audio \
-            wireplumber pulseaudio-utils libspa-0.2-bluetooth rtkit
+        pkg_install pipewire pipewire-pulse pipewire-audio pipewire-alsa \
+            wireplumber pulseaudio-utils libspa-0.2-bluetooth libspa-0.2-modules rtkit
         ;;
     dnf)
         pkg_install pipewire pipewire-pulseaudio \
@@ -196,6 +243,11 @@ case "$PKG_MGR" in
         pkg_install pipewire pipewire-pulseaudio wireplumber rtkit
         ;;
 esac
+
+# Enable systemd user session persistence for headless operation
+sudo loginctl enable-linger "$USER" 2>/dev/null || true
+grep -q "XDG_RUNTIME_DIR" "$HOME/.bashrc" || echo 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"' >> "$HOME/.bashrc"
+grep -q "DBUS_SESSION_BUS_ADDRESS" "$HOME/.bashrc" || echo 'export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"' >> "$HOME/.bashrc"
 
 systemctl --user daemon-reload || true
 systemctl --user restart pipewire pipewire-pulse wireplumber || true
@@ -250,7 +302,7 @@ fi
 ok "Selected acceleration : ${C_GREEN}${ACCEL}${C_RESET}"
 ok "cmake flags           : $CMAKE_FLAGS"
 
-# --- Defensive Coding: RAM limits to prevent compiler freezes on SBCs ---
+# --- RAM limits to prevent compiler freezes on SBCs ---
 TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 if [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
     JOBS=1
@@ -287,7 +339,6 @@ cmake --build build --config Release -j"$JOBS"
 sudo ln -sf "$WHISPER_DIR/build/bin/whisper-cli" /usr/local/bin/whisper-cli
 ok "whisper-cli installed at /usr/local/bin/whisper-cli"
 
-# Also symlink the quantization binary
 if [ -f "$WHISPER_DIR/build/bin/whisper-quantize" ]; then
     sudo ln -sf "$WHISPER_DIR/build/bin/whisper-quantize" /usr/local/bin/whisper-quantize
     ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
@@ -303,8 +354,14 @@ cd -
 # ============================================================
 step "STEP 7/8 — Downloading Whisper models"
 
-MODELS_TO_DOWNLOAD=("base" "base.en" "medium" "medium.en")
-MODELS_SIZES=("142 MB" "142 MB" "1.42 GB" "1.42 GB")
+if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    MODELS_TO_DOWNLOAD=("base" "base.en")
+    MODELS_SIZES=("142 MB" "142 MB")
+else
+    MODELS_TO_DOWNLOAD=("base" "base.en" "medium" "medium.en")
+    MODELS_SIZES=("142 MB" "142 MB" "1.42 GB" "1.42 GB")
+fi
+
 PROJECT_MODELS_DIR="$(pwd)/models"
 
 progress "Model storage  : $WHISPER_DIR/models/"
@@ -324,7 +381,6 @@ for i in "${!MODELS_TO_DOWNLOAD[@]}"; do
     if [ -f "$BIN_FILE" ]; then
         ok "Already downloaded — skipping: ggml-${MODEL}.bin"
     else
-        # Only download large medium models if RAM is sufficient
         if { [ "$MODEL" = "medium" ] || [ "$MODEL" = "medium.en" ]; } && [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
             warn "System has low RAM ($((TOTAL_RAM_KB / 1024)) MB). Skipping heavy medium model."
             continue
@@ -340,7 +396,6 @@ for i in "${!MODELS_TO_DOWNLOAD[@]}"; do
         fi
     fi
 
-    # Ensure link is established
     if [ -f "$BIN_FILE" ] && [ ! -f "$LINK_FILE" ]; then
         ln -s "$BIN_FILE" "$LINK_FILE"
     fi
@@ -358,14 +413,11 @@ PIP_PACKAGES=(
     "protobuf>=5.26.1,<7.0.0"
 )
 
-# MANDATORY: We use --system-site-packages so the venv can inherit the pre-compiled 
-# dbus-python and PyGObject modules installed via APT in Step 3.
 if [ ! -d "venv" ]; then
     progress "Creating a Python virtual environment with system package access (venv)..."
     python3 -m venv --system-site-packages venv
 fi
 
-# Activate environment and install dependencies
 # shellcheck disable=SC1091
 source venv/bin/activate
 
@@ -399,13 +451,11 @@ for MODEL in "${MODELS_TO_DOWNLOAD[@]}"; do
 done
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}Next steps:${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  1. Activate your virtual environment:"
-echo -e "${C_BLUE}║${C_RESET}       source venv/bin/activate"
+echo -e "${C_BLUE}║${C_RESET}  1. Reboot your system once to apply group & BT rules:"
+echo -e "${C_BLUE}║${C_RESET}       sudo reboot"
 echo -e "${C_BLUE}║${C_RESET}  2. Set your Gemini API key:"
 echo -e "${C_BLUE}║${C_RESET}       export GEMINI_API_KEY='your_key_here'"
-echo -e "${C_BLUE}║${C_RESET}  3. Pair your phone via Bluetooth (HFP profile)"
-echo -e "${C_BLUE}║${C_RESET}  4. Launch the assistant:"
-echo -e "${C_BLUE}║${C_RESET}       python3 phone_assistant.py"
-echo -e "${C_BLUE}║${C_RESET}  5. Launch the Streamlit dashboard (new terminal):"
-echo -e "${C_BLUE}║${C_RESET}       streamlit run gui.py"
+echo -e "${C_BLUE}║${C_RESET}  3. Pair your phone via bluetoothctl (HFP profile)"
+echo -e "${C_BLUE}║${C_RESET}  4. Launch the switchboard:"
+echo -e "${C_BLUE}║${C_RESET}       ./my_gui.sh"
 echo -e "${C_BLUE}╚══════════════════════════════════════════════════════╝${C_RESET}"
