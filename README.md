@@ -48,7 +48,7 @@ To overcome these commercial barriers, I have developed this Python application 
   </tr>
 </table>
 
-Author: Antonio R. | Version: 1.6 | License: GPL 3.0
+Author: Antonio R. | Version: 1.62 | License: GPL 3.0
 
 ---
 
