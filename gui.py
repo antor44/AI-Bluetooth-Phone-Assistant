@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations and logs
 Displays transcripts, handles settings configuration, and manages category logic.
 
 Author: Antonio R.
-Version: 1.6
+Version: 1.62
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -431,6 +431,7 @@ with col3:
 
     st.write("---")
     
+    # Auto-Cleanup logic properly styled and isolated in the settings column
     st.markdown(f"**🗑️ {trans.get('ui_cleanup_title', 'Auto-Cleanup Data')}**")
     with st.container(border=True):
         cl1, cl2 = st.columns(2)
@@ -487,6 +488,38 @@ with col3:
                 conn_cl.commit(); conn_cl.close()
                 st.toast(trans.get("ui_cleanup_records_done", "Records deleted: {count}").format(count=deleted_recs))
                 st.rerun()
+
+        st.write("")
+        if st.button(trans.get("ui_cleanup_all_btn", "🔥 Delete ALL Records and Recordings"), key="btn_cleanup_all", use_container_width=True):
+            recs_dir = os.path.join(BASE_DIR, "recordings")
+            deleted_all_audio = 0
+            if os.path.exists(recs_dir):
+                for fname in os.listdir(recs_dir):
+                    fpath = os.path.join(recs_dir, fname)
+                    if os.path.isfile(fpath):
+                        try:
+                            os.remove(fpath)
+                            deleted_all_audio += 1
+                        except Exception:
+                            pass
+            conn_cl = sqlite3.connect(DB_PATH)
+            all_rows = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
+            deleted_all_recs = len(all_rows)
+            for row in all_rows:
+                _, ap, cap = row
+                for fpath in [ap, cap]:
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            os.remove(fpath)
+                            deleted_all_audio += 1
+                        except Exception:
+                            pass
+            conn_cl.execute("DELETE FROM calls")
+            conn_cl.execute("DELETE FROM sqlite_sequence WHERE name='calls'")
+            conn_cl.commit()
+            conn_cl.close()
+            st.toast(trans.get("ui_cleanup_all_done", "All records ({records}) and recordings ({audio}) deleted.").format(records=deleted_all_recs, audio=deleted_all_audio))
+            st.rerun()
 
     st.write("---")
     current_wait = int(get_config("wait_seconds", "0"))

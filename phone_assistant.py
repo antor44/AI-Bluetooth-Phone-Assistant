@@ -5,7 +5,7 @@ The application detects incoming calls via D-Bus/oFono, manages audio routing th
 transcribes caller intent, applies dynamic security policies, and interacts in real-time.
 
 Author: Antonio R.
-Version: 1.6
+Version: 1.62
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -218,7 +218,7 @@ def ensure_system_dependencies() -> None:
     wp4_content = """bluez_monitor.properties = {
   ["with-logind"]             = false,
   ["bluez5.enable-sbc-xq"]    = true,
-  ["bluez5.enable-msbc"]      = false,
+  ["bluez5.enable-msbc"]      = true,
   ["bluez5.enable-hw-volume"] = true,
   ["bluez5.headset-roles"]    = "[ hsp_hs hsp_ag hfp_hf hfp_ag ]",
   ["bluez5.hfphsp-backend"]   = "ofono"
@@ -234,7 +234,7 @@ def ensure_system_dependencies() -> None:
 
 monitor.bluez.properties = {
   bluez5.enable-sbc-xq    = true
-  bluez5.enable-msbc      = false
+  bluez5.enable-msbc      = true
   bluez5.enable-hw-volume = true
   bluez5.roles            = [ a2dp_sink a2dp_source hsp_hs hsp_ag hfp_hf hfp_ag ]
   bluez5.hfphsp-backend   = "ofono"
@@ -803,13 +803,13 @@ class PhoneAssistant:
                         
                         # Disconnect local PC microphone from Bluetooth outputs to prevent audio leaks and echo
                         if not allow_pc_mic and "bluez_output" in dst_name and ("alsa_input" in src_name or "pci" in src_name or "usb" in src_name):
-                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.DEVNULL)
                         
                         # Disconnect Bluetooth input from PC speakers if requested
                         if "bluez_input" in src_name and mode not in ["both", "caller"]:
                             sink = get_default_sink()
                             if ("alsa_output" in dst_name) or (sink and sink in dst_name):
-                                await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.DEVNULL)
             except Exception: pass
             
             await asyncio.sleep(2.0)
@@ -829,7 +829,6 @@ class PhoneAssistant:
         ts = get_timestamp()
         clean_msg = message_text.replace("⏳", "").replace("⚠", "").replace("❌", "").replace("⏸", "").replace("▶️", "").replace("[SYSTEM]", "").replace(":", "").strip()
         
-        # Prepend "> " if the system is currently on hold.
         prefix = "> " if getattr(self, "on_hold", False) else ""
         console_tag = f"{prefix}{emoji_prefix} [SYSTEM]" if USE_EMOJI else f"{prefix}[SYSTEM]"
         
@@ -842,7 +841,6 @@ class PhoneAssistant:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Use generic system icon to prevent GUI from mapping to AI.
         initial = f"⚠ [{get_timestamp()}]: [SYSTEM]: Call Connected."
         self.accumulated_transcript = initial
         
@@ -965,7 +963,7 @@ class PhoneAssistant:
                     count = len(data) // 2
                     if count > 0:
                         samples = struct.unpack(f"<{count}h", data)
-                        samples = [max(min(s * 3, 32767), -32768) for s in samples]
+                        samples = [max(min(int(s * 1.5), 32767), -32768) for s in samples]
                         data = struct.pack(f"<{count}h", *samples)
                     
                     if not self.caller_recording_buffer: 
@@ -1813,3 +1811,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt: 
         print(f"\n{_C_WARN}{ICON_WARN}Switchboard manually stopped.{_R}")
         os._exit(0)
+
