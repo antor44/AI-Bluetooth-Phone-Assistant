@@ -287,8 +287,9 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 
 ---
 
-## ⚙️ Running the Switchboard
+## ⚙️ Running the Switchboard & Auto-Start on Boot
 
+### 1. Manual Launch
 On a desktop PC:
 ```bash
 ./my_gui.sh
@@ -299,6 +300,75 @@ On a headless SBC (e.g., Orange Pi Zero 3 via SSH) or to expose the Web GUI over
 ./my_gui.sh --lan
 ```
 Then open `http://<YOUR_DEVICE_IP>:8501` from any browser on your local network.
+
+---
+
+### 2. Automatic Startup on Boot (Systemd User Service)
+To run the AI Switchboard automatically in the background whenever your PC or SBC boots up (without needing to log in via SSH or open a terminal), configure a `systemd` user service:
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cat << 'EOF' > ~/.config/systemd/user/ai-switchboard.service
+[Unit]
+Description=AI Bluetooth Phone Assistant & Web Switchboard
+After=network-online.target pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/AI-Bluetooth-Phone-Assistant
+ExecStartPre=/bin/sleep 5
+ExecStart=/bin/bash %h/AI-Bluetooth-Phone-Assistant/my_gui.sh --lan
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Enable user session persistence and start the service
+sudo loginctl enable-linger "$USER"
+systemctl --user daemon-reload
+systemctl --user enable --now ai-switchboard.service
+```
+
+#### Controlling the Background Service
+You can manage the service at any time from your terminal:
+
+* **Stop the switchboard (stops both the AI daemon and Web GUI):**
+  ```bash
+  systemctl --user stop ai-switchboard.service
+  ```
+* **Start the switchboard:**
+  ```bash
+  systemctl --user start ai-switchboard.service
+  ```
+* **Restart the switchboard:**
+  ```bash
+  systemctl --user restart ai-switchboard.service
+  ```
+* **View real-time console logs (press `Ctrl+C` to exit log view without stopping the service):**
+  ```bash
+  journalctl --user -u ai-switchboard.service -f
+  ```
+* **Disable automatic startup on boot:**
+  ```bash
+  systemctl --user disable ai-switchboard.service
+  ```
+
+*(Optional) You can add short aliases to your `~/.bashrc` for quick control:*
+```bash
+cat << 'EOF' >> ~/.bashrc
+alias switchboard-stop='systemctl --user stop ai-switchboard.service && echo "Switchboard stopped."'
+alias switchboard-start='systemctl --user start ai-switchboard.service && echo "Switchboard started."'
+alias switchboard-restart='systemctl --user restart ai-switchboard.service && echo "Switchboard restarted."'
+alias switchboard-log='journalctl --user -u ai-switchboard.service -f'
+alias switchboard-status='systemctl --user status ai-switchboard.service'
+EOF
+source ~/.bashrc
+```
 
 ---
 
