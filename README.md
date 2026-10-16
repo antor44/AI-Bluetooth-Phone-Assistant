@@ -212,8 +212,14 @@ Establishing an active bidirectional Hands-Free profile between Linux and your s
 2. **Execute pairing sequence securely:**
    ```text
    power on
+   ```
+   ```text
    agent on
+   ```
+   ```text
    default-agent
+   ```
+   ```text
    scan on
    ```
    Wait for your phone to appear, then run:
@@ -225,7 +231,11 @@ Establishing an active bidirectional Hands-Free profile between Linux and your s
 3. **Establish final trust:**
    ```text
    trust XX:XX:XX:XX:XX:XX
+   ```
+   ```text
    connect XX:XX:XX:XX:XX:XX
+   ```
+   ```text
    quit
    ```
 
