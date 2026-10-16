@@ -1,17 +1,17 @@
 {
-  "gui_title": "AI Switchboard Control Panel",
-  "gui_header": "🎛️ AI Switchboard Control Panel",
+  "gui_title": "Control Panel - AI Switchboard",
+  "gui_header": "🎛️ Control Panel - AI Switchboard",
   "call_log_title": "📝 Call Log & Recordings",
   "filters_title": "🚫 Contact Filters & Prompts",
   "settings_title": "⚙️ Assistant Settings",
   
-  "wait_seconds_label": "Seconds to wait before answering:",
-  "ui_spam_title": "🛡️ AI Network SPAM Protection",
-  "ui_spam_providers_desc": "Phone lookup databases. Add one URL per line using {number} where the phone goes:",
+  "wait_seconds_label": "Wait seconds before answering:",
+  "ui_spam_title": "🛡️ AI SPAM Protection",
+  "ui_spam_providers_desc": "Phone number databases. Enter one URL per line using {number} as the phone placeholder:",
   "ui_spam_providers_label": "SPAM URLs:",
-  "auto_block_spam_label": "Auto hang up if confirmed Spam",
+  "auto_block_spam_label": "Automatically hang up confirmed SPAM",
   "priority_keywords_title": "🚨 High Priority Keywords",
-  "priority_keywords_desc": "If the conversation contains these keywords, priority attention is activated:",
+  "priority_keywords_desc": "If the conversation contains these keywords, priority attention will be activated regardless of owner type:",
   "software_echo_label": "Enable Software Echo Suppression",
   
   "identity_title": "👤 Assistant Identity",
@@ -19,38 +19,38 @@
   "assistant_gender_label": "Assistant gender and voice:",
   "whisper_model_label": "Whisper Model (GGML):",
   
-  "ui_initial_greeting": "Exact Initial Greeting (Legal Warning):",
+  "ui_initial_greeting": "Exact Initial Greeting (Legal Notice):",
   "ui_extra_prompt": "Personality & Extra Instructions:",
   "ui_text_model_label": "Text Model (Analysis & SPAM):",
-  "default_legal_warning": "Hello. I am an artificial intelligence and this call is being recorded for security purposes. How can I help you?",
+  "default_legal_warning": "Hello. I am an artificial intelligence and this call is being recorded for security purposes. How may I help you?",
   
   "memory_title": "🧠 Category Memory",
-  "add_category_label": "Add new category (e.g. Lawyers, Family):",
+  "add_category_label": "Add new category (e.g., Lawyers, Family):",
   "create_category_btn": "➕ Create Category",
-  "save_memory_btn": "💾 Save Config",
+  "save_memory_btn": "💾 Save Configuration",
   
-  "owner_settings_title": "👤 Boss / Owner Settings",
-  "owner_name_label": "Owner/Boss Name:",
-  "owner_type_label": "Owner Type:",
-  "activity_desc_label": "Activity description:",
-  "expected_calls_label": "Types of expected calls:",
+  "owner_settings_title": "👤 Boss / Owner Configuration",
+  "owner_name_label": "Owner / Boss name:",
+  "owner_type_label": "Owner type:",
+  "activity_desc_label": "Activity or situation description:",
+  "expected_calls_label": "Expected call types:",
 
   "language_label": "System Language / Idioma del Sistema:",
   "transcription_mode_title": "🎙️ Transcription Mode",
   "transcription_mode_label": "Select transcription engine:",
   
   "monitor_mode_title": "🔊 PC Speaker Monitoring",
-  "monitor_mode_label": "Select what you want to hear locally through your PC speakers:",
+  "monitor_mode_label": "Select what you want to hear through your PC speakers:",
   "monitor_mode_opts_labels": {
-    "both": "Both (Caller and Assistant)",
+    "both": "Both (Caller & Secretary)",
     "none": "None (Total silence on PC)",
-    "caller": "Only Caller",
-    "assistant": "Only Assistant"
+    "caller": "Caller Only",
+    "assistant": "Secretary Only"
   },
   
   "allow_pc_mic_label": "Allow PC Microphone",
-  "allow_pc_mic_desc": "The PC microphone is isolated to prevent accidental audio leaks and echo.",
-  "allow_pc_mic_warning": "⚠ Warning: If this is enabled, the caller might hear whatever is spoken near the PC microphone without your knowledge.",
+  "allow_pc_mic_desc": "PC microphone is isolated to prevent audio leakage and echo.",
+  "allow_pc_mic_warning": "⚠ Warning: If enabled, the caller could hear conversations near the PC microphone without your knowledge.",
 
   "ui_in_progress": "🟢 IN PROGRESS",
   "ui_general_call": "🟡 GENERAL CALL",
@@ -65,37 +65,39 @@
   "ui_toast_record_deleted": "Record deleted",
   "ui_toast_saved": "Saved successfully",
   "ui_toast_tag_updated": "Tag updated",
-  "ui_toast_caller_updated": "Caller data updated",
+  "ui_toast_caller_updated": "Caller details updated",
   "ui_toast_phrase_updated": "Phrase updated",
   "ui_toast_phrase_deleted": "Phrase deleted",
   "ui_no_calls": "No calls recorded yet.",
   
-  "ui_cleanup_title": "Auto-Cleanup",
+  "ui_cleanup_title": "Auto-Cleanup Data",
   "ui_cleanup_audio_label": "Delete audio recordings older than (days):",
   "ui_cleanup_audio_btn": "🗑️ Delete Recordings",
   "ui_cleanup_records_label": "Delete records + transcripts older than (days):",
   "ui_cleanup_records_btn": "❌ Delete Records & Transcripts",
   "ui_cleanup_audio_done": "Recordings deleted: {count}",
   "ui_cleanup_records_done": "Records deleted: {count}",
+  "ui_cleanup_all_btn": "🔥 Delete ALL Records and Recordings",
+  "ui_cleanup_all_done": "All records ({records}) and recordings ({audio}) deleted.",
   
-  "ui_form_phone": "Phone Number (e.g. +123456...):",
+  "ui_form_phone": "Phone Number (e.g., +1555...):",
   "ui_form_category": "Category:",
-  "ui_form_prompt": "Custom Instructions:",
+  "ui_form_prompt": "Custom instructions:",
   "ui_form_save_rule": "Save Rule",
   "ui_managed_contacts": "Managed contacts:",
   "ui_tag_label": "🏷️ Classification:",
 
-  "ui_whisper_base": "Model Base:",
+  "ui_whisper_base": "Base Model:",
   "ui_whisper_quant": "Quantization:",
   "ui_cat_name": "Category Name:",
-  "ui_cat_keywords": "Keywords:",
-  "ui_cat_days": "Days:",
-  "ui_cat_wait": "Wait Seconds:",
+  "ui_cat_keywords": "Keywords (comma-separated):",
+  "ui_cat_days": "Memory days:",
+  "ui_cat_wait": "Dynamic wait seconds:",
   "audio_mode_title": "🔊 Audio Mode (Full Duplex / Half Duplex)",
-  "show_system_msg_label": "👁️ Show system messages in transcript (Hold, Hangups, etc.)",
+  "show_system_msg_label": "👁️ Show system messages in transcript (Hold, Hangup, etc.)",
 
-  "modal_confirm_lang_title": "⚠️ Do you want to change the language to {lang}?",
-  "modal_confirm_lang_body": "By confirming, all assistant configurations will be reset (including assistant name, owner type, priority keywords, and memory rules).",
+  "modal_confirm_lang_title": "⚠️ Change language to {lang}?",
+  "modal_confirm_lang_body": "When changing language, choose one of the following options:\n\n1. 📂 **Load Saved:** Restores your saved settings for this language.\n2. 🔄 **Load Defaults:** Resets everything to factory defaults.\n3. 📌 **Keep Current:** Keeps your current config (May cause language mismatches).",
   "modal_btn_saved": "📂 Load Saved",
   "modal_btn_defaults": "🔄 Load Defaults",
   "modal_btn_keep": "📌 Keep Current",
@@ -103,13 +105,13 @@
 
   "trans_mode_opts_labels": {
     "realtime": "Real-time (Whisper.cpp)",
-    "disabled": "Disabled (Only Gemini Live)",
-    "whisper_final": "Whisper.cpp at the end of the call",
-    "gemini_final": "Gemini Flash 3 at the end of the call"
+    "disabled": "Disabled (Gemini Live only)",
+    "whisper_final": "Whisper.cpp at end of call",
+    "gemini_final": "Gemini Flash 3 at end of call"
   },
   
   "tags": [
-    "🔴 PROBABLE SCAM / SPAM",
+    "🔴 POSSIBLE SCAM / SPAM",
     "🔵 PRIORITY / APPOINTMENTS",
     "🟢 PERSONAL / TRUSTED",
     "🟠 WORK / BUSINESS",
@@ -121,15 +123,15 @@
   "text_model_opts": ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
   
   "defaults": {
-    "assistant_name": "Rachel",
+    "assistant_name": "Sarah",
     "boss_name": "Anthony",
     "assistant_gender": "female",
     "owner_type": "private",
-    "priority_keywords": "operation, hospital, doctor, clinic, dentist, appointment, lawyer, notary, job, interview, trial, contract",
+    "priority_keywords": "surgery, hospital, doctor, clinic, appointment, dentist, dental, lawyer, attorney, notary, job, interview, court, contract",
     "memory_rules": [
-      {"category": "Doctors", "keywords": ["doctor", "hospital", "operation"], "days": 90, "wait_seconds": 300},
-      {"category": "Lawyers", "keywords": ["lawyer", "trial", "notary", "legal"], "days": 180, "wait_seconds": 180},
-      {"category": "Workshop / Dentist", "keywords": ["workshop", "dentist", "mechanic", "clinic"], "days": 15, "wait_seconds": 120}
+      {"category": "Doctors", "keywords": ["doctor", "hospital", "surgery", "clinic"], "days": 90, "wait_seconds": 300},
+      {"category": "Lawyers", "keywords": ["lawyer", "attorney", "court", "notary", "legal"], "days": 180, "wait_seconds": 180},
+      {"category": "Mechanic/Dentist", "keywords": ["mechanic", "garage", "dentist", "dental"], "days": 15, "wait_seconds": 120}
     ]
   }
 }
