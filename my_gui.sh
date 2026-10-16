@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# my_gui.sh v. 1.6 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 1.62 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #

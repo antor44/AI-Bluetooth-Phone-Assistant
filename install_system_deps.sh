@@ -11,7 +11,7 @@
 # Models downloaded : base  base.en  medium  medium.en
 #
 # Author: Antonio R.
-# Version: 1.6
+# Version: 1.62
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
