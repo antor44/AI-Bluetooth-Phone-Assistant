@@ -77,6 +77,8 @@
   "ui_cleanup_records_btn": "❌ Borrar Registros y Transcripciones",
   "ui_cleanup_audio_done": "Grabaciones eliminadas: {count}",
   "ui_cleanup_records_done": "Registros eliminados: {count}",
+  "ui_cleanup_all_btn": "🔥 Borrar TODOS los Registros y Grabaciones",
+  "ui_cleanup_all_done": "Se han eliminado todos los registros ({records}) y grabaciones ({audio}).",
   
   "ui_form_phone": "Número de Teléfono (ej. +34600...):",
   "ui_form_category": "Categoría:",
