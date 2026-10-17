@@ -1,13 +1,14 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
+![Version: 2.0](https://img.shields.io/badge/Version-2.0-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
 
-An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini 3.8 Live** for conversational AI and **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages, sets context-aware memory for repeat callers, and provides a sleek Web GUI to manage your communications.
+An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini 3.8 Live** for conversational AI and optional **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages in a dedicated inbox, maintains configurable context-aware memory with AI summaries for repeat callers, and provides a sleek Web GUI to manage your communications and server state.
 
 > ⚠️ **EXPERIMENTAL SOFTWARE — USE AT YOUR OWN RISK**
-> This is an experimental project distributed as-is, without warranty. It may contain bugs, missed-call scenarios, transcription errors, or other untested edge cases. Several advanced features — specifically **real-time SPAM database checking, Whitelist/Blacklist filtering, and Contact-Specific Custom Instructions** — are implemented but have not been thoroughly verified in real-world conditions.
+> This is an experimental project distributed as-is, without warranty. It may contain bugs, missed-call scenarios, transcription errors, or other untested edge cases. Several advanced features — specifically **real-time SPAM database checking, Whitelist/Blacklist/Wildcard filtering, and Contact-Specific Custom Instructions** — are implemented but have not been thoroughly verified in real-world conditions.
 >
 > Users are responsible for compliance with applicable local laws regarding call recording, transcription, and AI-assisted call handling. The safest default profile is: **incoming calls only**, clear first-message disclosure to the caller, and minimal data retention.
 
@@ -70,7 +71,7 @@ To overcome these commercial barriers, I have developed this Python application 
 
 > 🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see *SBC Audio Note* below), so to monitor call audio locally it is recommended to use a **USB sound card or USB speakers**.
 
-Author: Antonio R. | Version: 1.62 | License: GPL 3.0
+Author: Antonio R. | Version: 2.0 | License: GPL 3.0
 
 ---
 
@@ -86,7 +87,7 @@ Author: Antonio R. | Version: 1.62 | License: GPL 3.0
 ---
 
 ### Web GUI (Control Panel & Call Log)
-*Streamlit-based GUI for managing call transcripts, SPAM rules, category memory, and AI personality settings.*
+*Streamlit-based GUI for managing call transcripts, caller messages inbox, SPAM rules, category memory, audio/VAD parameters, and AI personality settings.*
 ![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy1.jpg)
 ![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy3.jpg)
 ![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy2.jpg)
@@ -94,6 +95,29 @@ Author: Antonio R. | Version: 1.62 | License: GPL 3.0
 ---
 
 ## 🚀 Features & Technical Highlights
+
+### ⭐ Core Features & Switchboard Capabilities
+* **Real-Time Conversational Voice AI (`gemini-3.8-live`):** Low-latency bidirectional voice interaction with natural intonation, affective dialogue, and built-in resistance to background noise.
+* **Hardware-Agnostic Bluetooth HFP Switchboard:** Connects to any smartphone via standard Bluetooth Hands-Free Profile (`BlueZ`, `oFono`, and `PipeWire`), bypassing regional locks, carrier restrictions, or proprietary Google Pixel hardware requirements.
+* **Live Handset Takeover (Mid-Call Interruption):** Pick up your smartphone or switch the audio route from Bluetooth to the handset at any point during a call. The daemon automatically detects the PipeWire node disconnect, pauses the AI (`⏸ Takeover`), and seamlessly resumes if you route the call back to Bluetooth.
+* **Intelligent Hold & Dynamic Silence Management:** Automatically detects when a caller asks to hold or transfers the line (`on_hold`), silences inactivity prompts while waiting, and executes a polite two-step grace-period warning before disconnecting dead air.
+* **Priority Keyword Detection & Category Wait Rules:** Dynamically extends hold and silence timeouts when high-priority keywords (e.g., *hospital, doctor, surgery, dentist, lawyer, court*) are detected in real time.
+* **Deterministic Security Guardrails (`CallPolicyEngine`):** Intercepts AI tool executions (`hangup`, `save_message`) to prevent premature disconnections while on hold, block private data disclosure (such as revealing the owner's surname), and enforce a balanced 2-attempt caller identification rule.
+* **Synchronized Stereo Call Recording (`.wav`):** Saves every call as a 24kHz stereo WAV file (Left channel = Caller, Right channel = AI Secretary) alongside an isolated 16kHz caller track, with an integrated audio player in the Web GUI.
+* **Background LLM Classification & SPAM Scoring:** Uses secondary text models (`gemini-3-flash-preview` or `gemma-4`) to retrospectively classify calls (`PERSONAL`, `WORK`, `PRIORITY`, `SPAM`, `GENERAL`), extract caller name and company, and assign a `0–100` risk score.
+* **Multi-Engine Transcription Modes:** Choose between **Disabled (Gemini Live native transcription)**, **Real-time per-turn `whisper.cpp` healing**, **Batch `whisper.cpp` at end of call**, or **Gemini Audio alignment at end of call**.
+* **Local Speaker Monitoring & PC Mic Isolation:** Route call audio to local speakers (Both, Caller Only, Secretary Only, or None) while keeping the local PC microphone strictly unlinked from the Bluetooth call to prevent echo and room audio leakage.
+* **Interactive Transcript Editor & Data Auto-Cleanup:** Edit or delete individual dialogue turns in the Web GUI, retag calls, purge audio recordings or database logs older than $N$ days, or wipe all records and `.wav` files with a single click.
+
+### 🆕 New in Version 2.0
+* **📬 Dedicated Caller Messages Inbox:** Messages captured via the `save_message` tool are stored in a dedicated `messages` table with the **exact date (`YYYY-MM-DD`) and time (`HH:MM:SS`)**, caller name, phone number, unread counter badge, Read/Unread toggles, and a 1-click importer for legacy transcripts.
+* **🧠 Configurable Call Memory & Post-Call AI Summaries:** Generates a concise call summary at the end of every call in the same LLM analysis pass (zero extra API calls or pickup latency). Supports **Disabled**, **Per Phone Number** (default), **Per Category**, and **Global** (all non-SPAM calls) modes with configurable call count, max age in days, and max character limits.
+* **🔢 Phone Normalization, Wildcards (`626288*`) & Editable Contacts:** Normalizes international prefixes (`+34`, `0034`, national digits), supports `*` and `?` wildcard rules with specificity priority, logs rejected blacklist calls in the Call History with custom tags, and provides a full GUI editor for managed contacts.
+* **🛡️ Upgraded SPAM Engine (`curl_cffi`), Cache & Live AI Tester:** Automatically skips SPAM checks for whitelisted contacts, supports `{number}`, `{national}`, and `{e164}` URL placeholders, uses `curl_cffi` TLS browser impersonation (`listaspam.com`, `tellows.es`), strips `<script>`/`<style>`/`<nav>`/`<select>` noise before analysis, caches lookups in SQLite (`spam_cache`), and includes a live SPAM provider + AI verdict tester in the Web GUI and CLI (`--test-spam`).
+* **🎚️ Gemini 3.8 Live Audio & VAD Tuning Panel:** Adjust Caller Mic Gain (default `1.5x`), Pre-Gain Base Noise Gate (default `50`), VAD Start/End Sensitivity (`LOW`/`HIGH`), VAD Prefix Padding (`500 ms`), VAD Silence Duration (`500 ms`), Wait Seconds before answering (`5s`), and Initial Greeting Interruption Protection directly from the Web GUI, plus automatic input transcription echo stripping.
+* **🎛️ Daemon Controls, Web Whisper Manager & Remote Server Reboot:** Pause, resume, or stop the switchboard daemon from the Web GUI with live heartbeat status, download/quantize Whisper models from the browser, or reboot the entire Linux host server remotely with `sudo` password confirmation.
+
+---
 
 ### 🌍 Tested Hardware & OS Compatibility
 This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire, and WirePlumber. Because Bluetooth SCO (Synchronous Connection-Oriented) voice routing is sensitive to kernel drivers and audio session managers, **only the following configurations have been verified and are officially supported**:
@@ -107,8 +131,8 @@ This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire,
    * **Bluetooth Hardware Requirement:** The onboard Allwinner/Unisoc combo chip (`sprdbt_tty`) has kernel limitations when handling bidirectional SCO voice channels and is automatically blacklisted by the installer. **An external USB Bluetooth adapter (e.g., Realtek RTL8761BU USB 5.1 dongle) is required.**
    * **SBC Audio Note:** The onboard Allwinner platform audio codecs (`alsa_card.platform-*`) exhibit DMA clock multiplier bugs on mainline kernels when running headless and are automatically disabled in WirePlumber in favor of the persistent `auto_null` clock source. To monitor calls locally via speakers on the Orange Pi Zero 3, use an external **USB sound card or USB speaker** (`alsa_card.usb-*`).
 
-> ⚠️ **CRITICAL PERFORMANCE WARNING FOR ARM SBCs (Disable `whisper.cpp`):**
-> On ARM single-board computers (such as the Orange Pi Zero 3 or other modest SBCs), **it is strongly recommended to disable local `whisper.cpp` transcription** in the Web GUI (set **Transcription Mode** to **"Disabled (Gemini Live only)"** or **"Gemini at end"**). Running local Whisper inference on low-power ARM CPUs will saturate all cores at 100%, starving the real-time PipeWire audio threads and **causing the board to freeze or hang even when using the smallest (`base`) models**.
+> ⚠️ **CRITICAL PERFORMANCE WARNING FOR ARM SBCs (Keep `whisper.cpp` Disabled):**
+> Starting in v2.0, **Transcription Mode** defaults to **"Disabled (Gemini Live only)"** and `install_system_deps.sh` skips compiling `whisper.cpp` unless `--with-whisper` is passed. On ARM single-board computers (such as the Orange Pi Zero 3 or other modest SBCs), **keep local `whisper.cpp` transcription disabled**. Running local Whisper inference on low-power ARM CPUs will saturate all cores at 100%, starving the real-time PipeWire audio threads and **causing the board to freeze or hang even when using the smallest (`base`) models**.
 
 > ⚠️ **Note on Other SBCs & Linux Distributions:**
 > * **Minimal / Stripped-down OS images (e.g., DietPi, Armbian Minimal):** Not recommended. They run as `root` by default (where PipeWire is blocked by `ConditionUser=!root`) and lack `dbus-user-session` and `libpam-systemd`.
@@ -170,7 +194,12 @@ Clone the repository and run the automated dependency installer:
 git clone https://github.com/antor44/AI-Bluetooth-Phone-Assistant.git
 cd AI-Bluetooth-Phone-Assistant
 chmod +x install_system_deps.sh my_gui.sh
+
+# Standard installation (uses Gemini 3.8 Live native transcription, skips whisper.cpp compilation):
 ./install_system_deps.sh
+
+# Optional (Desktop PCs): Pass --with-whisper to also compile whisper.cpp and download GGML models:
+./install_system_deps.sh --with-whisper
 ```
 
 After the installer finishes, **reboot your machine once** (`sudo reboot`) so user groups, D-Bus permissions, and Bluetooth kernel rules take effect.
@@ -182,7 +211,7 @@ After the installer finishes, **reboot your machine once** (`sudo reboot`) so us
 #### 1. System Dependencies (Ubuntu 24.04 LTS)
 ```bash
 sudo apt update
-sudo apt install --install-recommends ofono bluez bluez-tools pipewire pipewire-pulse pipewire-audio pipewire-alsa wireplumber libspa-0.2-bluetooth libspa-0.2-modules pulseaudio-utils dbus-user-session rtkit sqlite3 python3-venv python3-dbus python3-gi python3-gi-cairo gir1.2-glib-2.0 build-essential cmake git pkg-config rfkill
+sudo apt install --install-recommends ofono bluez bluez-tools pipewire pipewire-pulse pipewire-audio pipewire-alsa wireplumber libspa-0.2-bluetooth libspa-0.2-modules pulseaudio-utils dbus-user-session rtkit sqlite3 python3-venv python3-dbus python3-gi python3-gi-cairo gir1.2-glib-2.0 build-essential cmake git pkg-config rfkill curl wget
 ```
 *(On Armbian SBCs, also install `sudo apt install armbian-firmware-full` so external USB Bluetooth adapters load their required firmware).*
 
@@ -198,11 +227,11 @@ Requires Python 3.10+. Use a virtual environment with `--system-site-packages` s
 ```bash
 python3 -m venv --system-site-packages venv
 source venv/bin/activate
-pip install google-genai aiohttp streamlit "protobuf>=5.26.1,<7.0.0"
+pip install google-genai aiohttp curl_cffi streamlit "protobuf>=5.26.1,<7.0.0"
 ```
 
 #### 4. Installing `whisper.cpp` (Optional on SBCs / Hybrid Transcription for PC)
-> ⚠️ **Reminder for SBC users:** On ARM SBCs (like the Orange Pi Zero 3), disable local `whisper.cpp` in the Web GUI settings (`Disabled - Gemini Live only`) as even the smallest Whisper models can cause the board to hang during calls.
+> ⚠️ **Reminder for SBC users:** On ARM SBCs (like the Orange Pi Zero 3), keep local `whisper.cpp` disabled in the Web GUI settings (`Disabled - Gemini Live only`) as even the smallest Whisper models can cause the board to hang during calls.
 
 1. **Clone and compile:**
    ```bash
@@ -291,7 +320,7 @@ If you change your smartphone, **you must remove the old phone from BlueZ**. Lea
 
 ## 🔑 API Key Setup, Pricing & Privacy
 
-This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live`** for real-time, low-latency bidirectional voice communication, and secondary text models (`gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation and post-call JSON transcript structuring.
+This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live`** for real-time, low-latency bidirectional voice communication, and secondary text models (`gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation, post-call JSON transcript structuring, and call summary generation.
 
 ### 1. How to Obtain and Set Your API Key
 1. Go to **[Google AI Studio](https://aistudio.google.com/)**.
@@ -311,8 +340,8 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
     *   *Audio Input:* $3.00 / 1M tokens (~$0.005 per minute of caller audio).
     *   *Audio Output:* $12.00 / 1M tokens (~$0.018 per minute of assistant speech).
     *   *(A typical 2-minute phone call costs around $0.04).*
-*   **Text Processing & SPAM (`gemini-3-flash-preview`):**
-    *   Used silently in the background for SPAM checking and parsing call transcripts (fractions of a cent per call).
+*   **Text Processing, Summaries & SPAM (`gemini-3-flash-preview`):**
+    *   Used silently in the background for SPAM checking and parsing call transcripts/summaries (fractions of a cent per call).
 
 ---
 
@@ -323,11 +352,11 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 ├── phone_assistant.py          # Main daemon (handles HFP, D-Bus, and Gemini 3.8 Live)
 ├── my_gui.sh                   # Main GUI Launcher Script (Desktop and Headless/LAN aware)
 ├── gui.py                      # Web Control Panel (Streamlit GUI interface)
-├── install_system_deps.sh      # Automated system & Python dependency installer
-├── switchboard.db              # SQLite Database (Auto-generated on first launch)
+├── install_system_deps.sh      # Automated system & Python dependency installer (--with-whisper optional)
+├── switchboard.db              # SQLite Database (Auto-generated & migrated on launch)
 ├── requirements.txt            # Python package dependencies
 │
-├── /models                     # Whisper.cpp Model Folder
+├── /models                     # Whisper.cpp Model Folder (Optional)
 │   ├── ggml-medium.bin         # Multilingual model (for PC setups)
 │   └── ggml-base.bin           # Lightweight model (for low-RAM PC setups)
 │
@@ -363,6 +392,12 @@ On a headless SBC (e.g., Orange Pi Zero 3 via SSH) or to expose the Web GUI over
 ```
 Then open `http://<YOUR_DEVICE_IP>:8501` from any browser on your local network.
 
+*(Optional CLI SPAM Test):* You can also test any phone number against your configured SPAM providers from the terminal:
+```bash
+source venv/bin/activate
+python3 phone_assistant.py --test-spam +34600000000
+```
+
 ---
 
 ### 2. Automatic Startup on Boot (Systemd User Service)
@@ -397,7 +432,7 @@ systemctl --user enable --now ai-switchboard.service
 ```
 
 #### Controlling the Background Service
-You can manage the service at any time from your terminal:
+You can manage the service at any time from your terminal (as well as pausing/stopping the daemon or rebooting the server from the Web GUI):
 
 * **Stop the switchboard (stops both the AI daemon and Web GUI):**
   ```bash
@@ -439,9 +474,9 @@ source ~/.bashrc
 This application is built as a **Monolithic State Machine** functioning as a deterministic Telephony Middleware around the LLM:
 
 1. **Active Silence & Hold Tracking:** Tracks seconds of inactivity (`time_without_user`) to prompt silent callers or execute grace-period disconnections, while extending timeouts dynamically when a call is placed on hold (`self.on_hold`) or matches priority keywords.
-2. **Deterministic Guardrails (`CallPolicyEngine`):** Intercepts AI tool calls (`hangup`, `save_message`) and validates them against the real-time state machine to prevent premature disconnections during active holds.
-3. **Streaming Chunk Reconstruction:** Accumulates fragmented streaming text chunks in a 2.5-second sliding window (`_asst_chunk_buffer`) to reliably evaluate goodbye and hold triggers before actuating hardware D-Bus signals.
-4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, and records synchronized stereo `.wav` logs.
+2. **Deterministic Guardrails (`CallPolicyEngine`):** Intercepts AI tool calls (`hangup`, `save_message`) and validates them against the real-time state machine to prevent premature disconnections during active holds and store structured messages in the inbox.
+3. **Streaming Chunk Reconstruction & Echo Stripping:** Accumulates fragmented streaming text chunks in a 2.5-second sliding window (`_asst_chunk_buffer`) to reliably evaluate goodbye and hold triggers while stripping assistant phrase bleed from incoming transcriptions.
+4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, records synchronized stereo `.wav` logs, and generates concise AI call summaries for future context memory.
 
 ---
 
