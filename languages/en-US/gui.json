@@ -2,33 +2,66 @@
   "gui_title": "Control Panel - AI Switchboard",
   "gui_header": "🎛️ Control Panel - AI Switchboard",
   "call_log_title": "📝 Call Log & Recordings",
-  "filters_title": "🚫 Contact Filters & Prompts",
+  "messages_inbox_title": "📬 Caller Messages",
+  "filters_title": "🚫 Contact Filters & Wildcards",
   "settings_title": "⚙️ Assistant Settings",
-  
+
   "wait_seconds_label": "Wait seconds before answering:",
   "ui_spam_title": "🛡️ AI SPAM Protection",
-  "ui_spam_providers_desc": "Phone number databases. Enter one URL per line using {number} as the phone placeholder:",
+  "ui_spam_providers_desc": "Phone number databases. Enter one URL per line using {number}, {national}, or {e164}:",
   "ui_spam_providers_label": "SPAM URLs:",
   "auto_block_spam_label": "Automatically hang up confirmed SPAM",
+  "ui_spam_cache_days_label": "SPAM Cache expiration (days):",
+  "ui_btn_clear_spam_cache": "🧹 Clear Cache",
+  "ui_toast_spam_cache_cleared": "SPAM cache cleared",
+  "ui_spam_test_expander": "🔍 Test Phone Number Against SPAM Providers",
+  "ui_spam_test_input": "Phone number to test:",
+  "ui_spam_test_btn": "Run SPAM Test",
+
   "priority_keywords_title": "🚨 High Priority Keywords",
   "priority_keywords_desc": "If the conversation contains these keywords, priority attention will be activated regardless of owner type:",
-  "software_echo_label": "Enable Software Echo Suppression",
-  
+  "software_echo_label": "Enable Software Echo Suppression (Half-Duplex)",
+  "protect_greeting_label": "Protect Initial Greeting from Early Line Interruptions",
+  "caller_gain_label": "Caller Mic Gain (x):",
+  "noise_gate_label": "Base Noise Gate (RMS):",
+  "vad_start_sens_label": "VAD Start Sensitivity:",
+  "vad_end_sens_label": "VAD End Sensitivity:",
+  "vad_prefix_padding_label": "VAD Prefix Padding (ms):",
+  "vad_silence_duration_label": "VAD Silence Duration (ms):",
+
   "identity_title": "👤 Assistant Identity",
   "assistant_name_label": "Virtual assistant name:",
   "assistant_gender_label": "Assistant gender and voice:",
   "whisper_model_label": "Whisper Model (GGML):",
-  
+  "ui_model_installed": "is installed.",
+  "ui_model_missing": "is not downloaded yet.",
+  "ui_terminal_select": "Installer Terminal:",
+  "ui_btn_install_whisper_model": "⬇️ Download / Quantize Model",
+  "ui_installing_model_wait": "Installing {model} model. Please wait...",
+  "gemini_live_trans_note": "ℹ️ Gemini 3.8 Live already transcribes calls natively in real time. Local Whisper.cpp is optional.",
+  "whisper_not_installed_info": "whisper-cli is not installed. Run './install_system_deps.sh --with-whisper' if you want local Whisper.cpp support.",
+
   "ui_initial_greeting": "Exact Initial Greeting (Legal Notice):",
   "ui_extra_prompt": "Personality & Extra Instructions:",
   "ui_text_model_label": "Text Model (Analysis & SPAM):",
   "default_legal_warning": "Hello. I am an artificial intelligence and this call is being recorded for security purposes. How may I help you?",
-  
-  "memory_title": "🧠 Category Memory",
+
+  "memory_title": "🧠 Call Memory & Category Rules",
+  "memory_mode_select_label": "Memory Scope:",
+  "memory_mode_labels": {
+    "disabled": "Disabled (No past call memory)",
+    "per_number": "Per Phone Number (Default)",
+    "per_category": "Per Category / Contact Tag",
+    "global": "Global (All non-SPAM calls)"
+  },
+  "memory_global_warning": "⚠️ Warning: In Global mode, the AI knows summaries of recent non-SPAM calls from all numbers. An unknown caller could attempt social engineering to ask about other callers.",
+  "memory_max_calls_label": "Calls to remember:",
+  "memory_max_days_label": "Max age (days):",
+  "memory_max_chars_label": "Max characters:",
   "add_category_label": "Add new category (e.g., Lawyers, Family):",
   "create_category_btn": "➕ Create Category",
   "save_memory_btn": "💾 Save Configuration",
-  
+
   "owner_settings_title": "👤 Boss / Owner Configuration",
   "owner_name_label": "Owner / Boss name:",
   "owner_type_label": "Owner type:",
@@ -38,22 +71,40 @@
   "language_label": "System Language / Idioma del Sistema:",
   "transcription_mode_title": "🎙️ Transcription Mode",
   "transcription_mode_label": "Select transcription engine:",
-  
+
   "monitor_mode_title": "🔊 PC Speaker Monitoring",
   "monitor_mode_label": "Select what you want to hear through your PC speakers:",
   "monitor_mode_opts_labels": {
-    "both": "Both (Caller & Secretary)",
     "none": "None (Total silence on PC)",
+    "both": "Both (Caller & Secretary)",
     "caller": "Caller Only",
     "assistant": "Secretary Only"
   },
-  
+
   "allow_pc_mic_label": "Allow PC Microphone",
   "allow_pc_mic_desc": "PC microphone is isolated to prevent audio leakage and echo.",
   "allow_pc_mic_warning": "⚠ Warning: If enabled, the caller could hear conversations near the PC microphone without your knowledge.",
 
+  "ui_daemon_control_title": "Switchboard & Linux Server Control",
+  "ui_daemon_status_label": "Status:",
+  "ui_daemon_status_running": "🟢 Active (Listening for calls)",
+  "ui_daemon_status_paused": "⏸️ Paused (Calls ring without answering)",
+  "ui_daemon_status_stopped": "🔴 Stopped / Offline",
+  "ui_btn_pause_daemon": "⏸️ Pause Switchboard",
+  "ui_btn_resume_daemon": "▶️ Resume Switchboard",
+  "ui_btn_stop_daemon": "⏹️ Stop Daemon",
+  "ui_btn_reboot_server": "🔄 Reboot Linux Server",
+  "ui_confirm_reboot_warning": "⚠️ Are you sure you want to reboot the entire Linux server?",
+  "ui_sudo_password_label": "Sudo password (required to reboot):",
+  "ui_btn_confirm_reboot_yes": "✅ Yes, Reboot Now",
+  "ui_toast_daemon_paused": "Switchboard paused",
+  "ui_toast_daemon_resumed": "Switchboard resumed",
+  "ui_toast_daemon_stopped": "Stop signal sent to daemon",
+  "ui_toast_rebooting": "Rebooting Linux server...",
+
   "ui_in_progress": "🟢 IN PROGRESS",
   "ui_general_call": "🟡 GENERAL CALL",
+  "ui_call_summary": "AI Summary:",
   "ui_caller_name": "👤 Caller Name:",
   "ui_company": "🏢 Company:",
   "ui_transcript": "Transcript:",
@@ -69,7 +120,17 @@
   "ui_toast_phrase_updated": "Phrase updated",
   "ui_toast_phrase_deleted": "Phrase deleted",
   "ui_no_calls": "No calls recorded yet.",
-  
+
+  "ui_messages_unread": "unread",
+  "ui_messages_unread_only": "Show unread only",
+  "ui_messages_import_btn": "📥 Import Old",
+  "ui_messages_imported_toast": "Imported messages: {count}",
+  "ui_message_date_time": "Date & Exact Time:",
+  "ui_btn_mark_read": "✓ Mark Read",
+  "ui_btn_mark_unread": "✉️ Mark Unread",
+  "ui_btn_delete_msg": "🗑️ Delete",
+  "ui_no_messages": "No saved caller messages yet.",
+
   "ui_cleanup_title": "Auto-Cleanup Data",
   "ui_cleanup_audio_label": "Delete audio recordings older than (days):",
   "ui_cleanup_audio_btn": "🗑️ Delete Recordings",
@@ -79,12 +140,18 @@
   "ui_cleanup_records_done": "Records deleted: {count}",
   "ui_cleanup_all_btn": "🔥 Delete ALL Records and Recordings",
   "ui_cleanup_all_done": "All records ({records}) and recordings ({audio}) deleted.",
-  
-  "ui_form_phone": "Phone Number (e.g., +1555...):",
-  "ui_form_category": "Category:",
+
+  "ui_wildcard_hint": "Supports exact numbers (614027865) and wildcards (* and ?, e.g. 626288*).",
+  "ui_form_phone": "Phone Number or Wildcard (e.g., 626288*):",
+  "ui_form_category": "Action:",
+  "ui_form_tag": "Custom Tag (optional):",
+  "ui_form_note": "Label / Note (e.g., Aunt Mary, Telemarketer):",
   "ui_form_prompt": "Custom instructions:",
-  "ui_form_save_rule": "Save Rule",
-  "ui_managed_contacts": "Managed contacts:",
+  "ui_form_save_rule": "💾 Save Rule",
+  "ui_managed_contacts": "Managed contacts & wildcard rules:",
+  "ui_btn_update_contact": "💾 Update",
+  "ui_btn_delete_contact": "🗑️ Delete",
+  "ui_no_contacts": "No contacts or wildcard rules configured yet.",
   "ui_tag_label": "🏷️ Classification:",
 
   "ui_whisper_base": "Base Model:",
@@ -93,7 +160,7 @@
   "ui_cat_keywords": "Keywords (comma-separated):",
   "ui_cat_days": "Memory days:",
   "ui_cat_wait": "Dynamic wait seconds:",
-  "audio_mode_title": "🔊 Audio Mode (Full Duplex / Half Duplex)",
+  "audio_mode_title": "🎚️ Audio, Echo & Gemini 3.8 VAD Tuning",
   "show_system_msg_label": "👁️ Show system messages in transcript (Hold, Hangup, etc.)",
 
   "modal_confirm_lang_title": "⚠️ Change language to {lang}?",
@@ -104,24 +171,25 @@
   "modal_btn_cancel": "❌ Cancel",
 
   "trans_mode_opts_labels": {
-    "realtime": "Real-time (Whisper.cpp)",
     "disabled": "Disabled (Gemini Live only)",
+    "realtime": "Real-time (Whisper.cpp)",
     "whisper_final": "Whisper.cpp at end of call",
     "gemini_final": "Gemini Flash 3 at end of call"
   },
-  
+
   "tags": [
     "🔴 POSSIBLE SCAM / SPAM",
     "🔵 PRIORITY / APPOINTMENTS",
     "🟢 PERSONAL / TRUSTED",
     "🟠 WORK / BUSINESS",
-    "🟡 GENERAL CALL"
+    "🟡 GENERAL CALL",
+    "🚫 BLACKLISTED"
   ],
-  
+
   "owner_types": ["private", "professional", "business"],
   "gender_types": ["female", "male"],
   "text_model_opts": ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
-  
+
   "defaults": {
     "assistant_name": "Sarah",
     "boss_name": "Anthony",
