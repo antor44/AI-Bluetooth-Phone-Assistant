@@ -26,27 +26,38 @@ In May 2018, Google introduced its Duplex technology as a revolutionary AI assis
 
 To overcome these commercial barriers, I have developed this Python application that operates as an independent orchestrator from any PC or supported Linux SBC (single-board computer). By connecting to the mobile phone via Bluetooth, the system acts as a supercharged version of Google's solutions that allows answering calls (only answering, to avoid most legal restrictions for normal users) without suffering geographical blocks or depending on specific mobile hardware. This architecture offers complete and unrestricted control to manage bidirectional audio, transcribe conversations, and generate real-time responses using AI. Furthermore, it provides full control over the call history, and at any moment, the user can interrupt the AI to take manual control of the call, among many other improvements that will be added in the future.
 
-<div align="center">
-  <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant1.jpg" width="80%">
-  <br><b>🏖️ Free time call answered.</b>
-</div>
-
-<br>
-
 <table>
   <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant2.jpg" width="100%">
-      <br><b>🛠️ Hands-Free & Deep Work</b><br>
-      Perfect for mechanics, freelancers, or programmers. Maintain your flow state or keep working with dirty hands while your AI secretary gracefully handles clients and takes detailed messages.
+    <td width="33%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank1.jpg" width="100%">
+      <br><b>🔋 Portable SBC example</b><br>An Orange Pi Zero 3 with only 1.5 GB of RAM, connected to the router via Wi-Fi and powered by a power bank.
     </td>
-    <td width="50%" align="center" valign="top">
+    <td width="33%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank2.jpg" width="100%">
+      <br><b>🔍 Close-up</b><br>A closer look at the board, showing the details of a simple metal case.
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank3.jpg" width="100%">
+      <br><b>🔵 External USB Bluetooth</b><br>Detail of the USB Bluetooth dongle that replaces the defective onboard chip of the Zero 3.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" align="center" valign="top">
       <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant3.jpg" width="100%">
-      <br><b>🛡️ The Ultimate SPAM Shield</b><br>
-      Enjoy your free time in peace. The AI intercepts unknown callers, verifies their numbers against live SPAM databases, and automatically terminates telemarketing calls before they bother you.
+      <br><b>🛡️ The Ultimate SPAM Shield</b><br>Enjoy your free time in peace. The AI intercepts unknown callers, verifies their numbers against live SPAM databases, and automatically terminates telemarketing calls before they bother you.
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant2.jpg" width="100%">
+      <br><b>🛠️ Hands-Free & Deep Work</b><br>Perfect for mechanics, freelancers, or programmers. Maintain your flow state or keep working with dirty hands while your AI secretary gracefully handles clients and takes detailed messages.
+    </td>
+    <td width="33%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant1.jpg" width="100%">
+      <br><b>🏖️ Free time call answered.</b>
     </td>
   </tr>
 </table>
+
+> 🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see *SBC Audio Note* below), so to monitor call audio locally it is recommended to use a **USB sound card or USB speakers**.
 
 Author: Antonio R. | Version: 1.62 | License: GPL 3.0
 
