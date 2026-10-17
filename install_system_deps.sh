@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 #
 # install_system_deps.sh - System dependency installer for AI Switchboard.
-# Installs all system-level packages, auto-detects the best available
-# hardware acceleration, compiles whisper-cli from source accordingly,
-# downloads Whisper models, and installs Python dependencies for
+# Installs all system-level packages and Python dependencies for
 # phone_assistant.py and gui.py.
+# If --with-whisper is passed, also auto-detects hardware acceleration,
+# compiles whisper-cli and whisper-quantize from source, and downloads GGML models.
 #
 # Supported distros : Ubuntu/Debian, Fedora/RHEL/CentOS, Arch Linux, openSUSE
-# Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected)
-# Models downloaded : base  base.en  medium  medium.en
+# Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 1.62
+# Version: 2.0
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -28,12 +27,18 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# https://github.com/antor44/AI-Bluetooth-Phone-Assistant
 
 set -e
 
-# ============================================================
-#  Terminal colours
-# ============================================================
+WITH_WHISPER=0
+for arg in "$@"; do
+    if [ "$arg" == "--with-whisper" ]; then
+        WITH_WHISPER=1
+    fi
+done
+
 C_RESET="\033[0m"
 C_BOLD="\033[1m"
 C_GREEN="\033[1;32m"
@@ -65,22 +70,20 @@ if [ -f /etc/os-release ]; then
 fi
 
 case "$DISTRO" in
-    *debian*|*ubuntu*)  PKG_MGR="apt"    ;;
-    *fedora*|*rhel*|*centos*) PKG_MGR="dnf" ;;
-    *arch*|*manjaro*)   PKG_MGR="pacman" ;;
-    *opensuse*|*suse*)  PKG_MGR="zypper" ;;
+    *debian*|*ubuntu*)        PKG_MGR="apt"    ;;
+    *fedora*|*rhel*|*centos*) PKG_MGR="dnf"    ;;
+    *arch*|*manjaro*)         PKG_MGR="pacman" ;;
+    *opensuse*|*suse*)        PKG_MGR="zypper" ;;
     *)
         warn "Unrecognised distro: '${DISTRO}'. Falling back to apt."
         PKG_MGR="apt"
         ;;
 esac
 
-ok "Distro    : ${PRETTY_NAME:-$DISTRO}"
-ok "Pkg mgr   : $PKG_MGR"
+ok "Distro       : ${PRETTY_NAME:-$DISTRO}"
+ok "Pkg mgr      : $PKG_MGR"
+ok "Whisper build: $( [ "$WITH_WHISPER" = "1" ] && echo "ENABLED (--with-whisper)" || echo "SKIPPED by default (pass --with-whisper to enable)" )"
 
-# ============================================================
-#  Helper: install packages
-# ============================================================
 pkg_install() {
     case "$PKG_MGR" in
         apt)    sudo apt install -y --install-recommends "$@" ;;
@@ -123,7 +126,7 @@ case "$PKG_MGR" in
             gcc gcc-c++ make cmake git pkg-config rfkill curl wget
         ;;
 esac
-ok "Python, rfkill, and build tools installed."
+ok "Python, rfkill, curl, and build tools installed."
 
 # ============================================================
 #  STEP 3 — D-Bus and GLib / GObject introspection
@@ -163,13 +166,11 @@ case "$PKG_MGR" in
     zypper) pkg_install bluez ofono ;;
 esac
 
-# Install full USB Bluetooth firmware package on Armbian SBCs if available
 if [ -f /etc/armbian-release ] && [ "$PKG_MGR" = "apt" ]; then
     progress "Armbian detected: installing armbian-firmware-full for external USB Bluetooth support..."
     sudo apt install -y armbian-firmware-full || true
 fi
 
-# Blacklist broken onboard Spreadtrum UART Bluetooth driver on Allwinner H616/H618 SBCs
 if lsmod | grep -q "sprdbt_tty" || modinfo sprdbt_tty &>/dev/null; then
     progress "Disabling onboard UART Bluetooth module (sprdbt_tty) in favor of external USB Bluetooth..."
     sudo tee /etc/modprobe.d/blacklist-onboard-bt.conf > /dev/null << 'EOF'
@@ -178,7 +179,6 @@ install sprdbt_tty /bin/false
 EOF
 fi
 
-# Configure D-Bus permissions for non-root oFono control
 sudo tee /etc/dbus-1/system.d/ofono-user.conf > /dev/null << 'EOF'
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
@@ -192,7 +192,6 @@ sudo tee /etc/dbus-1/system.d/ofono-user.conf > /dev/null << 'EOF'
 </busconfig>
 EOF
 
-# Configure Polkit permissions for remote desktop / headless management
 if [ -d /etc/polkit-1/rules.d ]; then
     sudo tee /etc/polkit-1/rules.d/50-remotebluetooth.rules > /dev/null << 'EOF'
 polkit.addRule(function(action, subject) {
@@ -208,10 +207,8 @@ polkit.addRule(function(action, subject) {
 EOF
 fi
 
-# Add current user to required hardware groups
 sudo usermod -aG bluetooth,audio,video,netdev,plugdev,dialout,sudo "$USER" 2>/dev/null || true
 
-# Force unblock bluetooth
 if command -v rfkill &>/dev/null; then
     sudo rfkill unblock bluetooth || true
 elif [ -f /usr/sbin/rfkill ]; then
@@ -244,7 +241,6 @@ case "$PKG_MGR" in
         ;;
 esac
 
-# Enable systemd user session persistence for headless operation
 sudo loginctl enable-linger "$USER" 2>/dev/null || true
 grep -q "XDG_RUNTIME_DIR" "$HOME/.bashrc" || echo 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"' >> "$HOME/.bashrc"
 grep -q "DBUS_SESSION_BUS_ADDRESS" "$HOME/.bashrc" || echo 'export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"' >> "$HOME/.bashrc"
@@ -254,152 +250,141 @@ systemctl --user restart pipewire pipewire-pulse wireplumber || true
 ok "PipeWire, WirePlumber, and Bluetooth plugins installed."
 
 # ============================================================
-#  STEP 6 — whisper.cpp: RAM-aware build & compile
+#  STEPS 6 & 7 — Optional whisper.cpp build & model download
 # ============================================================
-step "STEP 6/8 — Detecting hardware acceleration"
-
-ACCEL="CPU"
-CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF"
-ARCH=$(uname -m)
-
-# --- CUDA (NVIDIA GPU) ---
-if command -v nvidia-smi &>/dev/null || command -v nvcc &>/dev/null; then
-    CUDA_ARCH=""
-    if command -v nvidia-smi &>/dev/null; then
-        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
-        CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap \
-            --format=csv,noheader 2>/dev/null \
-            | head -1 | tr -d '.' || true)
-    fi
-    CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_CUDA=1"
-    if [ -n "$CUDA_ARCH" ]; then
-        CMAKE_FLAGS="$CMAKE_FLAGS -DCMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH"
-        ACCEL="CUDA  (GPU: ${GPU_NAME:-unknown}  |  sm_${CUDA_ARCH})"
-    else
-        ACCEL="CUDA"
-    fi
-
-# --- Vulkan (AMD / Intel / NVIDIA) ---
-elif (command -v vulkaninfo &>/dev/null || ldconfig -p 2>/dev/null | grep -q libvulkan) && [ "$ARCH" != "aarch64" ]; then
-    CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_VULKAN=1"
-    ACCEL="Vulkan"
-
-# --- OpenBLAS (CPU BLAS) ---
-elif ldconfig -p 2>/dev/null | grep -q libopenblas; then
-    CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_BLAS=1"
-    ACCEL="OpenBLAS"
-
-# --- CPU / ARM NEON fallback ---
-else
-    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        ACCEL="ARM NEON (Optimized ARM64 CPU)"
-    else
-        warn "No GPU acceleration detected. Building for plain CPU."
-        ACCEL="CPU (no hardware acceleration)"
-    fi
-fi
-
-ok "Selected acceleration : ${C_GREEN}${ACCEL}${C_RESET}"
-ok "cmake flags           : $CMAKE_FLAGS"
-
-# --- RAM limits to prevent compiler freezes on SBCs ---
-TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-if [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
-    JOBS=1
-    warn "Low RAM detected ($((TOTAL_RAM_KB / 1024)) MB). Limiting compiler to $JOBS core to prevent system freeze."
-elif [ "$TOTAL_RAM_KB" -lt 2500000 ]; then
-    JOBS=2
-    warn "Moderate RAM detected ($((TOTAL_RAM_KB / 1024)) MB). Limiting compiler to $JOBS cores to prevent system freeze."
-else
-    JOBS=$(nproc)
-fi
-
-# --- Clone / update whisper.cpp ---
-WHISPER_DIR="$HOME/whisper.cpp"
-progress "Cloning / updating whisper.cpp into $WHISPER_DIR ..."
-
-if [ ! -d "$WHISPER_DIR" ]; then
-    git clone https://github.com/ggml-org/whisper.cpp.git "$WHISPER_DIR"
-    ok "Repository cloned."
-else
-    cd "$WHISPER_DIR" && git pull && cd -
-    ok "Repository already exists — updated to latest."
-fi
-
-cd "$WHISPER_DIR"
-
-progress "Running cmake configure..."
-# shellcheck disable=SC2086
-cmake -B build $CMAKE_FLAGS
-
-progress "Compiling whisper-cli and quantize tools using $JOBS cores..."
-cmake --build build --config Release -j"$JOBS"
-
-# --- Install binaries ---
-sudo ln -sf "$WHISPER_DIR/build/bin/whisper-cli" /usr/local/bin/whisper-cli
-ok "whisper-cli installed at /usr/local/bin/whisper-cli"
-
-if [ -f "$WHISPER_DIR/build/bin/whisper-quantize" ]; then
-    sudo ln -sf "$WHISPER_DIR/build/bin/whisper-quantize" /usr/local/bin/whisper-quantize
-    ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
-elif [ -f "$WHISPER_DIR/build/bin/quantize" ]; then
-    sudo ln -sf "$WHISPER_DIR/build/bin/quantize" /usr/local/bin/whisper-quantize
-    ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
-fi
-
-cd -
-
-# ============================================================
-#  STEP 7 — Download Whisper models
-# ============================================================
-step "STEP 7/8 — Downloading Whisper models"
-
-if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-    MODELS_TO_DOWNLOAD=("base" "base.en")
-    MODELS_SIZES=("142 MB" "142 MB")
-else
-    MODELS_TO_DOWNLOAD=("base" "base.en" "medium" "medium.en")
-    MODELS_SIZES=("142 MB" "142 MB" "1.42 GB" "1.42 GB")
-fi
-
+ACCEL="Skipped (Gemini 3.8 Live native transcription used by default)"
 PROJECT_MODELS_DIR="$(pwd)/models"
-
-progress "Model storage  : $WHISPER_DIR/models/"
-progress "Project link   : $PROJECT_MODELS_DIR/"
-echo ""
-
 mkdir -p "$PROJECT_MODELS_DIR"
+MODELS_TO_DOWNLOAD=()
 
-for i in "${!MODELS_TO_DOWNLOAD[@]}"; do
-    MODEL="${MODELS_TO_DOWNLOAD[$i]}"
-    SIZE="${MODELS_SIZES[$i]}"
-    BIN_FILE="$WHISPER_DIR/models/ggml-${MODEL}.bin"
-    LINK_FILE="$PROJECT_MODELS_DIR/ggml-${MODEL}.bin"
+if [ "$WITH_WHISPER" = "1" ]; then
+    step "STEP 6/8 — Detecting hardware acceleration & compiling whisper.cpp"
 
-    echo -e "    ${C_BOLD}[$(( i + 1 ))/${#MODELS_TO_DOWNLOAD[@]}]${C_RESET} Model: ${C_CYAN}${MODEL}${C_RESET}  (${SIZE})"
+    ACCEL="CPU"
+    CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF"
+    ARCH=$(uname -m)
 
-    if [ -f "$BIN_FILE" ]; then
-        ok "Already downloaded — skipping: ggml-${MODEL}.bin"
-    else
-        if { [ "$MODEL" = "medium" ] || [ "$MODEL" = "medium.en" ]; } && [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
-            warn "System has low RAM ($((TOTAL_RAM_KB / 1024)) MB). Skipping heavy medium model."
-            continue
+    if command -v nvidia-smi &>/dev/null || command -v nvcc &>/dev/null; then
+        CUDA_ARCH=""
+        if command -v nvidia-smi &>/dev/null; then
+            GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+            CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap \
+                --format=csv,noheader 2>/dev/null \
+                | head -1 | tr -d '.' || true)
         fi
+        CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_CUDA=1"
+        if [ -n "$CUDA_ARCH" ]; then
+            CMAKE_FLAGS="$CMAKE_FLAGS -DCMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH"
+            ACCEL="CUDA  (GPU: ${GPU_NAME:-unknown}  |  sm_${CUDA_ARCH})"
+        else
+            ACCEL="CUDA"
+        fi
+    elif (command -v vulkaninfo &>/dev/null || ldconfig -p 2>/dev/null | grep -q libvulkan) && [ "$ARCH" != "aarch64" ]; then
+        CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_VULKAN=1"
+        ACCEL="Vulkan"
+    elif ldconfig -p 2>/dev/null | grep -q libopenblas; then
+        CMAKE_FLAGS="-DWHISPER_BUILD_TESTS=OFF -DGGML_BLAS=1"
+        ACCEL="OpenBLAS"
+    else
+        if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            ACCEL="ARM NEON (Optimized ARM64 CPU)"
+        else
+            warn "No GPU acceleration detected. Building for plain CPU."
+            ACCEL="CPU (no hardware acceleration)"
+        fi
+    fi
 
-        progress "Downloading ggml-${MODEL}.bin ..."
-        bash "$WHISPER_DIR/models/download-ggml-model.sh" "$MODEL"
+    ok "Selected acceleration : ${C_GREEN}${ACCEL}${C_RESET}"
+    ok "cmake flags           : $CMAKE_FLAGS"
+
+    TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    if [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
+        JOBS=1
+        warn "Low RAM detected ($((TOTAL_RAM_KB / 1024)) MB). Limiting compiler to $JOBS core to prevent system freeze."
+    elif [ "$TOTAL_RAM_KB" -lt 2500000 ]; then
+        JOBS=2
+        warn "Moderate RAM detected ($((TOTAL_RAM_KB / 1024)) MB). Limiting compiler to $JOBS cores to prevent system freeze."
+    else
+        JOBS=$(nproc)
+    fi
+
+    WHISPER_DIR="$HOME/whisper.cpp"
+    progress "Cloning / updating whisper.cpp into $WHISPER_DIR ..."
+
+    if [ ! -d "$WHISPER_DIR" ]; then
+        git clone https://github.com/ggml-org/whisper.cpp.git "$WHISPER_DIR"
+        ok "Repository cloned."
+    else
+        cd "$WHISPER_DIR" && git pull && cd -
+        ok "Repository already exists — updated to latest."
+    fi
+
+    cd "$WHISPER_DIR"
+
+    progress "Running cmake configure..."
+    # shellcheck disable=SC2086
+    cmake -B build $CMAKE_FLAGS
+
+    progress "Compiling whisper-cli and quantize tools using $JOBS cores..."
+    cmake --build build --config Release -j"$JOBS"
+
+    sudo ln -sf "$WHISPER_DIR/build/bin/whisper-cli" /usr/local/bin/whisper-cli
+    ok "whisper-cli installed at /usr/local/bin/whisper-cli"
+
+    if [ -f "$WHISPER_DIR/build/bin/whisper-quantize" ]; then
+        sudo ln -sf "$WHISPER_DIR/build/bin/whisper-quantize" /usr/local/bin/whisper-quantize
+        ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
+    elif [ -f "$WHISPER_DIR/build/bin/quantize" ]; then
+        sudo ln -sf "$WHISPER_DIR/build/bin/quantize" /usr/local/bin/whisper-quantize
+        ok "whisper-quantize installed at /usr/local/bin/whisper-quantize"
+    fi
+
+    cd -
+
+    step "STEP 7/8 — Downloading Whisper models"
+
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        MODELS_TO_DOWNLOAD=("base" "base.en")
+        MODELS_SIZES=("142 MB" "142 MB")
+    else
+        MODELS_TO_DOWNLOAD=("base" "base.en" "medium" "medium.en")
+        MODELS_SIZES=("142 MB" "142 MB" "1.42 GB" "1.42 GB")
+    fi
+
+    for i in "${!MODELS_TO_DOWNLOAD[@]}"; do
+        MODEL="${MODELS_TO_DOWNLOAD[$i]}"
+        SIZE="${MODELS_SIZES[$i]}"
+        BIN_FILE="$WHISPER_DIR/models/ggml-${MODEL}.bin"
+        LINK_FILE="$PROJECT_MODELS_DIR/ggml-${MODEL}.bin"
+
+        echo -e "    ${C_BOLD}[$(( i + 1 ))/${#MODELS_TO_DOWNLOAD[@]}]${C_RESET} Model: ${C_CYAN}${MODEL}${C_RESET}  (${SIZE})"
 
         if [ -f "$BIN_FILE" ]; then
-            ok "Download complete: ggml-${MODEL}.bin"
+            ok "Already downloaded — skipping: ggml-${MODEL}.bin"
         else
-            err "Download failed for model '${MODEL}'. Check your connection and retry."
-        fi
-    fi
+            if { [ "$MODEL" = "medium" ] || [ "$MODEL" = "medium.en" ]; } && [ "$TOTAL_RAM_KB" -lt 1500000 ]; then
+                warn "System has low RAM ($((TOTAL_RAM_KB / 1024)) MB). Skipping heavy medium model."
+                continue
+            fi
 
-    if [ -f "$BIN_FILE" ] && [ ! -f "$LINK_FILE" ]; then
-        ln -s "$BIN_FILE" "$LINK_FILE"
-    fi
-done
+            progress "Downloading ggml-${MODEL}.bin ..."
+            bash "$WHISPER_DIR/models/download-ggml-model.sh" "$MODEL"
+
+            if [ -f "$BIN_FILE" ]; then
+                ok "Download complete: ggml-${MODEL}.bin"
+            else
+                err "Download failed for model '${MODEL}'. Check your connection and retry."
+            fi
+        fi
+
+        if [ -f "$BIN_FILE" ] && [ ! -f "$LINK_FILE" ]; then
+            ln -s "$BIN_FILE" "$LINK_FILE"
+        fi
+    done
+else
+    step "STEPS 6 & 7 — Skipping whisper.cpp build (Default in v2.0)"
+    ok "Gemini 3.8 Live transcribes calls natively. To install whisper.cpp later, run: ./install_system_deps.sh --with-whisper"
+fi
 
 # ============================================================
 #  STEP 8 — Python pip dependencies (Using --system-site-packages)
@@ -409,6 +394,7 @@ step "STEP 8/8 — Python pip dependencies"
 PIP_PACKAGES=(
     "google-genai"
     "aiohttp"
+    "curl_cffi"
     "streamlit"
     "protobuf>=5.26.1,<7.0.0"
 )
@@ -436,19 +422,21 @@ fi
 # ============================================================
 echo ""
 echo -e "${C_BLUE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete!${C_RESET}"
+echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.0)${C_RESET}"
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  Acceleration : ${C_GREEN}${ACCEL}${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  whisper-cli  : /usr/local/bin/whisper-cli"
-echo -e "${C_BLUE}║${C_RESET}  quantize     : /usr/local/bin/whisper-quantize"
-echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}Models downloaded:${C_RESET}"
-for MODEL in "${MODELS_TO_DOWNLOAD[@]}"; do
-    BIN="$PROJECT_MODELS_DIR/ggml-${MODEL}.bin"
-    if [ -e "$BIN" ]; then
-        echo -e "${C_BLUE}║${C_RESET}    ${C_GREEN}✔${C_RESET}  models/ggml-${MODEL}.bin"
-    fi
-done
+echo -e "${C_BLUE}║${C_RESET}  Whisper Mode : ${C_GREEN}${ACCEL}${C_RESET}"
+if [ "$WITH_WHISPER" = "1" ]; then
+    echo -e "${C_BLUE}║${C_RESET}  whisper-cli  : /usr/local/bin/whisper-cli"
+    echo -e "${C_BLUE}║${C_RESET}  quantize     : /usr/local/bin/whisper-quantize"
+    echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
+    echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}Models downloaded:${C_RESET}"
+    for MODEL in "${MODELS_TO_DOWNLOAD[@]}"; do
+        BIN="$PROJECT_MODELS_DIR/ggml-${MODEL}.bin"
+        if [ -e "$BIN" ]; then
+            echo -e "${C_BLUE}║${C_RESET}    ${C_GREEN}✔${C_RESET}  models/ggml-${MODEL}.bin"
+        fi
+    done
+fi
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}Next steps:${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  1. Reboot your system once to apply group & BT rules:"

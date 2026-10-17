@@ -1,5 +1,7 @@
+# AI Bluetooth Phone Assistant & Switchboard - Version 2.0
 google-genai
 aiohttp
+curl_cffi
 streamlit
 dbus-python
 PyGObject

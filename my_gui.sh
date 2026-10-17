@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# my_gui.sh v. 1.62 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 2.0 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
+#
+# Author: Antonio R.
+# Version: 2.0
+# License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
 #
@@ -130,16 +134,16 @@ DAEMON_CMD="export GEMINI_API_KEY=\"$GEMINI_API_KEY\"; export XDG_RUNTIME_DIR=\"
 if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0" ]; then
     echo "[INFO] Found emoji-supported terminal: $SELECTED_TERMINAL"
     echo "[INFO] Starting AI Phone Assistant daemon in a new window..."
-    
+
     case "$SELECTED_TERMINAL" in
         "xfce4-terminal")
-            xfce4-terminal --title="AI Phone Assistant Daemon" --command="bash -c '$DAEMON_CMD'" &
+            xfce4-terminal --title="AI Phone Assistant Daemon v2.0" --command="bash -c '$DAEMON_CMD'" &
             ;;
         "gnome-terminal")
-            gnome-terminal --title="AI Phone Assistant Daemon" -- bash -c "$DAEMON_CMD" &
+            gnome-terminal --title="AI Phone Assistant Daemon v2.0" -- bash -c "$DAEMON_CMD" &
             ;;
         "mate-terminal")
-            mate-terminal --title="AI Phone Assistant Daemon" --command="bash -c '$DAEMON_CMD'" &
+            mate-terminal --title="AI Phone Assistant Daemon v2.0" --command="bash -c '$DAEMON_CMD'" &
             ;;
         *)
             "$SELECTED_TERMINAL" -e bash -c "$DAEMON_CMD" &
@@ -152,16 +156,16 @@ else
         echo "[WARNING] No desktop environment or preferred terminal found (Headless Mode)."
     fi
     echo "[INFO] Launching the AI Phone Assistant daemon in the background..."
-    
+
     export GEMINI_API_KEY="$GEMINI_API_KEY"
     python3 phone_assistant.py &
     DAEMON_PID=$!
-    
+
     trap "echo '[INFO] Stopping background daemon...'; kill $DAEMON_PID 2>/dev/null" EXIT
 fi
 
 # Launch the Streamlit application in the current terminal
-echo "[INFO] Starting AI Switchboard Web Interface..."
+echo "[INFO] Starting AI Switchboard Web Interface v2.0..."
 
 if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
     LOCAL_IP=$(hostname -I | awk '{print $1}')
