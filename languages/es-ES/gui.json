@@ -2,33 +2,66 @@
   "gui_title": "Panel de Control - Centralita IA",
   "gui_header": "🎛️ Panel de Control - Centralita IA",
   "call_log_title": "📝 Registro de llamadas y Grabaciones",
-  "filters_title": "🚫 Filtros de Contactos y Prompts",
+  "messages_inbox_title": "📬 Recados del Llamante",
+  "filters_title": "🚫 Filtros de Contactos y Comodines",
   "settings_title": "⚙️ Ajustes del Asistente",
-  
+
   "wait_seconds_label": "Segundos de espera antes de descolgar:",
   "ui_spam_title": "🛡️ Protección IA contra SPAM",
-  "ui_spam_providers_desc": "Bases de datos de números. Escribe una URL por línea usando {number} donde va el teléfono:",
+  "ui_spam_providers_desc": "Bases de datos de números. Escribe una URL por línea usando {number}, {national} o {e164}:",
   "ui_spam_providers_label": "URLs de SPAM:",
   "auto_block_spam_label": "Colgar automáticamente si es Spam confirmado",
+  "ui_spam_cache_days_label": "Caducidad de caché SPAM (días):",
+  "ui_btn_clear_spam_cache": "🧹 Limpiar Caché",
+  "ui_toast_spam_cache_cleared": "Caché de SPAM vaciada",
+  "ui_spam_test_expander": "🔍 Probar Número contra Proveedores de SPAM",
+  "ui_spam_test_input": "Número de teléfono a probar:",
+  "ui_spam_test_btn": "Probar Proveedores SPAM",
+
   "priority_keywords_title": "🚨 Palabras Clave de Alta Prioridad",
   "priority_keywords_desc": "Si la conversación contiene estas palabras clave, se activará la atención prioritaria independientemente del tipo de propietario:",
-  "software_echo_label": "Activar Supresión de Eco por Software",
-  
+  "software_echo_label": "Activar Supresión de Eco por Software (Half-Duplex)",
+  "protect_greeting_label": "Proteger Saludo Inicial frente a cortes/ruidos al descolgar",
+  "caller_gain_label": "Ganancia Micro Llamante (x):",
+  "noise_gate_label": "Umbral Base Puerta de Ruido (RMS):",
+  "vad_start_sens_label": "Sensibilidad Inicio VAD:",
+  "vad_end_sens_label": "Sensibilidad Fin VAD:",
+  "vad_prefix_padding_label": "Padding Prefijo VAD (ms):",
+  "vad_silence_duration_label": "Duración Silencio VAD (ms):",
+
   "identity_title": "👤 Identidad del Asistente",
   "assistant_name_label": "Nombre de tu asistente virtual:",
   "assistant_gender_label": "Género y voz del asistente:",
   "whisper_model_label": "Modelo Whisper (GGML):",
-  
+  "ui_model_installed": "está instalado.",
+  "ui_model_missing": "no está descargado todavía.",
+  "ui_terminal_select": "Terminal de Instalación:",
+  "ui_btn_install_whisper_model": "⬇️ Descargar / Cuantizar Modelo",
+  "ui_installing_model_wait": "Instalando modelo {model}. Por favor, espere...",
+  "gemini_live_trans_note": "ℹ️ Gemini 3.8 Live ya transcribe las llamadas de forma nativa en tiempo real. Whisper.cpp local es opcional.",
+  "whisper_not_installed_info": "whisper-cli no está instalado. Ejecuta './install_system_deps.sh --with-whisper' si deseas soporte local de Whisper.cpp.",
+
   "ui_initial_greeting": "Saludo Inicial Exacto (Aviso Legal):",
   "ui_extra_prompt": "Personalidad e Instrucciones Extra:",
   "ui_text_model_label": "Modelo de Texto (Análisis y SPAM):",
   "default_legal_warning": "Hola. Soy una inteligencia artificial y esta llamada está siendo grabada por seguridad. ¿En qué le puedo ayudar?",
-  
-  "memory_title": "🧠 Memoria por Categorías",
+
+  "memory_title": "🧠 Memoria de Llamadas y Reglas por Categoría",
+  "memory_mode_select_label": "Modo de Memoria:",
+  "memory_mode_labels": {
+    "disabled": "Desactivada (Sin memoria de llamadas pasadas)",
+    "per_number": "Por Número de Teléfono (Por defecto)",
+    "per_category": "Por Categoría / Etiqueta de Contacto",
+    "global": "Global (Todas las llamadas que no sean SPAM)"
+  },
+  "memory_global_warning": "⚠️ Aviso: En modo Global, la IA conoce los resúmenes de llamadas recientes (no SPAM) de cualquier número. Un llamante desconocido podría intentar sonsacar datos de otras personas.",
+  "memory_max_calls_label": "Llamadas a recordar:",
+  "memory_max_days_label": "Antigüedad máx. (días):",
+  "memory_max_chars_label": "Máximo de caracteres:",
   "add_category_label": "Añadir nueva categoría (ej: Abogados, Familia):",
   "create_category_btn": "➕ Crear Categoría",
   "save_memory_btn": "💾 Guardar Configuración",
-  
+
   "owner_settings_title": "👤 Configuración del Jefe / Propietario",
   "owner_name_label": "Nombre del propietario/jefe:",
   "owner_type_label": "Tipo de propietario:",
@@ -38,22 +71,40 @@
   "language_label": "Idioma del Sistema / System Language:",
   "transcription_mode_title": "🎙️ Modo de Transcripción",
   "transcription_mode_label": "Selecciona el motor de transcripción:",
-  
+
   "monitor_mode_title": "🔊 Monitorización por los Altavoces del PC",
   "monitor_mode_label": "Selecciona qué deseas escuchar por los altavoces de tu PC:",
   "monitor_mode_opts_labels": {
-    "both": "Ambos (Llamante y Secretaria)",
     "none": "Ninguno (Silencio total en PC)",
+    "both": "Ambos (Llamante y Secretaria)",
     "caller": "Solo Llamante",
     "assistant": "Solo Secretaria"
   },
-  
+
   "allow_pc_mic_label": "Permitir micrófono del PC",
   "allow_pc_mic_desc": "El micrófono del PC está aislado para evitar filtraciones de audio y eco.",
   "allow_pc_mic_warning": "⚠ Advertencia: Si activa esto, el llamante podría escuchar lo que se hable cerca del micrófono del PC sin que usted se entere.",
 
+  "ui_daemon_control_title": "Control de Centralita y Servidor Linux",
+  "ui_daemon_status_label": "Estado:",
+  "ui_daemon_status_running": "🟢 Activo (Escuchando llamadas)",
+  "ui_daemon_status_paused": "⏸️ En Pausa (Las llamadas suenan sin descolgar)",
+  "ui_daemon_status_stopped": "🔴 Detenido / Apagado",
+  "ui_btn_pause_daemon": "⏸️ Pausar Centralita",
+  "ui_btn_resume_daemon": "▶️ Reanudar Centralita",
+  "ui_btn_stop_daemon": "⏹️ Detener Daemon",
+  "ui_btn_reboot_server": "🔄 Reiniciar Servidor Linux",
+  "ui_confirm_reboot_warning": "⚠️ ¿Seguro que deseas reiniciar por completo el servidor Linux?",
+  "ui_sudo_password_label": "Contraseña sudo (necesaria para reiniciar):",
+  "ui_btn_confirm_reboot_yes": "✅ Sí, Reiniciar Ahora",
+  "ui_toast_daemon_paused": "Centralita en pausa",
+  "ui_toast_daemon_resumed": "Centralita reanudada",
+  "ui_toast_daemon_stopped": "Señal de parada enviada al daemon",
+  "ui_toast_rebooting": "Reiniciando el servidor Linux...",
+
   "ui_in_progress": "🟢 EN CURSO",
   "ui_general_call": "🟡 LLAMADA GENERAL",
+  "ui_call_summary": "Resumen IA:",
   "ui_caller_name": "👤 Nombre del llamante:",
   "ui_company": "🏢 Empresa:",
   "ui_transcript": "Transcripción:",
@@ -69,7 +120,17 @@
   "ui_toast_phrase_updated": "Frase actualizada",
   "ui_toast_phrase_deleted": "Frase eliminada",
   "ui_no_calls": "No hay llamadas registradas todavía.",
-  
+
+  "ui_messages_unread": "sin leer",
+  "ui_messages_unread_only": "Mostrar solo no leídos",
+  "ui_messages_import_btn": "📥 Importar Antiguos",
+  "ui_messages_imported_toast": "Recados importados: {count}",
+  "ui_message_date_time": "Fecha y Hora Exacta:",
+  "ui_btn_mark_read": "✓ Marcar Leído",
+  "ui_btn_mark_unread": "✉️ Marcar No Leído",
+  "ui_btn_delete_msg": "🗑️ Borrar",
+  "ui_no_messages": "Todavía no hay recados guardados.",
+
   "ui_cleanup_title": "Limpieza Automática de Datos",
   "ui_cleanup_audio_label": "Borrar grabaciones de audio anteriores a (días):",
   "ui_cleanup_audio_btn": "🗑️ Borrar Grabaciones",
@@ -79,12 +140,18 @@
   "ui_cleanup_records_done": "Registros eliminados: {count}",
   "ui_cleanup_all_btn": "🔥 Borrar TODOS los Registros y Grabaciones",
   "ui_cleanup_all_done": "Se han eliminado todos los registros ({records}) y grabaciones ({audio}).",
-  
-  "ui_form_phone": "Número de Teléfono (ej. +34600...):",
-  "ui_form_category": "Categoría:",
+
+  "ui_wildcard_hint": "Admite números exactos (614027865) y comodines (* y ?, ej: 626288*).",
+  "ui_form_phone": "Número o Comodín (ej. 626288*):",
+  "ui_form_category": "Acción:",
+  "ui_form_tag": "Etiqueta personalizada (opcional):",
+  "ui_form_note": "Nota / Nombre (ej. Tía María, Comercial):",
   "ui_form_prompt": "Instrucciones personalizadas:",
-  "ui_form_save_rule": "Guardar Regla",
-  "ui_managed_contacts": "Contactos gestionados:",
+  "ui_form_save_rule": "💾 Guardar Regla",
+  "ui_managed_contacts": "Contactos y reglas con comodín:",
+  "ui_btn_update_contact": "💾 Actualizar",
+  "ui_btn_delete_contact": "🗑️ Borrar",
+  "ui_no_contacts": "No hay contactos ni comodines configurados todavía.",
   "ui_tag_label": "🏷️ Clasificación:",
 
   "ui_whisper_base": "Modelo Base:",
@@ -93,7 +160,7 @@
   "ui_cat_keywords": "Palabras clave (separadas por coma):",
   "ui_cat_days": "Días de memoria:",
   "ui_cat_wait": "Segundos de espera dinámica:",
-  "audio_mode_title": "🔊 Modo de Audio (Full Duplex / Half Duplex)",
+  "audio_mode_title": "🎚️ Ajuste de Audio, Eco y VAD (Gemini 3.8)",
   "show_system_msg_label": "👁️ Mostrar mensajes de sistema en la transcripción (Hold, Cuelgues, etc.)",
 
   "modal_confirm_lang_title": "⚠️ ¿Desea cambiar el idioma a {lang}?",
@@ -104,24 +171,25 @@
   "modal_btn_cancel": "❌ Cancelar",
 
   "trans_mode_opts_labels": {
-    "realtime": "Tiempo real (Whisper.cpp)",
     "disabled": "Desactivado (Solo Gemini Live)",
+    "realtime": "Tiempo real (Whisper.cpp)",
     "whisper_final": "Whisper.cpp al final de la llamada",
     "gemini_final": "Gemini Flash 3 al final de la llamada"
   },
-  
+
   "tags": [
     "🔴 POSIBLE ESTAFA / SPAM",
     "🔵 PRIORITARIA / CITAS",
     "🟢 PERSONAL / CONFIANZA",
     "🟠 TRABAJO / NEGOCIOS",
-    "🟡 LLAMADA GENERAL"
+    "🟡 LLAMADA GENERAL",
+    "🚫 LISTA NEGRA"
   ],
-  
+
   "owner_types": ["privado", "profesional", "negocio"],
   "gender_types": ["femenino", "masculino"],
   "text_model_opts": ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
-  
+
   "defaults": {
     "assistant_name": "Beatriz",
     "boss_name": "Antonio",
