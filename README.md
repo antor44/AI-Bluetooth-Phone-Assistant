@@ -45,6 +45,8 @@ To overcome these commercial barriers, I have developed this Python application 
   </tr>
 </table>
 
+> 📶 **No Wi-Fi around? The required Internet connection can come from the phone itself: just turn on its Wi-Fi hotspot (also called tethering or mobile hotspot) and share its mobile data.**
+
 <br><br>
 
 <table>
