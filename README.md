@@ -28,31 +28,40 @@ To overcome these commercial barriers, I have developed this Python application 
 
 <table>
   <tr>
-    <td width="33%" align="center" valign="top">
-      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank1.jpg" width="100%">
-      <br><b>🔋 Portable SBC example</b><br>An Orange Pi Zero 3 with only 1.5 GB of RAM, connected to the router via Wi-Fi and powered by a power bank.
-    </td>
-    <td width="33%" align="center" valign="top">
-      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank2.jpg" width="100%">
-      <br><b>🔍 Close-up</b><br>A closer look at the board, showing the details of a simple metal case.
-    </td>
-    <td width="33%" align="center" valign="top">
-      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank3.jpg" width="100%">
-      <br><b>🔵 External USB Bluetooth</b><br>Detail of the USB Bluetooth dongle that replaces the defective onboard chip of the Zero 3.
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" align="center" valign="top">
+    <td width="31%" align="center" valign="top">
       <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant3.jpg" width="100%">
       <br><b>🛡️ The Ultimate SPAM Shield</b><br>Enjoy your free time in peace. The AI intercepts unknown callers, verifies their numbers against live SPAM databases, and automatically terminates telemarketing calls before they bother you.
     </td>
-    <td width="33%" align="center" valign="top">
+    <td width="3.5%"></td>
+    <td width="31%" align="center" valign="top">
       <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant2.jpg" width="100%">
       <br><b>🛠️ Hands-Free & Deep Work</b><br>Perfect for mechanics, freelancers, or programmers. Maintain your flow state or keep working with dirty hands while your AI secretary gracefully handles clients and takes detailed messages.
     </td>
-    <td width="33%" align="center" valign="top">
+    <td width="3.5%"></td>
+    <td width="31%" align="center" valign="top">
       <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant1.jpg" width="100%">
-      <br><b>🏖️ Free time call answered.</b>
+      <br><b>🎶 Your free time, protected.</b><br>Even a call from Mom during a concert gets answered: the whole setup fits in your pockets, and you decide later whether to call back. Or, if Mom is not one to be trifled with, you can jump in and take over the call in the middle of her conversation with the AI.
+    </td>
+  </tr>
+</table>
+
+<br><br>
+
+<table>
+  <tr>
+    <td width="31%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank1.jpg" width="100%">
+      <br><b>🔋 Portable SBC example</b><br>An Orange Pi Zero 3 with only 1.5 GB of RAM, connected to the router via Wi-Fi and powered by a power bank.
+    </td>
+    <td width="3.5%"></td>
+    <td width="31%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank2.jpg" width="100%">
+      <br><b>🔍 Close-up</b><br>A closer look at the board, showing the details of a simple metal case.
+    </td>
+    <td width="3.5%"></td>
+    <td width="31%" align="center" valign="top">
+      <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Orange_Pi_Zero_3_powerbank3.jpg" width="100%">
+      <br><b>🔵 External USB Bluetooth</b><br>Detail of the USB Bluetooth dongle that replaces the defective onboard chip of the Zero 3.
     </td>
   </tr>
 </table>
