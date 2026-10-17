@@ -194,10 +194,12 @@ Clone the repository and run the automated dependency installer:
 git clone https://github.com/antor44/AI-Bluetooth-Phone-Assistant.git
 cd AI-Bluetooth-Phone-Assistant
 chmod +x install_system_deps.sh my_gui.sh
-
+```
+```bash
 # Standard installation (uses Gemini 3.8 Live native transcription, skips whisper.cpp compilation):
 ./install_system_deps.sh
-
+```
+```bash
 # Optional (Desktop PCs): Pass --with-whisper to also compile whisper.cpp and download GGML models:
 ./install_system_deps.sh --with-whisper
 ```
