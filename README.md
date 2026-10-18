@@ -394,12 +394,56 @@ On a headless SBC (e.g., Orange Pi Zero 3 via SSH) or to expose the Web GUI over
 ```
 Then open `http://<YOUR_DEVICE_IP>:8501` from any browser on your local network.
 
-*(Optional CLI SPAM Test):* You can also test any phone number against your configured SPAM providers from the terminal:
+#### 📱 Accessing the Web GUI from a Smartphone (Same LAN or Tethering)
+The Web GUI is a regular web page, so you can manage the switchboard directly from the **browser of the phone used for the calls**, or from **any other smartphone or tablet**, as long as the device running the assistant and the phone are on the **same local network** (home Wi-Fi/router) or connected through **tethering** (the phone's Wi-Fi hotspot, or USB tethering).
+
+1. Start the GUI in LAN mode with `./my_gui.sh --lan` (or use the systemd service below, which already does this).
+2. Note the LAN IP address printed in the terminal (`[INFO] Open your PC browser and go to: ...`), or find it with `hostname -I`.
+3. On the phone, open the browser and enter:
+   ```
+   http://<ip_lan>:8501
+   ```
+   For example: `http://192.168.1.50:8501`
+
+> **Tethering note:** when the assistant's device is connected to a phone's hotspot, its IP address is assigned by that phone (usually in a range like `192.168.43.x` or `172.20.10.x`), so check it again with `hostname -I` every time you change network.
+
+> ⚠️ **Security warning:** the Web GUI has **no login or password** and includes sensitive features (call recordings, transcripts, messages, API settings and remote server reboot). Only use it on networks you trust, and **never expose port 8501 to the Internet** (no router port forwarding). For remote access from outside your LAN, see the next section.
+
+#### 🌍 Secure Remote Access from Anywhere (Outside Your LAN)
+To manage the switchboard from your phone while away from home (mobile data, work, travel), use a **private VPN tunnel** instead of exposing the GUI to the Internet. [Tailscale](https://tailscale.com) is the easiest option: it is free for personal use, needs **no router configuration or port forwarding**, and works even behind CGNAT (common with mobile and fibre ISPs).
+
+**On the switchboard device (PC / Orange Pi):**
 ```bash
-source venv/bin/activate
-python3 phone_assistant.py --test-spam +34600000000
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up          # opens a login link: sign in once with your account
+tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
 ```
 
+**On your Android phone:**
+1. Install the **Tailscale** app from Google Play and sign in with the **same account**.
+2. Turn the VPN switch on.
+3. Open the phone browser and go to:
+   ```
+   http://<tailscale_ip>:8501
+   ```
+   (or use the device's MagicDNS name, e.g. `http://orangepi:8501`).
+
+**Tips:**
+* Use Chrome's **"Add to Home screen"** to get an app-like icon that opens the GUI directly.
+* Optional HTTPS inside your private network: `sudo tailscale serve --bg 8501` publishes the GUI only to your own devices at `https://<device>.<tailnet>.ts.net`.
+* Do **not** use `tailscale funnel` or router port forwarding for this service: that would make the GUI public and it has no authentication.
+* Alternatives: a self-hosted **WireGuard** server on your router, or any other VPN that gives your phone a private route to the switchboard device.
+
+---
+**🛡️ Optional CLI SPAM Test**
+
+You can also test any phone number against your configured SPAM providers from the terminal.
+Run it from the project directory (also when connected via SSH):
+```bash
+cd ~/AI-Bluetooth-Phone-Assistant
+source venv/bin/activate        # use your own environment name if different (.venv, conda...)
+python3 phone_assistant.py --test-spam +34600000000
+```
 ---
 
 ### 2. Automatic Startup on Boot (Systemd User Service)
