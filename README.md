@@ -68,8 +68,10 @@ To overcome these commercial barriers, I have developed this Python application 
     </td>
   </tr>
 </table>
-
-> 🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see *SBC Audio Note* below), so to monitor call audio locally it is recommended to use a **USB sound card or USB speakers**.
+<div align="center">
+  <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile1.jpg" width="80%">
+  <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see *SBC Audio Note* below), so to monitor call audio locally it is recommended to use a **USB sound card or USB speakers**.</b>
+</div>
 
 Author: Antonio R. | Version: 2.0 | License: GPL 3.0
 
