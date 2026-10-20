@@ -187,7 +187,7 @@
   "ui_cleanup_all_btn": "🔥 Borrar TODOS los Registros y Grabaciones",
   "ui_cleanup_all_done": "Se han eliminado todos los registros ({records}) y grabaciones ({audio}).",
 
-  "ui_wildcard_hint": "Admite números exactos (614027865) y comodines (* y ?, ej: 626288*).",
+  "ui_wildcard_hint": "Admite números exactos (600123456) y comodines (* y ?, ej: 626288*).",
   "ui_form_phone": "Número o Comodín (ej. 626288*):",
   "ui_form_category": "Acción:",
   "ui_form_tag": "Etiqueta personalizada (opcional):",
