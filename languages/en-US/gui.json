@@ -187,7 +187,7 @@
   "ui_cleanup_all_btn": "🔥 Delete ALL Records and Recordings",
   "ui_cleanup_all_done": "All records ({records}) and recordings ({audio}) deleted.",
 
-  "ui_wildcard_hint": "Supports exact numbers (614027865) and wildcards (* and ?, e.g. 626288*).",
+  "ui_wildcard_hint": "Supports exact numbers (600123456) and wildcards (* and ?, e.g. 626288*).",
   "ui_form_phone": "Phone Number or Wildcard (e.g., 626288*):",
   "ui_form_category": "Action:",
   "ui_form_tag": "Custom Tag (optional):",
