@@ -1,6 +1,0 @@
-{
-  "providers": [
-    "https://www.listaspam.com/busca.php?Telefono={national}",
-    "https://www.tellows.es/num/%2B34{national}"
-  ]
-}
