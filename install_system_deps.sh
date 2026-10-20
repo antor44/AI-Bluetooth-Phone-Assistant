@@ -5,12 +5,13 @@
 # phone_assistant.py and gui.py.
 # If --with-whisper is passed, also auto-detects hardware acceleration,
 # compiles whisper-cli and whisper-quantize from source, and downloads GGML models.
+# If --with-tor is passed, also installs tor and openssl (needed only for Remote Access over Tor).
 #
 # Supported distros : Ubuntu/Debian, Fedora/RHEL/CentOS, Arch Linux, openSUSE
 # Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 2.0
+# Version: 2.4
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -33,9 +34,12 @@
 set -e
 
 WITH_WHISPER=0
+WITH_TOR=0
 for arg in "$@"; do
     if [ "$arg" == "--with-whisper" ]; then
         WITH_WHISPER=1
+    elif [ "$arg" == "--with-tor" ]; then
+        WITH_TOR=1
     fi
 done
 
@@ -83,6 +87,7 @@ esac
 ok "Distro       : ${PRETTY_NAME:-$DISTRO}"
 ok "Pkg mgr      : $PKG_MGR"
 ok "Whisper build: $( [ "$WITH_WHISPER" = "1" ] && echo "ENABLED (--with-whisper)" || echo "SKIPPED by default (pass --with-whisper to enable)" )"
+ok "Tor remote access packages: $( [ "$WITH_TOR" = "1" ] && echo "ENABLED (--with-tor)" || echo "SKIPPED by default (pass --with-tor to enable)" )"
 
 pkg_install() {
     case "$PKG_MGR" in
@@ -387,6 +392,20 @@ else
 fi
 
 # ============================================================
+#  OPTIONAL — Tor and OpenSSL (only for Remote Access over Tor)
+# ============================================================
+if [ "$WITH_TOR" = "1" ]; then
+    step "OPTIONAL — Tor and OpenSSL for Remote Access"
+    progress "Installing tor and openssl..."
+    pkg_install tor openssl
+    ok "tor and openssl installed. Enable remote access from the Web GUI (Remote access (Tor) panel)."
+    ok "The switchboard runs its own private Tor instance; the system 'tor' service is not needed (optional: sudo systemctl disable --now tor)."
+else
+    step "OPTIONAL — Tor remote access (skipped)"
+    ok "To use Remote Access over Tor later, run: ./install_system_deps.sh --with-tor   (or: sudo apt install tor openssl)"
+fi
+
+# ============================================================
 #  STEP 8 — Python pip dependencies (Using --system-site-packages)
 # ============================================================
 step "STEP 8/8 — Python pip dependencies"
@@ -417,14 +436,23 @@ else
     err "pip installation failed."
 fi
 
+# Optional MP3 encoder for call recordings (lightweight LAME binding). Without it recordings are saved as WAV.
+progress "Installing the MP3 encoder for call recordings (lameenc)..."
+if pip3 install lameenc --quiet; then
+    ok "MP3 encoder installed. Call recordings will be saved as MP3."
+else
+    warn "lameenc could not be installed. Call recordings will be saved as WAV instead."
+fi
+
 # ============================================================
 #  Final summary
 # ============================================================
 echo ""
 echo -e "${C_BLUE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.0)${C_RESET}"
+echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.4)${C_RESET}"
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  Whisper Mode : ${C_GREEN}${ACCEL}${C_RESET}"
+echo -e "${C_BLUE}║${C_RESET}  Tor access   : $( [ "$WITH_TOR" = "1" ] && echo "tor + openssl installed" || echo "not installed (use --with-tor)" )"
 if [ "$WITH_WHISPER" = "1" ]; then
     echo -e "${C_BLUE}║${C_RESET}  whisper-cli  : /usr/local/bin/whisper-cli"
     echo -e "${C_BLUE}║${C_RESET}  quantize     : /usr/local/bin/whisper-quantize"

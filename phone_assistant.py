@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 2.0
+Version: 2.4
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -31,16 +31,19 @@ import os
 import sys
 import json
 import asyncio
+import base64
 import re
 import fnmatch
 import sqlite3
 import time
 import wave
 import struct
+import array
 import math
 import subprocess
 import shutil
 import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import aiohttp
 import datetime
 import warnings
@@ -63,6 +66,18 @@ try:
     from curl_cffi import requests as curl_requests
 except ImportError:
     curl_requests = None
+
+try:
+    import lameenc
+except ImportError:
+    lameenc = None
+
+# Line-buffered output keeps the console and the systemd journal in real time when stdout is a pipe.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(line_buffering=True)
+    except Exception:
+        pass
 
 SUPPORTS_COLOR = sys.stdout.isatty()
 
@@ -190,6 +205,130 @@ def normalize_contact_pattern(pattern: str) -> str:
     return cleaned
 
 
+def monitor_volume_percent() -> int:
+    """Monitoring volume (0-100) configured in the control panel."""
+    try:
+        return max(0, min(100, int(float(get_config("monitor_volume", "100")))))
+    except ValueError:
+        return 100
+
+
+def find_sink_input_ids(pactl_listing: str, process_id: int) -> List[str]:
+    """Returns the sink-input ids that belong to a process, parsed from `pactl list sink-inputs`."""
+    ids = []
+    for block in pactl_listing.split("Sink Input #")[1:]:
+        lines = block.splitlines()
+        if not lines:
+            continue
+        if re.search(rf'application\.process\.id\s*=\s*"{process_id}"', block):
+            ids.append(lines[0].strip())
+    return ids
+
+
+class MonitorWriter:
+    """Feeds a monitoring player (pacat) from a bounded queue and a worker thread.
+
+    Writing to a pipe from the asyncio loop blocks the whole call loop whenever the player is slower than
+    the incoming audio, which delays microphone reads and recording timestamps. Monitoring is best-effort,
+    so chunks are dropped when the queue is full instead of waiting.
+    """
+
+    def __init__(self, proc, max_chunks: int = 400):
+        self.proc = proc
+        self.chunks = queue.Queue(maxsize=max_chunks)
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker.start()
+
+    def write(self, data: bytes) -> None:
+        try:
+            self.chunks.put_nowait(data)
+        except queue.Full:
+            try:
+                self.chunks.get_nowait()
+                self.chunks.put_nowait(data)
+            except (queue.Empty, queue.Full):
+                pass
+
+    def _run(self) -> None:
+        while True:
+            try:
+                chunk = self.chunks.get(timeout=1.0)
+            except queue.Empty:
+                if self.proc.poll() is not None:
+                    return
+                continue
+            try:
+                self.proc.stdin.write(chunk)
+                self.proc.stdin.flush()
+            except Exception:
+                return
+
+
+# Call recordings are stored as MP3 when the optional "lameenc" encoder is installed (WAV otherwise).
+AUDIO_EXT = ".mp3" if lameenc is not None else ".wav"
+MP3_BITRATE_MONO_KBPS = 32
+MP3_BITRATE_STEREO_KBPS = 64
+MP3_QUALITY = 5
+MP3_CHUNK_BYTES = 1 << 20
+
+MEMORY_MODES = ("priority", "disabled", "only_categories", "only_numbers", "only_global")
+MEMORY_MODE_ALIASES = {"per_number": "only_numbers", "per_category": "only_categories", "global": "only_global"}
+
+
+def normalize_memory_mode(value: str) -> str:
+    """Maps legacy memory modes to the current ones and falls back to the priority system."""
+    mode = MEMORY_MODE_ALIASES.get(value, value)
+    return mode if mode in MEMORY_MODES else "priority"
+
+
+def encode_pcm_to_mp3(pcm: bytes, sample_rate: int, channels: int) -> bytes:
+    """Encodes 16-bit little-endian PCM into an MP3 byte string using LAME."""
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(MP3_BITRATE_STEREO_KBPS if channels == 2 else MP3_BITRATE_MONO_KBPS)
+    encoder.set_in_sample_rate(sample_rate)
+    encoder.set_out_sample_rate(sample_rate)
+    encoder.set_channels(channels)
+    encoder.set_quality(MP3_QUALITY)
+    frame_bytes = 2 * channels
+    pcm = pcm[:len(pcm) - (len(pcm) % frame_bytes)]
+    chunk = MP3_CHUNK_BYTES - (MP3_CHUNK_BYTES % frame_bytes)
+    out = bytearray()
+    for start in range(0, len(pcm), chunk):
+        out += encoder.encode(pcm[start:start + chunk])
+    out += encoder.flush()
+    return bytes(out)
+
+
+def save_pcm_recording(path: str, pcm: bytes, sample_rate: int, channels: int) -> None:
+    """Saves 16-bit PCM as MP3 when the path ends with .mp3 (and the encoder is available), otherwise as WAV."""
+    if path.lower().endswith(".mp3") and lameenc is not None:
+        tmp_path = path + ".part"
+        with open(tmp_path, "wb") as f:
+            f.write(encode_pcm_to_mp3(pcm, sample_rate, channels))
+        os.replace(tmp_path, path)
+        return
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm)
+
+
+def interleave_to_stereo(left_pcm: bytes, right_pcm: bytes) -> bytes:
+    """Interleaves two mono 16-bit PCM tracks into one stereo track (left, right)."""
+    frames = min(len(left_pcm), len(right_pcm)) // 2
+    left = array.array("h")
+    left.frombytes(left_pcm[:frames * 2])
+    right = array.array("h")
+    right.frombytes(right_pcm[:frames * 2])
+    stereo = array.array("h", bytes(frames * 4))
+    stereo[0::2] = left
+    stereo[1::2] = right
+    if sys.byteorder == "big":
+        stereo.byteswap()
+    return stereo.tobytes()
+
+
 def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
     """Matches caller_number against contacts (Exact match first, most specific wildcard second)."""
     _, _, caller_candidates = normalize_phone_candidates(caller_number)
@@ -198,7 +337,10 @@ def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        rows = conn.execute("SELECT number, type, prompt_rules, tag, note FROM contacts").fetchall()
+        try:
+            rows = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts").fetchall()
+        except sqlite3.OperationalError:
+            rows = [tuple(r) + ("", None, None) for r in conn.execute("SELECT number, type, prompt_rules, tag, note FROM contacts").fetchall()]
     except Exception:
         rows = []
     finally:
@@ -208,7 +350,7 @@ def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
     wildcard_matches = []
 
     for row in rows:
-        pat_raw, c_type, prompt_rules, tag, note = row
+        pat_raw, c_type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days = row
         pat_norm = normalize_contact_pattern(pat_raw)
         if not pat_norm:
             continue
@@ -219,7 +361,10 @@ def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
             "type": c_type or "whitelist",
             "prompt_rules": prompt_rules or "",
             "tag": tag or "",
-            "note": note or ""
+            "note": note or "",
+            "mem_mode": mem_mode or "",
+            "mem_calls": mem_calls,
+            "mem_days": mem_days
         }
 
         if any(w in pat_norm for w in ("*", "?")):
@@ -359,7 +504,8 @@ def ensure_database_exists() -> None:
                   tag TEXT, client_name TEXT, company TEXT, summary TEXT DEFAULT '')''')
     c.execute('''CREATE TABLE IF NOT EXISTS contacts 
                  (number TEXT PRIMARY KEY, type TEXT, prompt_rules TEXT,
-                  tag TEXT DEFAULT '', note TEXT DEFAULT '')''')
+                  tag TEXT DEFAULT '', note TEXT DEFAULT '',
+                  mem_mode TEXT DEFAULT '', mem_calls INTEGER, mem_days INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS messages 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER, number TEXT,
                   date TEXT, time TEXT, caller_name TEXT, message_text TEXT,
@@ -373,7 +519,10 @@ def ensure_database_exists() -> None:
     for alter_sql in [
         "ALTER TABLE calls ADD COLUMN summary TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN tag TEXT DEFAULT ''",
-        "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''"
+        "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
+        "ALTER TABLE contacts ADD COLUMN mem_mode TEXT DEFAULT ''",
+        "ALTER TABLE contacts ADD COLUMN mem_calls INTEGER",
+        "ALTER TABLE contacts ADD COLUMN mem_days INTEGER"
     ]:
         try:
             c.execute(alter_sql)
@@ -391,7 +540,7 @@ def ensure_database_exists() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'en-US')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
 
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'per_number')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'priority')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_calls', '1')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_days', '30')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_chars', '2500')")
@@ -409,6 +558,15 @@ def ensure_database_exists() -> None:
 
     c.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_state', 'running')")
     c.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
+
+    # Remote access through a private Tor onion service (off unless the user enables it in the GUI)
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_enabled', 'false')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_gui_port', '8501')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_notify_port', '8502')")
+    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_status', 'off')")
+    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_progress', '0')")
+    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_onion', '')")
+    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_error', '')")
 
     conn.commit()
     conn.close()
@@ -849,6 +1007,9 @@ class PhoneAssistant:
         self.recording_buffer_wav = bytearray()
         self.caller_recording_buffer = []
         self.currently_playing = False
+        self._routing_diag_logged = False
+        self._removed_loop_links = set()
+        self._monitor_volume_applied = {}
         self.call_start_time = time.time()
 
         self.first_mic_time = 0.0
@@ -898,8 +1059,8 @@ class PhoneAssistant:
         recordings_dir = os.path.join(BASE_DIR, "recordings")
         os.makedirs(recordings_dir, exist_ok=True)
         ts_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.recording_path = os.path.join(recordings_dir, f"call_{self.national_number or caller_number}_{ts_str}.wav")
-        self.client_recording_path = os.path.join(recordings_dir, f"call_{self.national_number or caller_number}_{ts_str}_client.wav")
+        self.recording_path = os.path.join(recordings_dir, f"call_{self.national_number or caller_number}_{ts_str}{AUDIO_EXT}")
+        self.client_recording_path = os.path.join(recordings_dir, f"call_{self.national_number or caller_number}_{ts_str}_client{AUDIO_EXT}")
 
         self.client_text = genai.Client(api_key=API_KEY)
         self.client_live = genai.Client(api_key=API_KEY, http_options={"api_version": "v1alpha"})
@@ -910,9 +1071,25 @@ class PhoneAssistant:
             "summary": "", "response_text": ""
         }
 
+    @staticmethod
+    def _find_memory_category(target_tag: str) -> Optional[Dict[str, Any]]:
+        """Returns the first category rule whose name or keywords match the given tag."""
+        if not target_tag:
+            return None
+        try:
+            mem_rules = json.loads(get_config("memory_rules", "[]"))
+        except Exception:
+            return None
+        tag_low = target_tag.lower()
+        for rule in mem_rules:
+            cat_name = rule.get("category", "").lower()
+            if cat_name and (cat_name in tag_low or any(kw in tag_low for kw in rule.get("keywords", []))):
+                return rule
+        return None
+
     def build_memory_context(self, contact_match: Optional[Dict[str, str]]) -> str:
-        """Builds historical call context according to the selected memory_mode."""
-        memory_mode = get_config("memory_mode", "per_number")
+        """Builds historical call context. Priority system: number rule > category rule > default (this number)."""
+        memory_mode = normalize_memory_mode(get_config("memory_mode", "priority"))
         if memory_mode == "disabled":
             return ""
 
@@ -929,6 +1106,32 @@ class PhoneAssistant:
         except ValueError:
             max_chars = 2500
 
+        # Level 1: rule attached to the number (exact contact or wildcard)
+        number_rule_custom = False
+        if memory_mode in ("priority", "only_numbers") and contact_match:
+            number_rule_mode = (contact_match.get("mem_mode") or "").strip()
+            if number_rule_mode == "none":
+                print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Memory] Disabled by the rule of this number.{_R}")
+                return ""
+            if number_rule_mode == "custom":
+                number_rule_custom = True
+                try:
+                    if contact_match.get("mem_calls"):
+                        max_calls = max(1, int(contact_match["mem_calls"]))
+                    if contact_match.get("mem_days"):
+                        max_days = max(1, int(contact_match["mem_days"]))
+                except (TypeError, ValueError):
+                    pass
+
+        if memory_mode == "only_global":
+            scope = "global"
+        elif memory_mode == "only_categories":
+            scope = "category"
+        elif memory_mode == "priority" and not number_rule_custom:
+            scope = "auto"
+        else:
+            scope = "number"
+
         in_progress_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
         spam_lbl = self.labels_data.get("spam", "SPAM")
 
@@ -937,17 +1140,9 @@ class PhoneAssistant:
         try:
             placeholders = ",".join(["?"] * len(self.caller_candidates)) if self.caller_candidates else "'__none__'"
 
-            if memory_mode == "per_number" and self.caller_candidates:
-                cutoff_str = (datetime.datetime.now() - datetime.timedelta(days=max_days)).strftime("%Y-%m-%d %H:%M:%S")
-                query = (
-                    f"SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
-                    f"WHERE id != ? AND number IN ({placeholders}) AND date >= ? "
-                    f"ORDER BY id DESC LIMIT ?"
-                )
-                params = [self.call_id or -1] + self.caller_candidates + [cutoff_str, max_calls]
-                rows = conn.execute(query, params).fetchall()
-
-            elif memory_mode == "per_category":
+            # Level 2: category rule (tag of the contact rule or tag of the previous call of this number)
+            target_tag = ""
+            if scope in ("auto", "category"):
                 target_tag = (contact_match or {}).get("tag", "").strip()
                 if not target_tag and self.caller_candidates:
                     prev_tag_row = conn.execute(
@@ -957,17 +1152,34 @@ class PhoneAssistant:
                     if prev_tag_row and prev_tag_row[0]:
                         target_tag = prev_tag_row[0]
 
-                try:
-                    mem_rules = json.loads(get_config("memory_rules", "[]"))
-                    for rule in mem_rules:
-                        cat_name = rule.get("category", "").lower()
-                        if cat_name and (cat_name in target_tag.lower() or any(kw in target_tag.lower() for kw in rule.get("keywords", []))):
-                            max_days = int(rule.get("days", max_days))
-                            break
-                except Exception:
-                    pass
+                category_rule = self._find_memory_category(target_tag)
+                if category_rule:
+                    try:
+                        max_days = max(1, int(category_rule.get("days", max_days)))
+                        if category_rule.get("calls"):
+                            max_calls = max(1, int(category_rule["calls"]))
+                        if category_rule.get("chars"):
+                            max_chars = max(300, int(category_rule["chars"]))
+                    except (TypeError, ValueError):
+                        pass
+                if scope == "auto":
+                    scope = "category" if category_rule else "number"
 
-                cutoff_str = (datetime.datetime.now() - datetime.timedelta(days=max_days)).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Memory] Mode={memory_mode} Scope={scope} Calls={max_calls} Days={max_days} Chars={max_chars}{_R}")
+
+            cutoff_str = (datetime.datetime.now() - datetime.timedelta(days=max_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+            # Level 3 (default) and number scope: history of this phone number
+            if scope == "number" and self.caller_candidates:
+                query = (
+                    f"SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
+                    f"WHERE id != ? AND number IN ({placeholders}) AND date >= ? "
+                    f"ORDER BY id DESC LIMIT ?"
+                )
+                params = [self.call_id or -1] + self.caller_candidates + [cutoff_str, max_calls]
+                rows = conn.execute(query, params).fetchall()
+
+            elif scope == "category":
                 if target_tag:
                     rows = conn.execute(
                         "SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
@@ -982,8 +1194,7 @@ class PhoneAssistant:
                     )
                     rows = conn.execute(query, [self.call_id or -1] + self.caller_candidates + [cutoff_str, max_calls]).fetchall()
 
-            elif memory_mode == "global":
-                cutoff_str = (datetime.datetime.now() - datetime.timedelta(days=max_days)).strftime("%Y-%m-%d %H:%M:%S")
+            elif scope == "global":
                 rows = conn.execute(
                     "SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
                     "WHERE id != ? AND date >= ? AND spam_score < 65 AND tag != ? AND tag NOT LIKE '%SPAM%' "
@@ -1249,7 +1460,7 @@ class PhoneAssistant:
             if mode in ["both", "assistant"]:
                 if self.asst_pacat is None or self.asst_pacat.poll() is not None:
                     self.asst_pacat = subprocess.Popen(
-                        ["pacat", "--format=s16le", "--rate=24000", "--channels=1", "--raw"],
+                        ["pacat", "--format=s16le", "--rate=24000", "--channels=1", "--raw", f"--volume={monitor_volume_percent() * 65536 // 100}"],
                         stdin=subprocess.PIPE, stderr=subprocess.DEVNULL
                     )
             else:
@@ -1260,7 +1471,7 @@ class PhoneAssistant:
             if mode in ["both", "caller"]:
                 if self.caller_pacat is None or self.caller_pacat.poll() is not None:
                     sink = get_default_sink()
-                    cmd = ["pacat", "--format=s16le", "--rate=16000", "--channels=1", "--raw"]
+                    cmd = ["pacat", "--format=s16le", "--rate=16000", "--channels=1", "--raw", f"--volume={monitor_volume_percent() * 65536 // 100}"]
                     cmd.append(f"--device={sink}" if sink else "--device=auto_null")
                     self.caller_pacat = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
             else:
@@ -1268,10 +1479,25 @@ class PhoneAssistant:
                     self.caller_pacat.terminate()
                     self.caller_pacat = None
 
+            volume_pct = monitor_volume_percent()
+            for player in (self.asst_pacat, self.caller_pacat):
+                if player and player.poll() is None and self._monitor_volume_applied.get(player.pid) != volume_pct:
+                    if await self._apply_player_volume(player.pid, volume_pct):
+                        self._monitor_volume_applied[player.pid] = volume_pct
+
+            removed_link = False
+            phone_output_base = re.sub(r"\.\d+$", "", self.pw_playback_target)
             try:
                 proc = await asyncio.create_subprocess_exec("pw-link", "-l", "--id", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
                 out, _ = await proc.communicate()
                 text = out.decode("utf-8", errors="ignore")
+                if not self._routing_diag_logged:
+                    bluez_lines = [ln.rstrip() for ln in text.splitlines() if "bluez" in ln]
+                    if bluez_lines:
+                        self._routing_diag_logged = True
+                        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Routing] Bluetooth links at call start:{_R}")
+                        for ln in bluez_lines:
+                            print(f"{_C_MUTED}    {ln}{_R}")
                 src_name = ""
                 for line in text.splitlines():
                     m_src = re.match(r"^\s{1,4}\d+\s+([\w.\-]+):[\w_]+\s*$", line)
@@ -1282,15 +1508,27 @@ class PhoneAssistant:
                     if m_dst and src_name:
                         link_id, dst_name = m_dst.group(1), m_dst.group(2)
                         if not allow_pc_mic and "bluez_output" in dst_name and ("alsa_input" in src_name or "pci" in src_name or "usb" in src_name):
-                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.DEVNULL)
+                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                        if dst_name.startswith(phone_output_base) and (src_name.startswith("auto_null") or "bluez_input" in src_name):
+                            # The caller's audio must never return to the phone's output node, either directly or through the
+                            # monitor of the null sink (bluez_input -> auto_null -> auto_null:monitor -> phone output).
+                            # Other Bluetooth outputs (for example monitoring speakers) are left untouched.
+                            removed_link = True
+                            await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                            if link_id not in self._removed_loop_links:
+                                self._removed_loop_links.add(link_id)
+                                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Routing] Removed echo loop link {src_name} -> {dst_name}{_R}")
+                            continue
                         if "bluez_input" in src_name and mode not in ["both", "caller"]:
                             sink = get_default_sink()
-                            if ("alsa_output" in dst_name) or (sink and sink in dst_name):
-                                await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.DEVNULL)
+                            # Never touch links to the persistent auto_null sink (clock source on SBCs with disabled onboard audio)
+                            if "auto_null" not in dst_name and (("alsa_output" in dst_name) or (sink and sink in dst_name)):
+                                await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             except Exception:
                 pass
 
-            await asyncio.sleep(2.0)
+            # Re-check quickly after removing a link in case the session manager recreates it; relaxed polling otherwise.
+            await asyncio.sleep(0.5 if removed_link else 2.0)
 
         for pacat in [self.caller_pacat, self.asst_pacat]:
             if pacat:
@@ -1301,6 +1539,31 @@ class PhoneAssistant:
                     pacat.wait()
                 except Exception:
                     pass
+
+    @staticmethod
+    async def _apply_player_volume(process_id: int, volume_pct: int) -> bool:
+        """Sets the volume of the monitoring stream that belongs to a pacat process (other audio is untouched)."""
+        try:
+            proc = await asyncio.create_subprocess_exec("pactl", "list", "sink-inputs", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await proc.communicate()
+            stream_ids = find_sink_input_ids(out.decode("utf-8", errors="ignore"), process_id)
+            for stream_id in stream_ids:
+                setter = await asyncio.create_subprocess_exec("pactl", "set-sink-input-volume", stream_id, f"{volume_pct}%", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await setter.wait()
+            return bool(stream_ids)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _monitor_write(player, data: bytes) -> None:
+        """Queues audio for a monitoring player without ever blocking the call loop."""
+        if not player or player.poll() is not None:
+            return
+        writer = getattr(player, "monitor_writer", None)
+        if writer is None:
+            writer = MonitorWriter(player)
+            player.monitor_writer = writer
+        writer.write(data)
 
     def log_system_message(self, message_text: str, emoji_prefix: str = "⚠") -> None:
         ts = get_timestamp()
@@ -1481,12 +1744,7 @@ class PhoneAssistant:
                     self.last_mic_data_time = now
                     self.caller_recording_buffer.append(amplified_data)
 
-                    if self.caller_pacat and self.caller_pacat.poll() is None:
-                        try:
-                            self.caller_pacat.stdin.write(amplified_data)
-                            self.caller_pacat.stdin.flush()
-                        except Exception:
-                            pass
+                    self._monitor_write(self.caller_pacat, amplified_data)
 
                     if self.greeting_in_progress:
                         if (now - self.greeting_started_time > 8.0) or (self.greeting_audio_received and not self.currently_playing and self.audio_out_queue.empty()):
@@ -1947,12 +2205,7 @@ class PhoneAssistant:
                                     self.recording_buffer_wav.extend(b"\x00" * (target_byte_idx - current_len))
                                 self.recording_buffer_wav.extend(inline_data.data)
                                 self.audio_out_queue.put(inline_data.data)
-                                if self.asst_pacat and self.asst_pacat.poll() is None:
-                                    try:
-                                        self.asst_pacat.stdin.write(inline_data.data)
-                                        self.asst_pacat.stdin.flush()
-                                    except Exception:
-                                        pass
+                                self._monitor_write(self.asst_pacat, inline_data.data)
                                 self.last_chunk_audio_time = time.time()
                                 self.cutoff_sent = False
                         except Exception:
@@ -2076,6 +2329,7 @@ class PhoneAssistant:
             model_to_use = model_override if model_override else self.model_text
             with open(wav_path, "rb") as f:
                 audio_bytes = f.read()
+            audio_mime = "audio/mp3" if wav_path.lower().endswith(".mp3") else "audio/wav"
             prompt = (
                 f"Task: Align and correct 🗣 parts in LIVE TRANSCRIPT by listening to audio. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
                 f"If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\nLIVE TRANSCRIPT:\n{self.accumulated_transcript}"
@@ -2085,7 +2339,7 @@ class PhoneAssistant:
                 resp = await asyncio.to_thread(
                     self.client_text.models.generate_content,
                     model=model_to_use,
-                    contents=[types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"), prompt],
+                    contents=[types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime), prompt],
                     config=types.GenerateContentConfig(temperature=0.1)
                 )
             return extract_response_text(resp, default=self.accumulated_transcript)
@@ -2098,15 +2352,15 @@ class PhoneAssistant:
         caller_pcm_raw = b"".join(self.caller_recording_buffer) if self.caller_recording_buffer else b""
         asst_pcm_raw = bytes(self.recording_buffer_wav)
 
+        client_pcm_snapshot = caller_pcm_raw
+        if self._total_mic_silence_injected > 0:
+            print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_INFO}[Audio] Silence inserted into the caller track: {self._total_mic_silence_injected:.1f}s{_R}")
+
         if caller_pcm_raw:
             try:
-                with wave.open(self.client_recording_path, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(16000)
-                    wf.writeframes(caller_pcm_raw)
-            except Exception:
-                pass
+                await asyncio.to_thread(save_pcm_recording, self.client_recording_path, caller_pcm_raw, 16000, 1)
+            except Exception as e:
+                print(f"{_C_WARN}[{get_timestamp()}] Error saving caller audio: {e}{_R}")
 
         if caller_pcm_raw and asst_pcm_raw:
             try:
@@ -2123,28 +2377,16 @@ class PhoneAssistant:
                 if len(asst_pcm_raw) < max_len:
                     asst_pcm_raw += b"\x00" * (max_len - len(asst_pcm_raw))
 
-                num_samples = max_len // 2
-                c_samp = struct.unpack(f"<{num_samples}h", caller_pcm)
-                a_samp = struct.unpack(f"<{num_samples}h", asst_pcm_raw)
-
-                stereo_data = [val for pair in zip(c_samp, a_samp) for val in pair]
-                with wave.open(self.recording_path, "wb") as wf:
-                    wf.setnchannels(2)
-                    wf.setsampwidth(2)
-                    wf.setframerate(24000)
-                    wf.writeframes(struct.pack(f"<{num_samples * 2}h", *stereo_data))
+                stereo_pcm = interleave_to_stereo(caller_pcm, asst_pcm_raw)
+                await asyncio.to_thread(save_pcm_recording, self.recording_path, stereo_pcm, 24000, 2)
                 print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[Audio] Call synchronized stereo recording saved: {self.recording_path}{_R}")
             except Exception as e:
                 print(f"{_C_WARN}[{get_timestamp()}] Error mixing stereo audio: {e}{_R}")
         elif asst_pcm_raw:
             try:
-                with wave.open(self.recording_path, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(24000)
-                    wf.writeframes(asst_pcm_raw)
-            except Exception:
-                pass
+                await asyncio.to_thread(save_pcm_recording, self.recording_path, asst_pcm_raw, 24000, 1)
+            except Exception as e:
+                print(f"{_C_WARN}[{get_timestamp()}] Error saving assistant audio: {e}{_R}")
 
         if not getattr(self, "hangup_message_appended", False):
             self.hangup_message_appended = True
@@ -2173,7 +2415,13 @@ class PhoneAssistant:
 
         if self.final_transcription_mode == "whisper_final" and os.path.exists(self.client_recording_path):
             print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running Whisper.cpp on caller audio...{_R}")
-            raw_whisper = await self.transcribe_file_whisper(self.client_recording_path)
+            tmp_whisper_wav = f"/tmp/whisper_final_{str(uuid.uuid4())[:8]}.wav"
+            try:
+                await asyncio.to_thread(save_pcm_recording, tmp_whisper_wav, client_pcm_snapshot, 16000, 1)
+                raw_whisper = await self.transcribe_file_whisper(tmp_whisper_wav)
+            finally:
+                if os.path.exists(tmp_whisper_wav):
+                    os.remove(tmp_whisper_wav)
             if raw_whisper:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Aligning with {self.model_text}...{_R}")
                 final_trans = await self.correct_transcript_with_whisper(raw_whisper)
@@ -2406,6 +2654,329 @@ class PhoneAssistant:
                 self.hangup_call()
 
 
+# =============================================================================
+# PRIVATE TOR ONION SERVICE (optional remote access to the Web GUI)
+# =============================================================================
+# Switched on/off from the Web GUI through the 'tor_enabled' setting. The daemon owns the
+# Tor process: it starts and stops it and publishes its state in SQLite ('tor_status',
+# 'tor_progress', 'tor_onion', 'tor_error') so the GUI can display it. These values are
+# language-neutral codes; the GUI translates them through gui.json.
+# Keys and the onion address live in <BASE_DIR>/onion_data (same layout as onion_poc.py,
+# so an address and devices created earlier with that script keep working).
+
+ONION_DIR = os.path.join(BASE_DIR, "onion_data")
+ONION_CLIENT_NAME = "phone1"
+ONION_RETRY_SECONDS = 30.0
+
+
+def _set_runtime_setting(key: str, value: Any) -> None:
+    """Writes a runtime value (status, progress...) into the SQLite settings table."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+def _torrc_quote(path: str) -> str:
+    """Quotes a path for torrc so folders containing spaces work."""
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# -----------------------------------------------------------------------------
+# PUSH-STYLE NOTIFICATIONS FOR THE ANDROID APP (polled through Tor)
+# -----------------------------------------------------------------------------
+# A tiny read-only JSON endpoint bound to 127.0.0.1 only. It is published as a second port of the
+# same onion service, so it is protected by the same client authorization as the Web GUI.
+# The Android app polls it periodically and shows a local notification for each new item.
+
+NOTIFY_MAX_ITEMS = 20
+NOTIFY_SPAM_THRESHOLD = 65          # same threshold used to tag a call as SPAM
+_NOTIFY_SERVER: Optional[ThreadingHTTPServer] = None
+
+
+def build_notify_payload(since_message: Optional[int], since_call: Optional[int]) -> Dict[str, Any]:
+    """Returns the newest caller messages and finished calls after the given ids.
+    If a cursor is missing (first poll) no items are returned, only the current cursors,
+    so enabling notifications never floods the phone with old items."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        max_message = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+        # Only finished calls have a summary; calls are processed one at a time, so ids grow in finish order.
+        max_call = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM calls WHERE summary IS NOT NULL AND summary != ''"
+        ).fetchone()[0]
+
+        messages: List[Dict[str, Any]] = []
+        calls: List[Dict[str, Any]] = []
+
+        if since_message is not None:
+            rows = conn.execute(
+                "SELECT id, caller_name, message_text, date, time FROM messages "
+                "WHERE id > ? ORDER BY id ASC LIMIT ?", (since_message, NOTIFY_MAX_ITEMS)
+            ).fetchall()
+            messages = [
+                {"id": r[0], "caller": r[1] or "", "text": r[2] or "", "date": r[3] or "", "time": r[4] or ""}
+                for r in rows
+            ]
+
+        if since_call is not None:
+            # Calls that already left a message are skipped: the message notification covers them.
+            rows = conn.execute(
+                "SELECT id, client_name, company, summary, date FROM calls "
+                "WHERE id > ? AND summary IS NOT NULL AND summary != '' "
+                "AND summary NOT LIKE 'Blocked by rule%' "
+                "AND COALESCE(spam_score, 0) < ? AND COALESCE(tag, '') NOT LIKE '%SPAM%' "
+                "AND id NOT IN (SELECT call_id FROM messages WHERE call_id IS NOT NULL) "
+                "ORDER BY id ASC LIMIT ?", (since_call, NOTIFY_SPAM_THRESHOLD, NOTIFY_MAX_ITEMS)
+            ).fetchall()
+            calls = [
+                {"id": r[0], "caller": r[1] or "", "company": r[2] or "", "summary": r[3] or "", "date": r[4] or ""}
+                for r in rows
+            ]
+
+        return {"max_message_id": max_message, "max_call_id": max_call, "messages": messages, "calls": calls}
+    finally:
+        conn.close()
+
+
+class _NotifyHandler(BaseHTTPRequestHandler):
+    """Serves GET /api/events?since_message=<id>&since_call=<id> as JSON."""
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/api/events":
+            self.send_error(404)
+            return
+        query = urllib.parse.parse_qs(parsed.query)
+
+        def _int_param(name: str) -> Optional[int]:
+            try:
+                return int(query[name][0])
+            except (KeyError, IndexError, ValueError):
+                return None
+
+        try:
+            payload = build_notify_payload(_int_param("since_message"), _int_param("since_call"))
+        except Exception:
+            self.send_error(500)
+            return
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Silences the default per-request console logging."""
+        return
+
+
+def start_notify_server(port: int) -> None:
+    """Starts the notification endpoint once (localhost only; Tor forwards the onion port to it)."""
+    global _NOTIFY_SERVER
+    if _NOTIFY_SERVER is not None:
+        return
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), _NotifyHandler)
+    except OSError as e:
+        print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Notify] Could not listen on 127.0.0.1:{port}: {e}{_R}")
+        return
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _NOTIFY_SERVER = server
+    print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Notify] Notification endpoint ready on 127.0.0.1:{port}{_R}")
+
+
+class OnionService:
+    """Runs a private Tor instance that publishes the Web GUI as a v3 onion service
+    protected with client authorization (only paired devices can even find it)."""
+
+    def __init__(self) -> None:
+        self.proc: Optional[subprocess.Popen] = None
+        self.last_failure: float = 0.0
+        self.progress: int = 0
+
+    # ---- key material (same scheme as onion_poc.py) -------------------------------------
+
+    @staticmethod
+    def _b32(raw: bytes) -> str:
+        return base64.b32encode(raw).decode().rstrip("=")
+
+    def _generate_client(self, name: str) -> dict:
+        priv_der = subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "x25519", "-outform", "DER"],
+            capture_output=True, check=True).stdout
+        pub_der = subprocess.run(
+            ["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"],
+            input=priv_der, capture_output=True, check=True).stdout
+        return {"name": name, "priv": self._b32(priv_der[-32:]), "pub": self._b32(pub_der[-32:])}
+
+    def _load_clients(self) -> list:
+        """Returns all authorized devices; creates the first one if there is none yet."""
+        clients_dir = os.path.join(ONION_DIR, "clients")
+        os.makedirs(clients_dir, exist_ok=True)
+        clients = []
+        for fname in sorted(os.listdir(clients_dir)):
+            if fname.endswith(".json"):
+                try:
+                    with open(os.path.join(clients_dir, fname), "r", encoding="utf-8") as f:
+                        clients.append(json.load(f))
+                except Exception:
+                    pass
+        if not clients:
+            client = self._generate_client(ONION_CLIENT_NAME)
+            path = os.path.join(clients_dir, f"{ONION_CLIENT_NAME}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(client, f)
+            os.chmod(path, 0o600)
+            clients.append(client)
+        return clients
+
+    def _write_torrc(self, port: int, clients: list, notify_port: int) -> str:
+        hs = os.path.join(ONION_DIR, "hs")
+        auth = os.path.join(hs, "authorized_clients")
+        data = os.path.join(ONION_DIR, "data")
+        for d in (ONION_DIR, hs, auth, data):
+            os.makedirs(d, exist_ok=True)
+            os.chmod(d, 0o700)
+        valid = {f"{c['name']}.auth" for c in clients}
+        for fname in os.listdir(auth):                       # revoke devices that no longer exist
+            if fname.endswith(".auth") and fname not in valid:
+                os.remove(os.path.join(auth, fname))
+        for c in clients:
+            with open(os.path.join(auth, f"{c['name']}.auth"), "w", encoding="utf-8") as f:
+                f.write(f"descriptor:x25519:{c['pub']}\n")
+        torrc = os.path.join(ONION_DIR, "torrc")
+        with open(torrc, "w", encoding="utf-8") as f:
+            f.write(
+                f"DataDirectory {_torrc_quote(data)}\n"
+                f"HiddenServiceDir {_torrc_quote(hs)}\n"
+                f"HiddenServicePort 80 127.0.0.1:{port}\n"
+                f"HiddenServicePort {notify_port} 127.0.0.1:{notify_port}\n"
+                "SocksPort 0\n"
+                "Log notice stdout\n"
+            )
+        return torrc
+
+    # ---- process control ----------------------------------------------------------------
+
+    def _fail(self, code: str) -> None:
+        self.last_failure = time.time()
+        _set_runtime_setting("tor_status", "error")
+        _set_runtime_setting("tor_error", code)
+        _set_runtime_setting("tor_onion", "")
+        _set_runtime_setting("tor_progress", "0")
+
+    def _publish_address(self, proc: subprocess.Popen) -> None:
+        hostname_file = os.path.join(ONION_DIR, "hs", "hostname")
+        onion = ""
+        for _ in range(10):
+            try:
+                with open(hostname_file, "r", encoding="utf-8") as f:
+                    onion = f.read().strip()
+            except Exception:
+                onion = ""
+            if onion:
+                break
+            time.sleep(0.5)
+        if not onion:
+            print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Tor] Onion hostname file not found.{_R}")
+            self._fail("start_failed")
+            if proc.poll() is None:
+                proc.terminate()
+            return
+        _set_runtime_setting("tor_onion", onion)
+        _set_runtime_setting("tor_error", "")
+        _set_runtime_setting("tor_status", "running")
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Tor] Remote access active: http://{onion}{_R}")
+
+    def _read_output(self, proc: subprocess.Popen) -> None:
+        """Follows Tor's log: bootstrap progress and warnings."""
+        pattern = re.compile(r"Bootstrapped (\d+)%")
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                m = pattern.search(line)
+                if m:
+                    self.progress = int(m.group(1))
+                    if proc is self.proc and self.progress < 100:
+                        _set_runtime_setting("tor_progress", self.progress)
+                    elif proc is self.proc:
+                        _set_runtime_setting("tor_progress", 100)
+                        self._publish_address(proc)
+                elif "[warn]" in line or "[err]" in line:
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Tor] {line}{_R}")
+        except Exception:
+            pass
+
+    def start(self) -> None:
+        if shutil.which("tor") is None:
+            self._fail("tor_missing")
+            return
+        if shutil.which("openssl") is None:
+            self._fail("openssl_missing")
+            return
+        try:
+            port = int(get_config("tor_gui_port", "8501"))
+            notify_port = int(get_config("tor_notify_port", "8502"))
+            start_notify_server(notify_port)
+            torrc = self._write_torrc(port, self._load_clients(), notify_port)
+            self.progress = 0
+            # __OwningControllerProcess makes Tor exit by itself if this daemon dies.
+            self.proc = subprocess.Popen(
+                ["tor", "-f", torrc, "--__OwningControllerProcess", str(os.getpid())],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except Exception as e:
+            print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Tor] Could not start: {e}{_R}")
+            self._fail("start_failed")
+            return
+        _set_runtime_setting("tor_error", "")
+        _set_runtime_setting("tor_onion", "")
+        _set_runtime_setting("tor_progress", "0")
+        _set_runtime_setting("tor_status", "starting")
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Tor] Starting private Tor instance (first bootstrap can take a minute)...{_R}")
+        threading.Thread(target=self._read_output, args=(self.proc,), daemon=True).start()
+
+    def stop(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Tor] Remote access stopped.{_R}")
+        _set_runtime_setting("tor_status", "off")
+        _set_runtime_setting("tor_error", "")
+        _set_runtime_setting("tor_onion", "")
+        _set_runtime_setting("tor_progress", "0")
+
+    def sync(self, enabled: bool) -> None:
+        """Called every few seconds by the heartbeat loop: makes reality match the GUI switch."""
+        if self.proc is not None and self.proc.poll() is not None:
+            code = self.proc.returncode
+            self.proc = None
+            print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Tor] Process ended (exit code {code}).{_R}")
+            if get_config("tor_status", "off") != "error":
+                self._fail("exited")
+        if enabled:
+            if self.proc is None and time.time() - self.last_failure >= ONION_RETRY_SECONDS:
+                self.start()
+        elif self.proc is not None or get_config("tor_status", "off") != "off":
+            self.stop()
+
+
+ONION = OnionService()
+
+
 async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
     """Periodically updates the daemon heartbeat in SQLite and checks for pause/stop signals from the GUI."""
     last_logged_state = "running"
@@ -2422,6 +2993,11 @@ async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
                 print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[DaemonState] State changed to: {state.upper()}{_R}")
                 last_logged_state = state
 
+            try:
+                ONION.sync(get_config("tor_enabled", "false").strip().lower() == "true")
+            except Exception as tor_err:
+                print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Tor] {tor_err}{_R}")
+
             if state == "stopped":
                 if ACTIVE_ASSISTANT is None or not getattr(ACTIVE_ASSISTANT, "running", False):
                     print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Daemon] Stop requested via Web GUI. Shutting down cleanly...{_R}")
@@ -2430,6 +3006,7 @@ async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
                             GLIB_LOOP.quit()
                         except Exception:
                             pass
+                    ONION.stop()
                     main_loop.stop()
                     os._exit(0)
         except Exception:
@@ -2533,5 +3110,6 @@ if __name__ == "__main__":
         main_loop.run_forever()
     except KeyboardInterrupt:
         print(f"\n{_C_WARN}{ICON_WARN}Switchboard manually stopped.{_R}")
+        ONION.stop()
         os._exit(0)
 

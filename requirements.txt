@@ -1,4 +1,4 @@
-# AI Bluetooth Phone Assistant & Switchboard - Version 2.0
+# AI Bluetooth Phone Assistant & Switchboard - Version 2.4
 google-genai
 aiohttp
 curl_cffi
@@ -7,3 +7,5 @@ dbus-python
 PyGObject
 # Pin protobuf to avoid conflicts between streamlit (<7) and google-genai (>=5)
 protobuf>=5.26.1,<7.0.0
+# Optional, MP3 call recordings (WAV is used if it is missing):  pip install lameenc
+# Remote Access over Tor also needs the system packages 'tor' and 'openssl' (see README).

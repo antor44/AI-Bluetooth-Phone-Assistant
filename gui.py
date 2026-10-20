@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 2.0
+Version: 2.4
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -26,6 +26,8 @@ https://github.com/antor44/AI-Bluetooth-Phone-Assistant
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
+import html
 import sqlite3
 import os
 import json
@@ -364,7 +366,8 @@ def init_db() -> None:
                   tag TEXT, client_name TEXT, company TEXT, summary TEXT DEFAULT '')''')
     c.execute('''CREATE TABLE IF NOT EXISTS contacts 
                  (number TEXT PRIMARY KEY, type TEXT, prompt_rules TEXT,
-                  tag TEXT DEFAULT '', note TEXT DEFAULT '')''')
+                  tag TEXT DEFAULT '', note TEXT DEFAULT '',
+                  mem_mode TEXT DEFAULT '', mem_calls INTEGER, mem_days INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS messages 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER, number TEXT,
                   date TEXT, time TEXT, caller_name TEXT, message_text TEXT,
@@ -378,7 +381,10 @@ def init_db() -> None:
     for alter_sql in [
         "ALTER TABLE calls ADD COLUMN summary TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN tag TEXT DEFAULT ''",
-        "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''"
+        "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
+        "ALTER TABLE contacts ADD COLUMN mem_mode TEXT DEFAULT ''",
+        "ALTER TABLE contacts ADD COLUMN mem_calls INTEGER",
+        "ALTER TABLE contacts ADD COLUMN mem_days INTEGER"
     ]:
         try:
             c.execute(alter_sql)
@@ -396,7 +402,7 @@ def init_db() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'es-ES')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
 
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'per_number')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'priority')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_calls', '1')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_days', '30')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_chars', '2500')")
@@ -455,6 +461,243 @@ def set_config(key: str, value: Any) -> None:
     conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (db_key, str(value)))
     conn.commit()
     conn.close()
+
+
+def db_slider(label: str, config_key: str, widget_key: str, default_value: str, cast, **slider_kwargs) -> Any:
+    """Slider bound to a database setting through a stable widget key.
+
+    The widget identity no longer depends on the value read from the database, and the value is saved
+    inside the on_change callback (before the script reruns). This avoids the slider falling back to its
+    previous value when the stored value changes in the middle of a rerun."""
+    if widget_key not in st.session_state:
+        try:
+            st.session_state[widget_key] = cast(float(get_config(config_key, default_value)))
+        except ValueError:
+            st.session_state[widget_key] = cast(float(default_value))
+
+    def _save_value() -> None:
+        set_config(config_key, st.session_state[widget_key])
+
+    return st.slider(label, key=widget_key, on_change=_save_value, **slider_kwargs)
+
+
+ONION_DIR = os.path.join(BASE_DIR, "onion_data")
+
+
+def load_onion_clients() -> List[Dict[str, Any]]:
+    """Reads the paired-device keys written by the daemon (folder <BASE_DIR>/onion_data/clients)."""
+    clients: List[Dict[str, Any]] = []
+    clients_dir = os.path.join(ONION_DIR, "clients")
+    if os.path.isdir(clients_dir):
+        for fname in sorted(os.listdir(clients_dir)):
+            if fname.endswith(".json"):
+                try:
+                    with open(os.path.join(clients_dir, fname), "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("name") and data.get("priv"):
+                        clients.append(data)
+                except Exception:
+                    pass
+    return clients
+
+
+def make_qr_png(text: str):
+    """Returns the QR code as PNG bytes, or None if the optional 'qrcode' package is missing."""
+    try:
+        import io
+        import qrcode
+        buf = io.BytesIO()
+        qrcode.make(text).save(buf)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _rerun_tor_panel() -> None:
+    """Refreshes only the Tor panel when it runs as a fragment, otherwise the whole page."""
+    try:
+        st.rerun(scope="fragment")
+    except st.errors.StreamlitAPIException:
+        st.rerun()
+
+
+@st.fragment(run_every=2)
+def render_tor_panel() -> None:
+    """Remote-access (Tor) panel. It is a fragment that refreshes itself every 2 seconds,
+    so the status follows the daemon without reloading the whole page."""
+    with st.container(border=True):
+        st.caption(trans.get("ui_tor_desc", "Lets the Android app reach this panel through a private Tor onion service."))
+
+        tor_enabled = get_config("tor_enabled", "false").strip().lower() == "true"
+        tor_status = get_config("tor_status", "off")
+        tor_progress = get_config("tor_progress", "0")
+        tor_onion = get_config("tor_onion", "")
+        tor_error = get_config("tor_error", "")
+        try:
+            tor_hb_age = time.time() - float(get_config("daemon_heartbeat", "0"))
+        except ValueError:
+            tor_hb_age = 1e9
+
+        # What the user should see: the daemon needs a few seconds to react to the switch.
+        if tor_hb_age > 15.0:
+            tor_shown = "off"                       # daemon offline: its Tor instance is gone too
+        elif tor_enabled and tor_status == "off":
+            tor_shown, tor_progress = "starting", "0"
+        elif not tor_enabled and tor_status != "off":
+            tor_shown = "stopping"
+        else:
+            tor_shown = tor_status
+
+        if tor_shown == "running":
+            tor_badge = trans.get("ui_tor_status_running", "🟢 Active")
+        elif tor_shown == "starting":
+            tor_badge = trans.get("ui_tor_status_starting", "🟡 Starting ({progress}%)").format(progress=tor_progress)
+        elif tor_shown == "stopping":
+            tor_badge = trans.get("ui_tor_status_stopping", "🟡 Stopping...")
+        elif tor_shown == "error":
+            tor_reason = trans.get(f"ui_tor_error_{tor_error}", trans.get("ui_tor_error_unknown", "Unknown error."))
+            tor_badge = trans.get("ui_tor_status_error", "🔴 Error: {reason}").format(reason=tor_reason)
+        else:
+            tor_badge = trans.get("ui_tor_status_off", "⚫ Off")
+        st.markdown(f"**{trans.get('ui_tor_status_label', 'Status:')}** {tor_badge}")
+
+        if "confirm_tor_disable" not in st.session_state:
+            st.session_state.confirm_tor_disable = False
+
+        if not tor_enabled:
+            if st.button(trans.get("ui_btn_tor_enable", "▶️ Enable remote access"), key="btn_tor_enable", use_container_width=True):
+                st.session_state.confirm_tor_disable = False
+                set_config("tor_enabled", "true")
+                st.toast(trans.get("ui_toast_tor_enabled", "Remote access enabled"))
+                _rerun_tor_panel()
+        elif not st.session_state.confirm_tor_disable:
+            if st.button(trans.get("ui_btn_tor_disable", "⏹️ Disable remote access"), key="btn_tor_disable", use_container_width=True):
+                st.session_state.confirm_tor_disable = True
+                _rerun_tor_panel()
+        else:
+            st.warning(trans.get("ui_tor_disable_warning", "⚠️ If you are using this panel through the Android app, disabling remote access will cut your connection."))
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                if st.button(trans.get("ui_btn_tor_disable_yes", "✅ Yes, disable"), key="btn_tor_disable_yes", use_container_width=True):
+                    st.session_state.confirm_tor_disable = False
+                    set_config("tor_enabled", "false")
+                    st.toast(trans.get("ui_toast_tor_disabled", "Remote access disabled"))
+                    _rerun_tor_panel()
+            with tc2:
+                if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_tor_disable_no", use_container_width=True):
+                    st.session_state.confirm_tor_disable = False
+                    _rerun_tor_panel()
+
+        if "show_tor_pairing" not in st.session_state:
+            st.session_state.show_tor_pairing = False
+
+        if tor_shown == "running" and tor_onion:
+            st.markdown(f"**{trans.get('ui_tor_onion_label', 'Onion address:')}** `{tor_onion}`")
+            if not st.session_state.show_tor_pairing:
+                if st.button(trans.get("ui_btn_tor_show_pairing", "🔑 Show pairing code"), key="btn_tor_show_pairing", use_container_width=True):
+                    st.session_state.show_tor_pairing = True
+                    _rerun_tor_panel()
+            else:
+                st.warning(trans.get("ui_tor_pairing_warning", "🔑 Keep this code secret: anyone who has it can reach this panel through Tor."))
+                st.caption(trans.get("ui_tor_pairing_hint", "In the Android app, scan the QR code or paste this text:"))
+                copy_label = trans.get("ui_btn_copy", "📋 Copy")
+                copied_label = trans.get("ui_copied", "✓ Copied")
+                for client_idx, tor_client in enumerate(load_onion_clients()):
+                    pairing_uri = f"aiphone://pair?onion={tor_onion}&key={tor_client['priv']}"
+                    st.markdown(f"**{trans.get('ui_tor_pairing_device', 'Device: {name}').format(name=tor_client['name'])}**")
+                    st.caption(trans.get("ui_tor_key_label", "Access key (paste only this part in the app):"))
+                    st.code(tor_client["priv"], language=None)
+                    copy_button(tor_client["priv"], copy_label, copied_label)
+                    with st.expander(trans.get("ui_tor_full_link", "Full pairing link (advanced)")):
+                        st.code(pairing_uri, language=None)
+                        copy_button(pairing_uri, copy_label, copied_label)
+                    qr_png = make_qr_png(pairing_uri)
+                    if qr_png:
+                        st.image(qr_png, width=240)
+                if st.button(trans.get("ui_btn_tor_hide_pairing", "🙈 Hide pairing code"), key="btn_tor_hide_pairing", use_container_width=True):
+                    st.session_state.show_tor_pairing = False
+                    _rerun_tor_panel()
+        else:
+            st.session_state.show_tor_pairing = False
+
+
+def copy_button(text: str, label: str, done_label: str) -> None:
+    """Renders a copy-to-clipboard button that also works on plain HTTP (LAN) pages, where the
+    Clipboard API is unavailable, by falling back to a temporary selection and execCommand."""
+    page_html = (
+        f"""
+        <style>
+            html, body {{ margin: 0; padding: 0; overflow: hidden; background: transparent; }}
+            #copy_btn {{ box-sizing: border-box; width: 100%; height: 38px; padding: 0 12px; cursor: pointer;
+                        border: 1px solid #c4c8d0; border-radius: 8px; background: #f0f2f6; color: #31333f;
+                        font: 14px "Source Sans Pro", sans-serif; }}
+            #copy_btn:hover {{ border-color: #ff4b4b; color: #ff4b4b; }}
+        </style>
+        <button id="copy_btn">{html.escape(label)}</button>
+        <script>
+        const textToCopy = {json.dumps(text)};
+        const button = document.getElementById("copy_btn");
+        button.addEventListener("click", async () => {{
+            let copied = false;
+            try {{
+                if (navigator.clipboard && window.isSecureContext) {{
+                    await navigator.clipboard.writeText(textToCopy);
+                    copied = true;
+                }}
+            }} catch (e) {{}}
+            if (!copied) {{
+                const area = document.createElement("textarea");
+                area.value = textToCopy;
+                area.style.position = "fixed";
+                area.style.opacity = "0";
+                document.body.appendChild(area);
+                area.focus();
+                area.select();
+                try {{ copied = document.execCommand("copy"); }} catch (e) {{}}
+                document.body.removeChild(area);
+            }}
+            if (copied) {{
+                button.textContent = {json.dumps(done_label)};
+                setTimeout(() => {{ button.textContent = {json.dumps(label)}; }}, 2000);
+            }}
+        }});
+        </script>
+        """
+    )
+    # st.iframe replaces st.components.v1.html in recent Streamlit releases; keep the old call for older ones.
+    if hasattr(st, "iframe"):
+        st.iframe(page_html, height=40)
+    else:
+        components.html(page_html, height=40)
+
+
+def is_onion_session() -> bool:
+    """True when the panel is being viewed through the Tor onion address (e.g. the Android app)."""
+    try:
+        host = (st.context.headers.get("Host") or "").split(":")[0].lower()
+        return host.endswith(".onion")
+    except Exception:
+        return False
+
+
+def legacy_aac_copy_path(audio_path: str) -> str:
+    """Path of the small AAC copy that older versions created next to a recording."""
+    return os.path.splitext(audio_path)[0] + ".m4a"
+
+
+def audio_mime_type(audio_path: str) -> str:
+    """Returns the MIME type used to play a call recording."""
+    return "audio/mpeg" if audio_path.lower().endswith(".mp3") else "audio/wav"
+
+
+def remove_audio_files(wav_path: str) -> None:
+    """Deletes a recording together with any legacy compressed copy."""
+    for path in (wav_path, legacy_aac_copy_path(wav_path)):
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
 
 def import_legacy_messages_from_transcripts() -> int:
@@ -566,6 +809,37 @@ st.markdown("""
         margin-bottom: 20px; 
         background-color: rgba(255, 255, 255, 0.05); 
     }
+
+    /* Small screens: smaller page title and section headings */
+    @media (max-width: 640px) {
+        h1 { font-size: 1.6rem !important; line-height: 1.25 !important; }
+        h2 { font-size: 1.35rem !important; line-height: 1.3 !important; }
+        h3 { font-size: 1.2rem !important; line-height: 1.3 !important; }
+        h4 { font-size: 1.05rem !important; line-height: 1.3 !important; }
+    }
+    /* Conversation phrases: text on the left, small edit/delete buttons on the same line (any width) */
+    [class*="st-key-phrase_"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        gap: 0.25rem !important;
+    }
+    [class*="st-key-phrase_"] [data-testid="stColumn"] {
+        min-width: 0 !important;
+        width: auto !important;
+        flex: 0 0 auto !important;
+    }
+    [class*="st-key-phrase_"] [data-testid="stColumn"]:first-child {
+        flex: 1 1 0 !important;
+    }
+    [class*="st-key-phrase_"] [data-testid="stColumn"] [data-testid="stColumn"] {
+        flex: 0 0 auto !important;
+    }
+    [class*="st-key-phrase_"] button {
+        min-width: 2rem !important;
+        min-height: 2rem !important;
+        padding: 0 0.4rem !important;
+        line-height: 1 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -648,6 +922,42 @@ def confirm_language_dialog() -> None:
             st.rerun()
 
 
+CALLS_PAGE_SIZE = 20
+CONTACT_MEMORY_MODES = ["inherit", "none", "custom"]
+MEMORY_MODE_ALIASES = {"per_number": "only_numbers", "per_category": "only_categories", "global": "only_global"}
+
+
+def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=None, mem_days=None):
+    """Renders the per-number memory controls and returns (mem_mode, mem_calls, mem_days) ready for the database."""
+    labels = trans.get("ui_contact_memory_opts_labels", {
+        "inherit": "Inherit (category / default)",
+        "none": "No memory for this number",
+        "custom": "Custom limits"
+    })
+    current = mem_mode_db if mem_mode_db in ("none", "custom") else "inherit"
+    chosen = st.selectbox(
+        trans.get("ui_contact_memory_label", "Memory for this number:"),
+        CONTACT_MEMORY_MODES,
+        index=CONTACT_MEMORY_MODES.index(current),
+        format_func=lambda x: labels.get(x, x),
+        key=f"{key_prefix}_mem_mode"
+    )
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        calls_val = st.number_input(
+            trans.get("ui_contact_memory_calls", "Calls to remember:"),
+            min_value=1, max_value=20, value=int(mem_calls or 1), step=1, key=f"{key_prefix}_mem_calls"
+        )
+    with mc2:
+        days_val = st.number_input(
+            trans.get("ui_contact_memory_days", "Max age (days):"),
+            min_value=1, max_value=365, value=int(mem_days or 30), step=1, key=f"{key_prefix}_mem_days"
+        )
+    if chosen == "custom":
+        return "custom", int(calls_val), int(days_val)
+    return ("none" if chosen == "none" else ""), None, None
+
+
 col1, col2, col3 = st.columns([1.45, 1.15, 1.25])
 
 # =============================================================================
@@ -661,14 +971,18 @@ with col1:
         key="toggle_sys_msg"
     )
 
+    calls_visible = st.session_state.setdefault("calls_visible", CALLS_PAGE_SIZE)
     conn = sqlite3.connect(DB_PATH)
+    total_calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
     calls = conn.execute(
         "SELECT id, number, date, spam_score, transcript, audio_path, tag, client_name, company, summary "
-        "FROM calls ORDER BY id DESC"
+        "FROM calls ORDER BY id DESC LIMIT ?",
+        (calls_visible,)
     ).fetchall()
     conn.close()
 
     if calls:
+        st.caption(trans.get("ui_calls_showing", "Showing {shown} of {total}").format(shown=len(calls), total=total_calls))
         for call in calls:
             id_call, number, date, spam_score, transcript, audio_path, tag, client_name, company, summary = call
 
@@ -727,70 +1041,71 @@ with col1:
                         st.caption(block)
                         continue
 
-                    if st.session_state[edit_key] == idx_b:
-                        col_inp, col_ok, col_cancel = st.columns([5, 0.6, 0.8])
-                        with col_inp:
-                            new_txt = st.text_input(
-                                f"Edit {prefix_md}",
-                                value=pure_text,
-                                key=f"edit_inp_{id_call}_{idx_b}",
-                                label_visibility="collapsed"
-                            )
-                        with col_ok:
-                            if st.button("✅", key=f"ok_{id_call}_{idx_b}"):
-                                emoji_orig = "🗣" if is_user else "📞"
-                                blocks_raw[idx_b] = f"{emoji_orig} {ts_str}: {new_txt}" if ts_str else f"{emoji_orig}: {new_txt}"
-                                new_trans = "\n\n".join(blocks_raw)
-                                conn2 = sqlite3.connect(DB_PATH)
-                                conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
-                                conn2.commit()
-                                conn2.close()
-                                st.session_state[edit_key] = None
-                                st.toast(trans.get("ui_toast_phrase_updated", "Updated"))
-                                st.rerun()
-                        with col_cancel:
-                            if st.button("✖", key=f"cancel_{id_call}_{idx_b}"):
-                                st.session_state[edit_key] = None
-                                st.rerun()
-                    else:
-                        col_txt, col_edit, col_del = st.columns([6, 0.55, 0.55])
-                        with col_txt:
-                            st.markdown(f"{prefix_md} {pure_text}")
-                        with col_edit:
-                            if st.button("✏️", key=f"edit_btn_{id_call}_{idx_b}"):
-                                st.session_state[edit_key] = idx_b
-                                st.rerun()
-                        with col_del:
-                            del_confirm_key = f"del_confirm_{id_call}_{idx_b}"
-                            if del_confirm_key not in st.session_state:
-                                st.session_state[del_confirm_key] = False
-
-                            if not st.session_state[del_confirm_key]:
-                                if st.button("🗑️", key=f"del_phrase_{id_call}_{idx_b}"):
-                                    st.session_state[del_confirm_key] = True
+                    with st.container(key=f"phrase_{id_call}_{idx_b}"):
+                        if st.session_state[edit_key] == idx_b:
+                            col_inp, col_ok, col_cancel = st.columns([5, 0.6, 0.8])
+                            with col_inp:
+                                new_txt = st.text_input(
+                                    f"Edit {prefix_md}",
+                                    value=pure_text,
+                                    key=f"edit_inp_{id_call}_{idx_b}",
+                                    label_visibility="collapsed"
+                                )
+                            with col_ok:
+                                if st.button("✅", key=f"ok_{id_call}_{idx_b}"):
+                                    emoji_orig = "🗣" if is_user else "📞"
+                                    blocks_raw[idx_b] = f"{emoji_orig} {ts_str}: {new_txt}" if ts_str else f"{emoji_orig}: {new_txt}"
+                                    new_trans = "\n\n".join(blocks_raw)
+                                    conn2 = sqlite3.connect(DB_PATH)
+                                    conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
+                                    conn2.commit()
+                                    conn2.close()
+                                    st.session_state[edit_key] = None
+                                    st.toast(trans.get("ui_toast_phrase_updated", "Updated"))
                                     st.rerun()
-                            else:
-                                c_yes, c_no = st.columns(2)
-                                with c_yes:
-                                    if st.button("✓", key=f"del_yes_{id_call}_{idx_b}"):
-                                        blocks_raw.pop(idx_b)
-                                        new_trans = "\n\n".join(blocks_raw)
-                                        conn2 = sqlite3.connect(DB_PATH)
-                                        conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
-                                        conn2.commit()
-                                        conn2.close()
-                                        st.session_state[del_confirm_key] = False
-                                        st.toast(trans.get("ui_toast_phrase_deleted", "Deleted"))
+                            with col_cancel:
+                                if st.button("✖", key=f"cancel_{id_call}_{idx_b}"):
+                                    st.session_state[edit_key] = None
+                                    st.rerun()
+                        else:
+                            col_txt, col_edit, col_del = st.columns([6, 0.55, 0.55])
+                            with col_txt:
+                                st.markdown(f"{prefix_md} {pure_text}")
+                            with col_edit:
+                                if st.button("✏️", key=f"edit_btn_{id_call}_{idx_b}"):
+                                    st.session_state[edit_key] = idx_b
+                                    st.rerun()
+                            with col_del:
+                                del_confirm_key = f"del_confirm_{id_call}_{idx_b}"
+                                if del_confirm_key not in st.session_state:
+                                    st.session_state[del_confirm_key] = False
+
+                                if not st.session_state[del_confirm_key]:
+                                    if st.button("🗑️", key=f"del_phrase_{id_call}_{idx_b}"):
+                                        st.session_state[del_confirm_key] = True
                                         st.rerun()
-                                with c_no:
-                                    if st.button("X", key=f"del_no_{id_call}_{idx_b}"):
-                                        st.session_state[del_confirm_key] = False
-                                        st.rerun()
+                                else:
+                                    c_yes, c_no = st.columns(2)
+                                    with c_yes:
+                                        if st.button("✓", key=f"del_yes_{id_call}_{idx_b}"):
+                                            blocks_raw.pop(idx_b)
+                                            new_trans = "\n\n".join(blocks_raw)
+                                            conn2 = sqlite3.connect(DB_PATH)
+                                            conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
+                                            conn2.commit()
+                                            conn2.close()
+                                            st.session_state[del_confirm_key] = False
+                                            st.toast(trans.get("ui_toast_phrase_deleted", "Deleted"))
+                                            st.rerun()
+                                    with c_no:
+                                        if st.button("X", key=f"del_no_{id_call}_{idx_b}"):
+                                            st.session_state[del_confirm_key] = False
+                                            st.rerun()
 
                 if audio_path and os.path.exists(audio_path):
                     try:
                         with open(audio_path, "rb") as f:
-                            st.audio(f.read(), format="audio/wav")
+                            st.audio(f.read(), format=audio_mime_type(audio_path))
                     except Exception:
                         pass
 
@@ -844,7 +1159,7 @@ with col1:
                     if audio_path and os.path.exists(audio_path):
                         if st.button(trans.get("ui_btn_delete_audio", "Delete Audio"), key=f"delaud_{id_call}"):
                             try:
-                                os.remove(audio_path)
+                                remove_audio_files(audio_path)
                             except Exception:
                                 pass
                             conn_loc = sqlite3.connect(DB_PATH)
@@ -857,7 +1172,7 @@ with col1:
                     if st.button(trans.get("ui_btn_delete_record", "Delete Record"), key=f"delreg_{id_call}"):
                         if audio_path and os.path.exists(audio_path):
                             try:
-                                os.remove(audio_path)
+                                remove_audio_files(audio_path)
                             except Exception:
                                 pass
                         conn_loc = sqlite3.connect(DB_PATH)
@@ -890,6 +1205,10 @@ with col1:
                         conn_loc.close()
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
+        if total_calls > len(calls):
+            if st.button(trans.get("ui_btn_show_more", "Show more"), key="calls_show_more", use_container_width=True):
+                st.session_state.calls_visible = calls_visible + CALLS_PAGE_SIZE
+                st.rerun()
     else:
         st.info(trans.get("ui_no_calls", "No calls recorded yet."))
 
@@ -956,6 +1275,12 @@ with col2:
 
     st.subheader(trans.get("filters_title", "🚫 Contact Filters & Wildcards"))
     st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (614027865) and wildcards (* and ?, e.g. 626288*)."))
+    st.info(trans.get(
+        "ui_wildcard_help",
+        "Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. "
+        "Example: 626288* blocks or whitelists every number that starts with 626288. "
+        "If several rules match, the exact number wins, then the most specific wildcard."
+    ))
 
     with st.form("new_contact"):
         phone_num = st.text_input(trans.get("ui_form_phone", "Phone Number or Wildcard (e.g. 626288*):"))
@@ -966,14 +1291,15 @@ with col2:
             contact_tag = st.text_input(trans.get("ui_form_tag", "Custom Tag (optional):"), value="")
         contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="")
         prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"))
+        new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact")
         submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
 
         if submit and phone_num.strip():
             norm_number = normalize_phone_pattern(phone_num)
             conn = sqlite3.connect(DB_PATH)
             conn.execute(
-                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, ?, ?, ?, ?)",
-                (norm_number, contact_type, prompt_rules.strip(), contact_tag.strip(), contact_note.strip())
+                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (norm_number, contact_type, prompt_rules.strip(), contact_tag.strip(), contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days)
             )
             conn.commit()
             conn.close()
@@ -982,12 +1308,12 @@ with col2:
 
     st.write(f"**{trans.get('ui_managed_contacts', 'Managed contacts & wildcard rules:')}**")
     conn = sqlite3.connect(DB_PATH)
-    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note FROM contacts ORDER BY number ASC").fetchall()
+    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
 
     if contacts:
         for idx_c, c_row in enumerate(contacts):
-            c_num, c_type, c_prompt, c_tag, c_note = c_row
+            c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days = c_row
             badge = "🛡️ WHITELIST" if c_type == "whitelist" else "🚫 BLACKLIST"
             wildcard_badge = " [WILDCARD]" if any(w in c_num for w in ("*", "?")) else ""
             note_str = f" — {c_note}" if c_note else ""
@@ -1023,6 +1349,7 @@ with col2:
                     value=c_prompt or "",
                     key=f"edit_c_prompt_{idx_c}"
                 )
+                edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{idx_c}", c_mem_mode, c_mem_calls, c_mem_days)
                 eb1, eb2 = st.columns(2)
                 with eb1:
                     if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{idx_c}", use_container_width=True):
@@ -1031,8 +1358,8 @@ with col2:
                         if norm_new_num != c_num:
                             conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
                         conn_c.execute(
-                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, ?, ?, ?, ?)",
-                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag.strip(), edit_note.strip())
+                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag.strip(), edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days)
                         )
                         conn_c.commit()
                         conn_c.close()
@@ -1148,6 +1475,12 @@ with col3:
 
     st.write("---")
 
+    # --- REMOTE ACCESS: PRIVATE TOR ONION SERVICE (switch handled by the daemon) ---
+    st.markdown(f"**🧅 {trans.get('ui_tor_title', 'Remote access (Tor)')}**")
+    render_tor_panel()
+
+    st.write("---")
+
     # --- AUTO-CLEANUP DATA ---
     st.markdown(f"**🗑️ {trans.get('ui_cleanup_title', 'Auto-Cleanup Data')}**")
     with st.container(border=True):
@@ -1200,7 +1533,7 @@ with col3:
                 deleted_recs = 0
                 for row in old_rows:
                     rid, ap, cap = row
-                    for fpath in [ap, cap]:
+                    for fpath in [ap, cap, legacy_aac_copy_path(ap) if ap else None]:
                         if fpath and os.path.exists(fpath):
                             try:
                                 os.remove(fpath)
@@ -1232,7 +1565,7 @@ with col3:
             deleted_all_recs = len(all_rows)
             for row in all_rows:
                 _, ap, cap = row
-                for fpath in [ap, cap]:
+                for fpath in [ap, cap, legacy_aac_copy_path(ap) if ap else None]:
                     if fpath and os.path.exists(fpath):
                         try:
                             os.remove(fpath)
@@ -1248,13 +1581,11 @@ with col3:
             st.rerun()
 
     st.write("---")
-    current_wait = int(get_config("wait_seconds", "5"))
-    wait_slider = st.slider(
+    db_slider(
         trans.get("wait_seconds_label", "Wait before answer:"),
-        min_value=0, max_value=15, value=current_wait
+        "wait_seconds", "slider_wait_seconds", "5", int,
+        min_value=0, max_value=15
     )
-    if wait_slider != current_wait:
-        set_config("wait_seconds", wait_slider)
 
     # --- NETWORK SPAM PROTECTION, CACHE & LIVE AI TESTER ---
     st.write("---")
@@ -1334,16 +1665,18 @@ with col3:
     st.write("---")
     st.subheader(trans.get("memory_title", "🧠 Call Memory & Category Rules"))
 
-    mem_mode_opts = ["disabled", "per_number", "per_category", "global"]
+    mem_mode_opts = ["priority", "disabled", "only_categories", "only_numbers", "only_global"]
     mem_mode_labels = trans.get("memory_mode_labels", {
-        "disabled": "Disabled (No past call memory)",
-        "per_number": "Per Phone Number (Default)",
-        "per_category": "Per Category / Contact Tag",
-        "global": "Global (All non-SPAM calls)"
+        "priority": "Priority system (number > category > default)",
+        "disabled": "Disable all (No past call memory)",
+        "only_categories": "Only categories / contact tags",
+        "only_numbers": "Only phone numbers",
+        "only_global": "Only global (All non-SPAM calls)"
     })
-    current_mem_mode = get_config("memory_mode", "per_number")
+    current_mem_mode = get_config("memory_mode", "priority")
+    current_mem_mode = MEMORY_MODE_ALIASES.get(current_mem_mode, current_mem_mode)
     if current_mem_mode not in mem_mode_opts:
-        current_mem_mode = "per_number"
+        current_mem_mode = "priority"
 
     new_mem_mode = st.selectbox(
         trans.get("memory_mode_select_label", "Memory Scope:"),
@@ -1355,7 +1688,14 @@ with col3:
         set_config("memory_mode", new_mem_mode)
         st.rerun()
 
-    if new_mem_mode == "global":
+    if new_mem_mode == "priority":
+        st.info(trans.get(
+            "memory_priority_info",
+            "Priority system: each call uses the first level that applies. "
+            "1) Memory rule of the number (contact or wildcard), 2) rule of its category, 3) default: previous calls of the same number with the general limits below."
+        ))
+
+    if new_mem_mode == "only_global":
         st.warning(trans.get(
             "memory_global_warning",
             "⚠️ Warning: In Global mode, the AI knows summaries of recent non-SPAM calls from all numbers. An unknown caller could attempt social engineering to ask about other callers."
@@ -1406,17 +1746,23 @@ with col3:
         rule_keywords = rule.get("keywords", [])
         rule_days = rule.get("days", 7)
         rule_wait = rule.get("wait_seconds", 120)
+        rule_calls = int(rule.get("calls", 0) or 0)
+        rule_chars = int(rule.get("chars", 0) or 0)
 
         with st.expander(f"📁 {rule_category}"):
             new_cat_title = st.text_input(trans.get("ui_cat_name", "Category Name:"), value=rule_category, key=f"cat_{widget_suffix}")
             keywords_val = st.text_input(trans.get("ui_cat_keywords", "Keywords:"), value=", ".join(rule_keywords), key=f"kw_{widget_suffix}")
             days_val = st.number_input(trans.get("ui_cat_days", "Days:"), min_value=1, value=rule_days, key=f"days_{widget_suffix}")
+            calls_val = st.number_input(trans.get("ui_cat_calls", "Calls to remember (0 = general value):"), min_value=0, max_value=20, value=rule_calls, key=f"calls_{widget_suffix}")
+            chars_val = st.number_input(trans.get("ui_cat_chars", "Max characters (0 = general value):"), min_value=0, max_value=12000, value=rule_chars, step=250, key=f"chars_{widget_suffix}")
             wait_val = st.number_input(trans.get("ui_cat_wait", "Wait Seconds:"), min_value=10, value=rule_wait, key=f"wait_{widget_suffix}")
 
             rules[idx] = {
                 "category": new_cat_title,
                 "keywords": [p.strip().lower() for p in keywords_val.split(",") if p.strip()],
                 "days": days_val,
+                "calls": calls_val,
+                "chars": chars_val,
                 "wait_seconds": wait_val
             }
 
@@ -1568,6 +1914,13 @@ with col3:
         set_config("monitor_mode", selected_monitor_mode)
         st.rerun()
 
+    db_slider(
+        trans.get("monitor_volume_label", "Monitoring volume (%):"),
+        "monitor_volume", "slider_monitor_volume", "100", int,
+        min_value=0, max_value=100, step=5,
+        help=trans.get("monitor_volume_help", "Only changes what you hear through the monitoring speakers; the call itself is not affected.")
+    )
+
     st.caption(trans.get("allow_pc_mic_desc", "PC microphone is isolated to prevent leakage and echo."))
 
     # --- GEMINI 3.8 LIVE AUDIO & VAD TUNING PANEL ---
@@ -1594,13 +1947,11 @@ with col3:
 
     av1, av2 = st.columns(2)
     with av1:
-        curr_gain = float(get_config("caller_gain", "1.5"))
-        new_gain = st.slider(
+        db_slider(
             trans.get("caller_gain_label", "Caller Mic Gain (x):"),
-            min_value=0.5, max_value=5.0, value=curr_gain, step=0.5
+            "caller_gain", "slider_caller_gain", "1.5", float,
+            min_value=0.5, max_value=5.0, step=0.5
         )
-        if new_gain != curr_gain:
-            set_config("caller_gain", new_gain)
 
         vad_sens_opts = ["HIGH", "LOW"]
         curr_vad_start = get_config("vad_start_sensitivity", "LOW")
@@ -1614,22 +1965,18 @@ with col3:
         if new_vad_start != curr_vad_start:
             set_config("vad_start_sensitivity", new_vad_start)
 
-        curr_pad_ms = int(get_config("vad_prefix_padding_ms", "500"))
-        new_pad_ms = st.slider(
+        db_slider(
             trans.get("vad_prefix_padding_label", "VAD Prefix Padding (ms):"),
-            min_value=50, max_value=1000, value=curr_pad_ms, step=50
+            "vad_prefix_padding_ms", "slider_vad_prefix_padding", "500", int,
+            min_value=50, max_value=1000, step=50
         )
-        if new_pad_ms != curr_pad_ms:
-            set_config("vad_prefix_padding_ms", new_pad_ms)
 
     with av2:
-        curr_gate = int(get_config("noise_gate_base", "50"))
-        new_gate = st.slider(
+        db_slider(
             trans.get("noise_gate_label", "Base Noise Gate (RMS):"),
-            min_value=0, max_value=100, value=curr_gate, step=5
+            "noise_gate_base", "slider_noise_gate", "50", int,
+            min_value=0, max_value=100, step=5
         )
-        if new_gate != curr_gate:
-            set_config("noise_gate_base", new_gate)
 
         curr_vad_end = get_config("vad_end_sensitivity", "HIGH")
         if curr_vad_end not in vad_sens_opts:
@@ -1642,13 +1989,11 @@ with col3:
         if new_vad_end != curr_vad_end:
             set_config("vad_end_sensitivity", new_vad_end)
 
-        curr_sil_ms = int(get_config("vad_silence_duration_ms", "500"))
-        new_sil_ms = st.slider(
+        db_slider(
             trans.get("vad_silence_duration_label", "VAD Silence Duration (ms):"),
-            min_value=200, max_value=2000, value=curr_sil_ms, step=100
+            "vad_silence_duration_ms", "slider_vad_silence_duration", "500", int,
+            min_value=200, max_value=2000, step=100
         )
-        if new_sil_ms != curr_sil_ms:
-            set_config("vad_silence_duration_ms", new_sil_ms)
 
     # --- OWNER & IDENTITY CONFIGURATION ---
     st.write("---")

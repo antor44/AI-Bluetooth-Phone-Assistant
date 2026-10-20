@@ -1,6 +1,6 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 2.0](https://img.shields.io/badge/Version-2.0-brightgreen.svg)
+![Version: 2.4](https://img.shields.io/badge/Version-2.4-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
@@ -73,7 +73,7 @@ To overcome these commercial barriers, I have developed this Python application 
   <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see *SBC Audio Note* below), so to monitor call audio locally it is recommended to use a **USB sound card or USB speakers**.</b>
 </div>
 <br>
-Author: Antonio R. | Version: 2.0 | License: GPL 3.0
+Author: Antonio R. | Version: 2.4 | License: GPL 3.0
 
 ---
 
@@ -105,19 +105,28 @@ Author: Antonio R. | Version: 2.0 | License: GPL 3.0
 * **Intelligent Hold & Dynamic Silence Management:** Automatically detects when a caller asks to hold or transfers the line (`on_hold`), silences inactivity prompts while waiting, and executes a polite two-step grace-period warning before disconnecting dead air.
 * **Priority Keyword Detection & Category Wait Rules:** Dynamically extends hold and silence timeouts when high-priority keywords (e.g., *hospital, doctor, surgery, dentist, lawyer, court*) are detected in real time.
 * **Deterministic Security Guardrails (`CallPolicyEngine`):** Intercepts AI tool executions (`hangup`, `save_message`) to prevent premature disconnections while on hold, block private data disclosure (such as revealing the owner's surname), and enforce a balanced 2-attempt caller identification rule.
-* **Synchronized Stereo Call Recording (`.wav`):** Saves every call as a 24kHz stereo WAV file (Left channel = Caller, Right channel = AI Secretary) alongside an isolated 16kHz caller track, with an integrated audio player in the Web GUI.
+* **Synchronized Stereo Call Recording (`.mp3`):** Saves every call as a stereo MP3 (64 kbps; Left channel = Caller, Right channel = AI Secretary) alongside an isolated caller track (32 kbps), using the `lameenc` encoder (no ffmpeg needed), with an integrated audio player in the Web GUI. If `lameenc` is not installed, recordings fall back to WAV.
 * **Background LLM Classification & SPAM Scoring:** Uses secondary text models (`gemini-3-flash-preview` or `gemma-4`) to retrospectively classify calls (`PERSONAL`, `WORK`, `PRIORITY`, `SPAM`, `GENERAL`), extract caller name and company, and assign a `0–100` risk score.
 * **Multi-Engine Transcription Modes:** Choose between **Disabled (Gemini Live native transcription)**, **Real-time per-turn `whisper.cpp` healing**, **Batch `whisper.cpp` at end of call**, or **Gemini Audio alignment at end of call**.
 * **Local Speaker Monitoring & PC Mic Isolation:** Route call audio to local speakers (Both, Caller Only, Secretary Only, or None) while keeping the local PC microphone strictly unlinked from the Bluetooth call to prevent echo and room audio leakage.
-* **Interactive Transcript Editor & Data Auto-Cleanup:** Edit or delete individual dialogue turns in the Web GUI, retag calls, purge audio recordings or database logs older than $N$ days, or wipe all records and `.wav` files with a single click.
+* **Interactive Transcript Editor & Data Auto-Cleanup:** Edit or delete individual dialogue turns in the Web GUI, retag calls, purge audio recordings or database logs older than $N$ days, or wipe all records and recordings with a single click.
 
 ### 🆕 New in Version 2.0
 * **📬 Dedicated Caller Messages Inbox:** Messages captured via the `save_message` tool are stored in a dedicated `messages` table with the **exact date (`YYYY-MM-DD`) and time (`HH:MM:SS`)**, caller name, phone number, unread counter badge, Read/Unread toggles, and a 1-click importer for legacy transcripts.
-* **🧠 Configurable Call Memory & Post-Call AI Summaries:** Generates a concise call summary at the end of every call in the same LLM analysis pass (zero extra API calls or pickup latency). Supports **Disabled**, **Per Phone Number** (default), **Per Category**, and **Global** (all non-SPAM calls) modes with configurable call count, max age in days, and max character limits.
+* **🧠 Configurable Call Memory & Post-Call AI Summaries:** Generates a concise call summary at the end of every call in the same LLM analysis pass (zero extra API calls or pickup latency). Since v2.4 memory works as a **priority system** (phone number > category > default); see *New in Version 2.4* below.
 * **🔢 Phone Normalization, Wildcards (`626288*`) & Editable Contacts:** Normalizes international prefixes (`+34`, `0034`, national digits), supports `*` and `?` wildcard rules with specificity priority, logs rejected blacklist calls in the Call History with custom tags, and provides a full GUI editor for managed contacts.
 * **🛡️ Upgraded SPAM Engine (`curl_cffi`), Cache & Live AI Tester:** Automatically skips SPAM checks for whitelisted contacts, supports `{number}`, `{national}`, and `{e164}` URL placeholders, uses `curl_cffi` TLS browser impersonation (`listaspam.com`, `tellows.es`), strips `<script>`/`<style>`/`<nav>`/`<select>` noise before analysis, caches lookups in SQLite (`spam_cache`), and includes a live SPAM provider + AI verdict tester in the Web GUI and CLI (`--test-spam`).
 * **🎚️ Gemini 3.8 Live Audio & VAD Tuning Panel:** Adjust Caller Mic Gain (default `1.5x`), Pre-Gain Base Noise Gate (default `50`), VAD Start/End Sensitivity (`LOW`/`HIGH`), VAD Prefix Padding (`500 ms`), VAD Silence Duration (`500 ms`), Wait Seconds before answering (`5s`), and Initial Greeting Interruption Protection directly from the Web GUI, plus automatic input transcription echo stripping.
 * **🎛️ Daemon Controls, Web Whisper Manager & Remote Server Reboot:** Pause, resume, or stop the switchboard daemon from the Web GUI with live heartbeat status, download/quantize Whisper models from the browser, or reboot the entire Linux host server remotely with `sudo` password confirmation.
+
+### 🆕 New in Version 2.4
+* **🧠 Tiered Call Memory:** new memory modes — *priority system* (number > category > default), *disabled*, *only categories*, *only numbers* and *only global*. Old settings are converted automatically. Every contact or wildcard can **inherit**, have **no memory**, or use **its own limits** (calls and days); categories can set their own number of calls and maximum characters. Each call records the memory mode used. Existing databases gain the new columns automatically.
+* **🎙️ MP3 Recordings:** stereo call recordings at 64 kbps and the caller-only track at 32 kbps, encoded with `lameenc` (no ffmpeg). Falls back to WAV if `lameenc` is missing. The compressed-copy mechanism and the "Prepare audio" button of earlier builds were removed: the GUI plays MP3 or WAV directly.
+* **🔇 Echo Fixes:** repaired the audio-link cleanup (it silently failed because of an `asyncio.DEVNULL` misuse), a new rule removes the `auto_null` / `bluez_input` links towards the phone's output (only for the phone of the current call) with a re-check after 0.5 s, and the Bluetooth links are logged when a call is answered.
+* **🔊 Non-Blocking Monitor + Monitoring Volume:** monitor audio goes through a queue with its own thread (this fixed the desynchronisation of recordings). A new **monitoring volume** slider changes only what you hear locally — never the call — and applies when the player starts and live during a call. A warning `Silence inserted into the caller track` is printed at the end of a call if gaps had to be filled.
+* **📜 Live Logs:** `./my_gui.sh --logs` follows the service journal (or `logs/daemon.log`) in real time; console output is now line-by-line. In headless mode the daemon runs unbuffered and its output is also written to `logs/daemon.log` (rotated at 5 MB).
+* **🖥️ Web GUI:** call history limited to 20 entries with a *Show more* button and counter, new memory menu and per-contact/per-category memory controls, wildcard help text, and sliders that keep their value reliably when moved.
+* **🌍 Remote Access over Tor + 📱 Android App:** a private Tor onion service built into the switchboard and the Web GUI (see [Remote Access](#-remote-access-from-anywhere-outside-your-lan)) and a free **Android app** that opens the panel through Tor and shows **notifications** for new caller messages and finished calls (see [Android App](#-android-app-ai-switchboard)).
 
 ---
 
@@ -205,6 +214,12 @@ chmod +x install_system_deps.sh my_gui.sh
 # Optional (Desktop PCs): Pass --with-whisper to also compile whisper.cpp and download GGML models:
 ./install_system_deps.sh --with-whisper
 ```
+```bash
+# Optional: Pass --with-tor to also install tor and openssl (only needed for Remote Access over Tor).
+# The flags can be combined, e.g. ./install_system_deps.sh --with-tor --with-whisper
+./install_system_deps.sh --with-tor
+```
+The installer always installs the MP3 encoder `lameenc` for call recordings (if it cannot be installed, recordings are saved as WAV instead).
 
 After the installer finishes, **reboot your machine once** (`sudo reboot`) so user groups, D-Bus permissions, and Bluetooth kernel rules take effect.
 
@@ -219,6 +234,8 @@ sudo apt install --install-recommends ofono bluez bluez-tools pipewire pipewire-
 ```
 *(On Armbian SBCs, also install `sudo apt install armbian-firmware-full` so external USB Bluetooth adapters load their required firmware).*
 
+*(Optional, only for Remote Access over Tor:)* `sudo apt install tor openssl`
+
 #### 2. Crucial Permissions Step
 ```bash
 sudo usermod -aG bluetooth,audio,video,netdev,plugdev,dialout,sudo $USER
@@ -232,6 +249,7 @@ Requires Python 3.10+. Use a virtual environment with `--system-site-packages` s
 python3 -m venv --system-site-packages venv
 source venv/bin/activate
 pip install google-genai aiohttp curl_cffi streamlit "protobuf>=5.26.1,<7.0.0"
+pip install lameenc   # optional: MP3 call recordings (without it recordings are saved as WAV)
 ```
 
 #### 4. Installing `whisper.cpp` (Optional on SBCs / Hybrid Transcription for PC)
@@ -359,6 +377,9 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 ├── install_system_deps.sh      # Automated system & Python dependency installer (--with-whisper optional)
 ├── switchboard.db              # SQLite Database (Auto-generated & migrated on launch)
 ├── requirements.txt            # Python package dependencies
+├── /logs                       # daemon.log (headless mode, rotated at 5 MB) — auto-created
+├── /onion_data                 # Private Tor instance & onion service keys (Remote Access) — auto-created
+├── /android                    # Android app: full Gradle project and ANDROID_BUILD.md (the APK is attached to each GitHub release)
 │
 ├── /models                     # Whisper.cpp Model Folder (Optional)
 │   ├── ggml-medium.bin         # Multilingual model (for PC setups)
@@ -376,8 +397,8 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 │   │   └── spam.json
 │
 ├── /recordings                 # Call audio logs directory (Auto-created)
-│   ├── call_1234_client.wav    # Isolated caller audio (16kHz mono, used for offline ASR)
-│   └── call_1234.wav           # Mixed synchronized call recording (24kHz stereo: Left=Caller, Right=AI)
+│   ├── call_1234_client.mp3    # Isolated caller audio (32 kbps; WAV if lameenc is missing)
+│   └── call_1234.mp3           # Mixed synchronized call recording (64 kbps stereo: Left=Caller, Right=AI)
 ```
 
 ---
@@ -411,8 +432,18 @@ The Web GUI is a regular web page, so you can manage the switchboard directly fr
 
 > ⚠️ **Security warning:** the Web GUI has **no login or password** and includes sensitive features (call recordings, transcripts, messages, API settings and remote server reboot). Only use it on networks you trust, and **never expose port 8501 to the Internet** (no router port forwarding). For remote access from outside your LAN, see the next section.
 
-#### 🌍 Secure Remote Access from Anywhere (Outside Your LAN)
-To manage the switchboard from your phone while away from home (mobile data, work, travel), use a **private VPN tunnel** instead of exposing the GUI to the Internet. [Tailscale](https://tailscale.com) is the easiest option: it is free for personal use, needs **no router configuration or port forwarding**, and works even behind CGNAT (common with mobile and fibre ISPs).
+#### 🌍 Remote Access from Anywhere (Outside Your LAN)
+To manage the switchboard while away from home (mobile data, work, travel) **never expose the GUI to the Internet** (no router port forwarding, no `tailscale funnel`): it has no password. There are two safe ways, pick the one that suits you:
+
+| | **Option A — Private VPN (Tailscale / WireGuard)** | **Option B — Built-in Tor (quick alternative)** |
+|---|---|---|
+| Setup | Install the VPN on the switchboard and on each phone/PC | Switch it on in the Web GUI; install the Android app on the phone |
+| Accounts / third parties | Tailscale account (or your own WireGuard server) | None — no account, no router configuration, no third-party service |
+| Speed & reliability | Fast and stable | **Can be slow, and may occasionally fail** (Tor circuits take time to build) |
+| Works with | Any browser, Android and iPhone | The Android app, or Tor Browser on a PC (see below) |
+
+##### Option A — Private VPN with Tailscale
+[Tailscale](https://tailscale.com) is the easiest VPN: free for personal use, no router configuration or port forwarding, and it works even behind CGNAT (common with mobile and fibre ISPs).
 
 **On the switchboard device (PC / Orange Pi):**
 ```bash
@@ -421,8 +452,8 @@ sudo tailscale up          # opens a login link: sign in once with your account
 tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
 ```
 
-**On your Android phone:**
-1. Install the **Tailscale** app from Google Play and sign in with the **same account**.
+**On your phone (Android or iPhone):**
+1. Install the **Tailscale** app and sign in with the **same account**.
 2. Turn the VPN switch on.
 3. Open the phone browser and go to:
    ```
@@ -431,10 +462,23 @@ tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
    (or use the device's MagicDNS name, e.g. `http://orangepi:8501`).
 
 **Tips:**
-* Use Chrome's **"Add to Home screen"** to get an app-like icon that opens the GUI directly.
+* Use the browser's **"Add to Home screen"** to get an app-like icon that opens the GUI directly.
 * Optional HTTPS inside your private network: `sudo tailscale serve --bg 8501` publishes the GUI only to your own devices at `https://<device>.<tailnet>.ts.net`.
-* Do **not** use `tailscale funnel` or router port forwarding for this service: that would make the GUI public and it has no authentication.
 * Alternatives: a self-hosted **WireGuard** server on your router, or any other VPN that gives your phone a private route to the switchboard device.
+
+##### Option B — Built-in Tor (private onion service, no third parties)
+The switchboard can publish its Web GUI as a **private Tor onion service protected by an access key** (Tor "client authorization"): without the key nobody can even see that the service exists. It needs no account, no open ports and no router configuration, and it works behind CGNAT. The trade-off is speed: pages load slower than on a VPN, and a connection can occasionally fail and need a retry.
+
+1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl`
+2. Open the Web GUI and find the **Remote access (Tor)** panel. Press **▶️ Enable remote access** and wait until the status says **🟢 Active** (the first start can take a minute or two).
+3. Press **🔑 Show pairing code**. You will see the onion address, the access key (with a copy button) and a QR code. **Keep them secret**: whoever has them can reach your panel.
+4. Connect a device:
+   * **Android phone → the [AI Switchboard app](#-android-app-ai-switchboard)** (recommended): scan the QR code or paste the code.
+   * **PC → Tor Browser (desktop)**: open the onion address; Tor Browser asks for the access key. *(Tor Browser for Android and other mobile Tor browsers may not support access-key protected onion services — according to the Tor Project's issue tracker, Tor Browser for Android did not support them when this was written — so on Android use the app.)*
+   * **iPhone:** there is no app for iOS. Use Option A (Tailscale has an iOS app) or your home network.
+5. To cut remote access at any time, press **⏹️ Disable remote access** in the same panel.
+
+> The switchboard also pushes nothing to any server: the Android app *polls* it through Tor (see below), so no Google/Firebase service is involved.
 
 ---
 **🛡️ Optional CLI SPAM Test**
@@ -496,8 +540,11 @@ You can manage the service at any time from your terminal (as well as pausing/st
   ```
 * **View real-time console logs (press `Ctrl+C` to exit log view without stopping the service):**
   ```bash
-  journalctl --user -u ai-switchboard.service -f
+  ./my_gui.sh --logs
+  # or directly:
+  journalctl --user -u ai-switchboard.service -f -n 100 -a -o cat
   ```
+  > The `-a -o cat` options matter: without them `journalctl` hides lines that contain colours/emojis. If your system keeps user services in the system journal, add yourself to the journal group once (`sudo usermod -aG systemd-journal $USER`, then log out and in); `./my_gui.sh --logs` handles that case automatically.
 * **Disable automatic startup on boot:**
   ```bash
   systemctl --user disable ai-switchboard.service
@@ -509,11 +556,53 @@ cat << 'EOF' >> ~/.bashrc
 alias switchboard-stop='systemctl --user stop ai-switchboard.service && echo "Switchboard stopped."'
 alias switchboard-start='systemctl --user start ai-switchboard.service && echo "Switchboard started."'
 alias switchboard-restart='systemctl --user restart ai-switchboard.service && echo "Switchboard restarted."'
-alias switchboard-log='journalctl --user -u ai-switchboard.service -f'
+alias switchboard-log='journalctl --user -u ai-switchboard.service -f -n 100 -a -o cat'
 alias switchboard-status='systemctl --user status ai-switchboard.service'
 EOF
 source ~/.bashrc
 ```
+
+---
+
+## 📱 Android App (AI Switchboard)
+
+A small, free Android app that is the easiest way to reach your switchboard from **anywhere**: it opens the Web GUI through the Tor network built into the app and tells you when a caller leaves a message or a call has finished.
+
+[**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/releases/download/v2.4/AI-Switchboard-1.0.0.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
+
+### Why it is worth installing
+* 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
+* 🗄️ **It keeps almost nothing.** The only thing it stores is your pairing key, encrypted with the Android Keystore and excluded from Android backups, plus its own settings. Calls, recordings and messages stay on your switchboard; the panel you see is just a window onto it (like any browser, the phone may cache the pages it shows).
+* 🔔 **Notifications without Google.** Because Tor is private, the app cannot receive instant pushes; instead it *checks your switchboard about every 15 minutes* (Android's minimum for background work; it can be later in battery-saver mode) and notifies you of **new caller messages** and **finished calls with their AI summary**. SPAM and blocked calls are not notified, and a call that left a message produces a single notification. On the lock screen only a generic text is shown; the content appears once you unlock. The first time you switch notifications on, old items are not sent.
+* 🆓 **Free and open source (GPL v3).** The *About* button shows the version, the license notice and the licenses of the components it uses.
+
+### Verify the download (optional)
+The official APK `AI-Switchboard-1.0.0.apk` has this SHA-256: `6a2ebb0383f4b3ba00d301252c8b506acc9e61bfe44964cdb3cca8312e9e8d7d`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
+
+### Installation
+1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/releases/download/v2.4/AI-Switchboard-1.0.0.apk) (or download it on a PC and copy it over) and open the downloaded file.
+2. Android will ask you to allow installing apps from this source (**"Install unknown apps"** for your browser or file manager). Allow it **only for that app**, then go back and tap **Install**. The app is not distributed through Google Play, so Google Play Protect may warn about an unknown developer: tap *More details → Install anyway*.
+3. Open the app. When it asks for permission to show **notifications**, accept (Android 13+).
+4. On the switchboard, enable **Remote access (Tor)** and press **Show pairing code** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)).
+5. In the app, **scan the QR code**, or paste the pairing text. The GUI shows the onion address and the access key separately: paste the onion address in the first box and the key in the second, or paste the full pairing link in the first box only.
+6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
+
+### 🔍 About the QR scanner (for the very meticulous)
+Everything above is true for the app itself. The one exception is the optional **QR scan**: it uses Google's *code scanner* component of Google Play services. Google documents that the image is processed on the device and that Google does not store the scan results or images, and the app receives only the text. However it is a Google component: it requires Google Play services, and the first time you use it the phone may download the scanner module from Google. **If you prefer to avoid it completely, do not scan: paste the onion address and key instead** — the rest of the app never talks to Google.
+
+### Troubleshooting
+| Problem | What to do |
+|---|---|
+| "App not installed" / the file will not open | Allow *Install unknown apps* for the app you used to open the APK. Android 7–8 has a single "Unknown sources" switch in Security settings. |
+| Play Protect warns about an unknown developer | Expected for apps outside Google Play: *More details → Install anyway*. You can compare the file's SHA-256 with the one published in the release. |
+| Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. Press **Retry**. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
+| *Cannot reach the switchboard* | The switchboard is off, offline, or remote access is disabled. |
+| *The WebView … does not support the required proxy feature* | Update **Android System WebView** (and Chrome) in Google Play, or on devices without Google Play update the WebView component by the vendor's means. |
+| *Invalid pairing data* | Paste the onion address (56 characters + `.onion`) and the key (52 characters) in the right boxes, or the full `aiphone://pair?…` link. Do not add spaces or quotes. |
+| No notifications | Allow notifications for the app in Android settings; set the app's battery usage to **Unrestricted / Not optimised**; on Xiaomi, Huawei, Oppo, Samsung and similar, allow *autostart* / *background activity* and lock the app in recent apps. Checks happen about every 15 minutes, not instantly, and possibly later in Doze or battery saver. |
+| Notifications appear with a generic text | That is intended on the lock screen; unlock the phone to read them. |
+| The panel is slow | Normal with Tor. For a faster connection use Option A (VPN). |
+| After reinstalling or changing phone | Pair again: the key is deliberately not backed up. |
 
 ---
 
@@ -524,9 +613,11 @@ This application is built as a **Monolithic State Machine** functioning as a det
 1. **Active Silence & Hold Tracking:** Tracks seconds of inactivity (`time_without_user`) to prompt silent callers or execute grace-period disconnections, while extending timeouts dynamically when a call is placed on hold (`self.on_hold`) or matches priority keywords.
 2. **Deterministic Guardrails (`CallPolicyEngine`):** Intercepts AI tool calls (`hangup`, `save_message`) and validates them against the real-time state machine to prevent premature disconnections during active holds and store structured messages in the inbox.
 3. **Streaming Chunk Reconstruction & Echo Stripping:** Accumulates fragmented streaming text chunks in a 2.5-second sliding window (`_asst_chunk_buffer`) to reliably evaluate goodbye and hold triggers while stripping assistant phrase bleed from incoming transcriptions.
-4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, records synchronized stereo `.wav` logs, and generates concise AI call summaries for future context memory.
+4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, records synchronized stereo call recordings (MP3, or WAV as fallback), and generates concise AI call summaries for future context memory.
 
 ---
 
 ## 📝 License
-This project is licensed under the GPL v3 License. See the `LICENSE` file for details.
+This project (switchboard and Android app) is licensed under the **GNU General Public License v3.0 or later**. See the `LICENSE` file for details.
+
+The Android app also contains third-party components under their own licenses (all compatible with the GPL v3): Tor (`tor-android`, `jtorctl`; BSD 3-Clause), AndroidX / Kotlin / Kotlinx Coroutines (Apache 2.0) and the Noto Emoji artwork of the icon (Apache 2.0, © Google). Their notices are shown inside the app under *About → Licenses*. The optional QR scan relies on the Google Play services code scanner, which is not part of this repository.

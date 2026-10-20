@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# my_gui.sh v. 2.0 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 2.4 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #
 # Author: Antonio R.
-# Version: 2.0
+# Version: 2.4
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -41,6 +41,35 @@ PREFERRED_TERMINALS=("xfce4-terminal" "gnome-terminal" "mate-terminal")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Live console log settings
+SERVICE_NAME="ai-switchboard.service"
+LOG_DIR="$SCRIPT_DIR/logs"
+LOG_FILE="$LOG_DIR/daemon.log"
+LOG_MAX_BYTES=5242880
+
+# Live log viewer (./my_gui.sh --logs). Ctrl+C closes the viewer only; the service keeps running.
+show_logs() {
+    trap - ERR
+    trap 'echo ""; echo "[INFO] Log view closed. The service keeps running."; exit 0' INT
+    if systemctl --user is-active --quiet "$SERVICE_NAME" 2> /dev/null; then
+        echo "[INFO] Following the journal of $SERVICE_NAME (press Ctrl+C to leave without stopping the service)..."
+        if [ -n "$(journalctl --user -u "$SERVICE_NAME" -n 1 -q -o cat 2>/dev/null)" ]; then
+            journalctl --user -u "$SERVICE_NAME" -f -n 100 -a -o cat
+        else
+            # Some systems keep user services in the system journal (no per-user journal files).
+            echo "[INFO] No per-user journal found; reading the system journal instead (the user must belong to the 'systemd-journal' or 'adm' group)."
+            journalctl "_SYSTEMD_USER_UNIT=$SERVICE_NAME" -f -n 100 -a -o cat
+        fi
+    elif [ -f "$LOG_FILE" ]; then
+        echo "[INFO] Following $LOG_FILE (press Ctrl+C to leave without stopping the service)..."
+        tail -n 100 -F "$LOG_FILE"
+    else
+        echo "[ERROR] No logs found: the systemd service $SERVICE_NAME does not exist and $LOG_FILE has not been created yet."
+        exit 1
+    fi
+    exit 0
+}
+
 # ---------------------------------------------------------------------------
 # ARGUMENT PARSING
 # ---------------------------------------------------------------------------
@@ -49,6 +78,8 @@ for arg in "$@"; do
     if [ "$arg" == "--headless" ] || [ "$arg" == "--lan" ]; then
         FORCE_HEADLESS=1
         echo "[INFO] Manual argument detected: Forcing Headless/LAN mode."
+    elif [ "$arg" == "--logs" ]; then
+        show_logs
     fi
 done
 
@@ -137,13 +168,13 @@ if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0"
 
     case "$SELECTED_TERMINAL" in
         "xfce4-terminal")
-            xfce4-terminal --title="AI Phone Assistant Daemon v2.0" --command="bash -c '$DAEMON_CMD'" &
+            xfce4-terminal --title="AI Phone Assistant Daemon v2.4" --command="bash -c '$DAEMON_CMD'" &
             ;;
         "gnome-terminal")
-            gnome-terminal --title="AI Phone Assistant Daemon v2.0" -- bash -c "$DAEMON_CMD" &
+            gnome-terminal --title="AI Phone Assistant Daemon v2.4" -- bash -c "$DAEMON_CMD" &
             ;;
         "mate-terminal")
-            mate-terminal --title="AI Phone Assistant Daemon v2.0" --command="bash -c '$DAEMON_CMD'" &
+            mate-terminal --title="AI Phone Assistant Daemon v2.4" --command="bash -c '$DAEMON_CMD'" &
             ;;
         *)
             "$SELECTED_TERMINAL" -e bash -c "$DAEMON_CMD" &
@@ -158,14 +189,19 @@ else
     echo "[INFO] Launching the AI Phone Assistant daemon in the background..."
 
     export GEMINI_API_KEY="$GEMINI_API_KEY"
-    python3 phone_assistant.py &
+    mkdir -p "$LOG_DIR"
+    if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE")" -gt "$LOG_MAX_BYTES" ]; then
+        mv -f "$LOG_FILE" "$LOG_FILE.1"
+    fi
+    # Unbuffered output, mirrored to the terminal and to the log file (view it live with: ./my_gui.sh --logs)
+    python3 -u phone_assistant.py > >(tee -a "$LOG_FILE") 2>&1 &
     DAEMON_PID=$!
 
     trap "echo '[INFO] Stopping background daemon...'; kill $DAEMON_PID 2>/dev/null" EXIT
 fi
 
 # Launch the Streamlit application in the current terminal
-echo "[INFO] Starting AI Switchboard Web Interface v2.0..."
+echo "[INFO] Starting AI Switchboard Web Interface v2.4..."
 
 if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
     LOCAL_IP=$(hostname -I | awk '{print $1}')
