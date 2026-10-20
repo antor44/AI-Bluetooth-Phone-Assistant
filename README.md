@@ -194,7 +194,7 @@ Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Heb
 ### 4. Voice Synthesis (TTS) Restrictions
 The Gemini Live connection is hardcoded to use two voices (`Aoede` for female, `Puck` for male). For best results in non-Western languages, change `voice_name` in `phone_assistant.py` to a voice optimized for your target language.
 
-🐛 **Known limitation:** With Gemini 3.8 Live, the voice may occasionally drift into a Latin American accent in Spanish, and sometimes into a deeper or more masculine voice. Similar issues have been reported on Google’s forums for version 3.8; no confirmed fix exists, so the prompts were left unchanged.
+🐛 **Known limitation:** With Gemini 3.8 Live, the feminine Spanish voice may occasionally drift into a Latin American accent, and sometimes into a deeper or more masculine voice. Similar issues have been reported on Google’s forums for version 3.8; no confirmed fix exists, so the prompts were left unchanged.
 
 ---
 
