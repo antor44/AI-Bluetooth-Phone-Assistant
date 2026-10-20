@@ -1274,7 +1274,7 @@ with col2:
     st.write("---")
 
     st.subheader(trans.get("filters_title", "🚫 Contact Filters & Wildcards"))
-    st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (614027865) and wildcards (* and ?, e.g. 626288*)."))
+    st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (600123456) and wildcards (* and ?, e.g. 626288*)."))
     st.info(trans.get(
         "ui_wildcard_help",
         "Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. "
