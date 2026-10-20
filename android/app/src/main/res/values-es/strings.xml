@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Centralita IA</string>
+    <string name="pair_title">Vincular con tu centralita</string>
+    <string name="pair_hint">Escanea el código QR que muestra la centralita, o pega el texto de emparejamiento.</string>
+    <string name="pair_scan">Escanear código QR</string>
+    <string name="pair_paste_hint">Dirección onion, o el texto completo de emparejamiento</string>
+    <string name="pair_save">Vincular</string>
+    <string name="pair_invalid">Datos de emparejamiento no válidos.</string>
+    <string name="scan_failed">El escaneo del QR falló o se canceló.</string>
+    <string name="connecting">Conectando a través de Tor… %1$d%%</string>
+    <string name="connected">Conectado</string>
+    <string name="retry">Reintentar</string>
+    <string name="unpair">Desvincular</string>
+    <string name="unpair_confirm">¿Quitar el emparejamiento de este dispositivo? La aplicación se cerrará.</string>
+    <string name="error_generic">Error de conexión: %1$s</string>
+    <string name="page_error">No se puede acceder a la centralita. Puede estar apagada.</string>
+    <string name="webview_unsupported">El WebView de este dispositivo no admite la función de proxy necesaria. Actualiza Android System WebView.</string>
+    <string name="notify_switch">Avisos (se comprueban cada ~15 min)</string>
+    <string name="notify_channel_name">Avisos de la centralita</string>
+    <string name="notify_channel_desc">Recados y llamadas nuevas recibidas por tu centralita</string>
+    <string name="notify_private_title">Nueva actividad en la centralita</string>
+    <string name="notify_new_message">Recado de %1$s</string>
+    <string name="notify_new_call">Llamada de %1$s</string>
+    <string name="notify_unknown_caller">Llamante desconocido</string>
+    <string name="notify_permission_denied">Las notificaciones están bloqueadas. Permítelas en los ajustes de Android para usar esta opción.</string>
+    <string name="about_button">Acerca de</string>
+    <string name="about_version">Versión %1$s (compilación %2$d)</string>
+    <string name="about_privacy">Esta app solo se comunica con tu propia centralita, a través de la red Tor. No tiene analíticas, anuncios ni cuentas. La clave de emparejamiento se guarda cifrada en este teléfono y no entra en las copias de seguridad de Android. Escanear el QR de emparejamiento usa el escáner de Google Play services; puedes pegar la clave en su lugar.</string>
+    <string name="about_licenses">Licencias</string>
+    <string name="about_source">Código fuente</string>
+    <string name="about_close">Cerrar</string>
+    <string name="pair_key_hint">Clave de acceso (solo si arriba pegaste la dirección onion)</string>
+</resources>

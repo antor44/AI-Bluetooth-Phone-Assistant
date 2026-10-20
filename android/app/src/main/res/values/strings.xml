@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AI Switchboard</string>
+    <string name="pair_title">Pair with your switchboard</string>
+    <string name="pair_hint">Scan the QR code shown by the switchboard, or paste the pairing text.</string>
+    <string name="pair_scan">Scan QR code</string>
+    <string name="pair_paste_hint">Onion address, or the full pairing text</string>
+    <string name="pair_save">Pair</string>
+    <string name="pair_invalid">Invalid pairing data.</string>
+    <string name="scan_failed">QR scan failed or was cancelled.</string>
+    <string name="connecting">Connecting through Tor… %1$d%%</string>
+    <string name="connected">Connected</string>
+    <string name="retry">Retry</string>
+    <string name="unpair">Unpair</string>
+    <string name="unpair_confirm">Remove the pairing from this device? The app will close.</string>
+    <string name="error_generic">Connection error: %1$s</string>
+    <string name="page_error">Cannot reach the switchboard. It may be offline.</string>
+    <string name="webview_unsupported">The WebView of this device does not support the required proxy feature. Update Android System WebView.</string>
+    <string name="notify_switch">Notifications (checked about every 15 min)</string>
+    <string name="notify_channel_name">Switchboard alerts</string>
+    <string name="notify_channel_desc">New messages and calls received by your switchboard</string>
+    <string name="notify_private_title">New switchboard activity</string>
+    <string name="notify_new_message">Message from %1$s</string>
+    <string name="notify_new_call">Call from %1$s</string>
+    <string name="notify_unknown_caller">Unknown caller</string>
+    <string name="notify_permission_denied">Notifications are blocked. Allow them in the Android settings to use this option.</string>
+    <string name="about_button">About</string>
+    <string name="about_version">Version %1$s (build %2$d)</string>
+    <string name="about_privacy">This app only talks to your own switchboard, through the Tor network. It has no analytics, no ads and no accounts. The pairing key is stored encrypted on this phone and is excluded from Android backups. Scanning the pairing QR code uses the Google Play services code scanner; you can paste the key instead.</string>
+    <string name="about_licenses">Licenses</string>
+    <string name="about_source">Source code</string>
+    <string name="about_close">Close</string>
+    <string name="about_gpl_notice" translatable="false">AI Switchboard\nCopyright (C) 2026 Antonio R.\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.\n\nThis program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.\n\nThe full license text and the source code are available from the Licenses and Source code buttons.</string>
+    <string name="pair_key_hint">Access key (only if you pasted the onion address above)</string>
+</resources>
