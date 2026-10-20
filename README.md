@@ -379,7 +379,7 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 ├── requirements.txt            # Python package dependencies
 ├── /logs                       # daemon.log (headless mode, rotated at 5 MB) — auto-created
 ├── /onion_data                 # Private Tor instance & onion service keys (Remote Access) — auto-created
-├── /android                    # Android app: full Gradle project and ANDROID_BUILD.md (the APK is attached to each GitHub release)
+├── /android                    # Android app: full Gradle project, ANDROID_BUILD.md and the ready-to-install AI-Switchboard.apk
 │
 ├── /models                     # Whisper.cpp Model Folder (Optional)
 │   ├── ggml-medium.bin         # Multilingual model (for PC setups)
@@ -568,7 +568,7 @@ source ~/.bashrc
 
 A small, free Android app that is the easiest way to reach your switchboard from **anywhere**: it opens the Web GUI through the Tor network built into the app and tells you when a caller leaves a message or a call has finished.
 
-[**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/releases/download/v2.4/AI-Switchboard-1.0.0.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
+[**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
 
 ### Why it is worth installing
 * 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
@@ -577,10 +577,10 @@ A small, free Android app that is the easiest way to reach your switchboard from
 * 🆓 **Free and open source (GPL v3).** The *About* button shows the version, the license notice and the licenses of the components it uses.
 
 ### Verify the download (optional)
-The official APK `AI-Switchboard-1.0.0.apk` has this SHA-256: `6a2ebb0383f4b3ba00d301252c8b506acc9e61bfe44964cdb3cca8312e9e8d7d`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
+The official APK (`android/AI-Switchboard.apk`, version 1.0.0) has this SHA-256: `6a2ebb0383f4b3ba00d301252c8b506acc9e61bfe44964cdb3cca8312e9e8d7d`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
 
 ### Installation
-1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/releases/download/v2.4/AI-Switchboard-1.0.0.apk) (or download it on a PC and copy it over) and open the downloaded file.
+1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) (or download it on a PC and copy it over) and open the downloaded file.
 2. Android will ask you to allow installing apps from this source (**"Install unknown apps"** for your browser or file manager). Allow it **only for that app**, then go back and tap **Install**. The app is not distributed through Google Play, so Google Play Protect may warn about an unknown developer: tap *More details → Install anyway*.
 3. Open the app. When it asks for permission to show **notifications**, accept (Android 13+).
 4. On the switchboard, enable **Remote access (Tor)** and press **Show pairing code** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)).
