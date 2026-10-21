@@ -1,6 +1,6 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 2.4](https://img.shields.io/badge/Version-2.4-brightgreen.svg)
+![Version: 2.6](https://img.shields.io/badge/Version-2.6-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
@@ -73,7 +73,7 @@ To overcome these commercial barriers, I have developed this Python application 
   <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see *SBC Audio Note* below), so to monitor call audio locally it is recommended to use a **USB sound card or USB speakers**.</b>
 </div>
 <br>
-Author: Antonio R. | Version: 2.4 | License: GPL 3.0
+Author: Antonio R. | Version: 2.6 | License: GPL 3.0
 
 ---
 
@@ -114,9 +114,9 @@ Author: Antonio R. | Version: 2.4 | License: GPL 3.0
 ### 🆕 New in Version 2.0
 * **📬 Dedicated Caller Messages Inbox:** Messages captured via the `save_message` tool are stored in a dedicated `messages` table with the **exact date (`YYYY-MM-DD`) and time (`HH:MM:SS`)**, caller name, phone number, unread counter badge, Read/Unread toggles, and a 1-click importer for legacy transcripts.
 * **🧠 Configurable Call Memory & Post-Call AI Summaries:** Generates a concise call summary at the end of every call in the same LLM analysis pass (zero extra API calls or pickup latency). Since v2.4 memory works as a **priority system** (phone number > category > default); see *New in Version 2.4* below.
-* **🔢 Phone Normalization, Wildcards (`626288*`) & Editable Contacts:** Normalizes international prefixes (`+34`, `0034`, national digits), supports `*` and `?` wildcard rules with specificity priority, logs rejected blacklist calls in the Call History with custom tags, and provides a full GUI editor for managed contacts.
-* **🛡️ Upgraded SPAM Engine (`curl_cffi`), Cache & Live AI Tester:** Automatically skips SPAM checks for whitelisted contacts, supports `{number}`, `{national}`, and `{e164}` URL placeholders, uses `curl_cffi` TLS browser impersonation (`listaspam.com`, `tellows.es`), strips `<script>`/`<style>`/`<nav>`/`<select>` noise before analysis, caches lookups in SQLite (`spam_cache`), and includes a live SPAM provider + AI verdict tester in the Web GUI and CLI (`--test-spam`).
-* **🎚️ Gemini 3.8 Live Audio & VAD Tuning Panel:** Adjust Caller Mic Gain (default `1.5x`), Pre-Gain Base Noise Gate (default `50`), VAD Start/End Sensitivity (`LOW`/`HIGH`), VAD Prefix Padding (`500 ms`), VAD Silence Duration (`500 ms`), Wait Seconds before answering (`5s`), and Initial Greeting Interruption Protection directly from the Web GUI, plus automatic input transcription echo stripping.
+* **🔢 Phone Normalization, Wildcards (`626288*`) & Editable Contacts:** Normalizes international prefixes using `home_country_code` and `home_national_length` from `spam.json`, supports `*` and `?` wildcard rules with specificity priority, logs rejected blacklist calls in the Call History with custom tags, and provides a full GUI editor for managed contacts.
+* **🛡️ Upgraded SPAM Engine (`curl_cffi`), Cache & Live AI Tester:** Automatically skips SPAM checks for whitelisted contacts, supports `{number}`, `{national}`, and `{e164}` URL placeholders (`{e164}` is URL-encoded, so `+` becomes `%2B`), uses `curl_cffi` TLS browser impersonation (`listaspam.com`, `tellows.es`), strips `<script>`/`<style>`/`<nav>`/`<select>` noise before analysis, caches lookups in SQLite (`spam_cache`), and includes a live SPAM provider + AI verdict tester in the Web GUI and CLI (`--test-spam`).
+* **🎚️ Gemini 3.8 Live Audio & VAD Tuning Panel:** Adjust Caller Mic Gain (default `1.5x`), Pre-Gain Base Noise Gate (default `50`), VAD Start/End Sensitivity (`LOW`/`HIGH`), VAD Prefix Padding (`500 ms`), VAD Silence Duration (`700 ms` by default since v2.6), Wait Seconds before answering (`5s`), and Initial Greeting Interruption Protection directly from the Web GUI, plus automatic input transcription echo stripping.
 * **🎛️ Daemon Controls, Web Whisper Manager & Remote Server Reboot:** Pause, resume, or stop the switchboard daemon from the Web GUI with live heartbeat status, download/quantize Whisper models from the browser, or reboot the entire Linux host server remotely with `sudo` password confirmation.
 
 ### 🆕 New in Version 2.4
@@ -129,6 +129,18 @@ Author: Antonio R. | Version: 2.4 | License: GPL 3.0
 * **🌍 Remote Access over Tor + 📱 Android App:** a private Tor onion service built into the switchboard and the Web GUI (see [Remote Access](#-remote-access-from-anywhere-outside-your-lan)) and a free **Android app** that opens the panel through Tor and shows **notifications** for new caller messages and finished calls (see [Android App](#-android-app-ai-switchboard)).
 
 ---
+
+### 🆕 New in Version 2.6
+* **📶 Automatic Bluetooth Reconnection + Error Counters:** the daemon now watches the link with your phone. If the connection is lost (phone out of range, Bluetooth glitch, phone Bluetooth toggled) the switchboard reconnects it **by itself**, with an increasing delay (10 s up to 2 min) while the phone is away, and it keeps doing so whether the switchboard is running or paused. It also powers on the adapter and the oFono modem again if needed. It stays idle during a call. No reboot of the PC / SBC is needed any more. The Web GUI has a new **Phone Bluetooth connection** panel with the live status and three counters: *lost connections*, *restored connections* and *failed reconnection attempts*, plus the last event and a reset button.
+* **🔊 The Last Word of the Goodbye Is No Longer Cut:** the call used to be hung up when the audio queue was empty, but the model streams faster than real time and PipeWire / the Bluetooth link still had the last second or two buffered, so the caller could miss the final "goodbye". The daemon now estimates when the audio really finishes playing and adds a short margin for the Bluetooth latency (constants `HANGUP_AUDIO_TAIL_SECONDS`, `HANGUP_STREAM_QUIET_SECONDS` and `HANGUP_MAX_WAIT_SECONDS` at the top of `phone_assistant.py`). The same wait is applied when a SPAM call is hung up.
+* **🌍 Remote Access Panel:** the onion address now has its own **copy button**, and the texts explain exactly what each client needs: the Android app takes the onion address and the access key (two boxes) **or** the full pairing link (which joins both) in the first box; Tor Browser on a PC takes the onion address and asks for the access key.
+* **🗣️ Voice & Accent Profile for Gemini 3.8 Live:** with Gemini 3.8 Live the voice could drift to a different accent (for example a Latin-American one in Spanish) or, with the female voice, to a deeper or masculine timbre. The prompts in `languages/*/assistant.json` now start with a high-priority **voice and accent profile** (Spanish defines peninsular Castilian: pronunciation, vocabulary and present perfect tense) that asks the model to keep the same timbre for the whole call, never change gender or become deeper, and silently correct itself if it drifts. It is worded without naming a gender, so it works for the female and the male voice. The old language section is now a short reminder, and there is a final reminder after `{business_details}` and in `system_date`. This is a **mitigation, not a guaranteed fix**: the model is not deterministic and occasional variations can still happen.
+* **🌐 Language-File Driven Voice Settings:** `language_code` is now sent in the speech configuration, taken from `speech_language_code` in `assistant.json` (leave it empty to disable it if your model or SDK rejects it, no code change needed). The prebuilt voices come from `voice_names` (`female` / `male`) in the same file (`es-ES`: `Aoede` / `Charon`), with `DEFAULT_VOICE_FEMALE` / `DEFAULT_VOICE_MALE` as fallback. The exact greeting wrapper (`greeting_exact`), the header of the extra instructions (`extra_prompt_header`) and the descriptions of the `hangup` and `save_message` tools (`tool_descriptions`) also live in the language files now, so nothing user-facing is hardcoded.
+* **👋 Smarter Goodbye Detection:** farewell words (`cut_words`) no longer hang up the call when they are only *mentioned* (negations, conditionals, examples, quoted words). The farewell is judged on the whole assistant turn and the call is cut only after the audio has finished plus a short grace time, which is cancelled if the caller keeps talking. Driven by `goodbye_veto_words`, `goodbye_meta_words` and `farewell_grace_seconds`, so it works in any language by translating the lists.
+* **🕒 Calmer Turn-Taking & Tone:** VAD Silence Duration now defaults to `700 ms` (a one-time migration updates the stored value) and the voice profile asks for a kind, slightly smiling tone, without changing any identity, privacy or security rule.
+* **🔎 International Phone Normalization & SPAM Lookups for Any Country:** `{national}`, `{e164}`, the SPAM cache, contact/wildcard matching, and recording filenames now use `home_country_code` and `home_national_length` from `spam.json` of the active language (`34` / `9` in `es-ES`, `1` / `10` in `en-US`) instead of assuming 9-digit Spanish numbers (`+34`) or truncating longer numbers to 9 digits. Foreign numbers keep all their digits so they never collide with national numbers, and the switchboard and the Web GUI SPAM tester build the exact same URL.
+* **🛡️ Safer First Run:** a fresh install now starts in `en-US` in both the daemon and the Web GUI (they used to disagree). The language defaults (assistant name, owner, memory categories, audio sliders…) are written only the first time a language is used: leaving a field empty, such as the assistant name, no longer restores them, and an emptied greeting is no longer refilled.
+* **📬 Web GUI Lists:** the *Show unread only* filter of the Caller Messages is now **remembered** (it is stored in the database, so it also survives reloads and is the same in the Android app). The Caller Messages and the *Contacts & wildcard rules* lists show **20 entries and a *Show more* button** with a counter, like the call history.
 
 ### 🌍 Tested Hardware & OS Compatibility
 This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire, and WirePlumber. Because Bluetooth SCO (Synchronous Connection-Oriented) voice routing is sensitive to kernel drivers and audio session managers, **only the following configurations have been verified and are officially supported**:
@@ -158,9 +170,9 @@ This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire,
 
 ## 🧠 Tuning & Personality
 
-*   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases.
+*   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases. Since v2.6 each language file starts with a **voice and accent profile** and can set an explicit `speech_language_code` (BCP-47, e.g. `es-ES`); see *Voice Synthesis (TTS) Restrictions* below. Accent drift cannot be fully eliminated with Gemini 3.8 Live; if it persists, try other voices in `voice_names`.
 *   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). Note that significant personality changes may affect the reliability of structural commands like hanging up or saving messages.
-*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values.
+*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. For a new language also set `home_country_code` and `home_national_length` in `spam.json`, and adapt the voice and accent profile at the top of the prompt, `speech_language_code`, `voice_names`, and the word lists (`cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). Missing keys fall back to built-in defaults or, for the word lists, simply disable that protection.
 
 ### Recommended Operating Profile
 For a balanced default experience, the recommended profile is:
@@ -192,9 +204,9 @@ The `_calculate_text_similarity` helper splits text using Python's `str.split()`
 Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment issues in live terminal logs and Web GUI logs.
 
 ### 4. Voice Synthesis (TTS) Restrictions
-The Gemini Live connection is hardcoded to use two voices (`Aoede` for female, `Puck` for male). For best results in non-Western languages, change `voice_name` in `phone_assistant.py` to a voice optimized for your target language.
+The Gemini Live connection uses two prebuilt voices, one female and one male. They are no longer hardcoded: set them in `voice_names` (`female` / `male`) of each language's `assistant.json` (the shipped `es-ES` file uses `Aoede` and `Charon`). The constants `DEFAULT_VOICE_FEMALE` (`Aoede`) and `DEFAULT_VOICE_MALE` (`Puck`) at the top of `phone_assistant.py` are only a fallback for language files without `voice_names`. Gender detection does not depend on the interface language: it uses the position inside `gender_types` of `gui.json` (first entry = female).
 
-🐛 **Known limitation:** With Gemini 3.8 Live, the feminine Spanish voice may occasionally drift into a Latin American accent, and sometimes into a deeper or more masculine voice. Similar issues have been reported on Google’s forums for version 3.8; no confirmed fix exists, so the prompts were left unchanged.
+The speech language is set with `speech_language_code` (BCP-47) in `assistant.json`. If Gemini rejects it, set the value to `""` and it is switched off without touching the code. For best results in non-Western languages, choose a voice optimized for your target language in `voice_names`.
 
 ---
 
@@ -391,7 +403,7 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 │   ├── /en-US                  # English Default Locale
 │   │   ├── assistant.json      # Core AI prompts, hold rules, and logic variables
 │   │   ├── gui.json            # Web Control Panel translations & defaults
-│   │   └── spam.json           # Default spam verification search URL templates
+│   │   └── spam.json           # Default SPAM lookup URL templates + home numbering plan (country code and national number length)
 │   │
 │   ├── /es-ES                  # Spanish Default Locale
 │   │   ├── assistant.json
@@ -473,9 +485,9 @@ The switchboard can publish its Web GUI as a **private Tor onion service protect
 
 1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl`
 2. Open the Web GUI and find the **Remote access (Tor)** panel. Press **▶️ Enable remote access** and wait until the status says **🟢 Active** (the first start can take a minute or two).
-3. Press **🔑 Show pairing code**. You will see the onion address, the access key (with a copy button) and a QR code. **Keep them secret**: whoever has them can reach your panel.
+3. The onion address is shown with a **copy button**. Press **🔑 Show pairing code** to see the access key (also with a copy button), the full pairing link that joins both, and a QR code. **Keep them secret**: whoever has them can reach your panel.
 4. Connect a device:
-   * **Android phone → the [AI Switchboard app](#-android-app-ai-switchboard)** (recommended): scan the QR code or paste the code.
+   * **Android phone → the [AI Switchboard app](#-android-app-ai-switchboard)** (recommended): scan the QR code, or paste the onion address and the access key in the two boxes, or paste the full pairing link in the first box.
    * **PC → Tor Browser (desktop)**: open the onion address; Tor Browser asks for the access key. *(Tor Browser for Android and other mobile Tor browsers may not support access-key protected onion services — according to the Tor Project's issue tracker, Tor Browser for Android did not support them when this was written — so on Android use the app.)*
    * **iPhone:** there is no app for iOS. Use Option A (Tailscale has an iOS app) or your home network.
 5. To cut remote access at any time, press **⏹️ Disable remote access** in the same panel.
