@@ -1,5 +1,8 @@
 {
+  "home_country_code": "1",
+  "home_national_length": 10,
   "providers": [
-    "https://www.tellows.com/num/{number}"
+    "https://www.shouldianswer.com/phone-number/{national}",
+    "https://everycaller.com/phone-number/{national}/"
   ]
 }
