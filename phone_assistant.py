@@ -151,7 +151,7 @@ def get_default_sink() -> str:
 MODEL_LIVE = "gemini-3.8-live"
 # Fallback prebuilt voices, used only when the language file does not define "voice_names".
 DEFAULT_VOICE_FEMALE = "Aoede"
-DEFAULT_VOICE_MALE = "Puck"
+DEFAULT_VOICE_MALE = "Charon"
 API_KEY = os.environ.get("GEMINI_API_KEY")
 
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
