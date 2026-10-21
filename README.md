@@ -171,10 +171,11 @@ The `_calculate_text_similarity` helper splits text using Python's `str.split()`
 ### 3. Right-to-Left (RTL) Languages (Arabic, Hebrew)
 Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment issues in live terminal logs and Web GUI logs.
 
-### 4. Voice Synthesis (TTS) Restrictions
-The Gemini Live connection uses two prebuilt voices, one female and one male. They are no longer hardcoded: set them in `voice_names` (`female` / `male`) of each language's `assistant.json` (the shipped `es-ES` file uses `Aoede` and `Charon`). The constants `DEFAULT_VOICE_FEMALE` (`Aoede`) and `DEFAULT_VOICE_MALE` (`Puck`) at the top of `phone_assistant.py` are only a fallback for language files without `voice_names`. Gender detection does not depend on the interface language: it uses the position inside `gender_types` of `gui.json` (first entry = female).
-
-The speech language is set with `speech_language_code` (BCP-47) in `assistant.json`. If Gemini rejects it, set the value to `""` and it is switched off without touching the code. For best results in non-Western languages, choose a voice optimized for your target language in `voice_names`.
+### 4. Voice & Language Configuration
+The assistant's voice and speech language are configured in each language's `assistant.json` file:
+* **`voice_names`:** sets the female and male voices used by Gemini Live (by default `Aoede` for female and `Charon` for male). You can change them to any prebuilt Gemini voice name.
+* **`speech_language_code`:** sets the spoken language code (such as `es-ES` or `en-US`). Leave it empty (`""`) if you want Gemini to detect the language automatically.
+* **Known Gemini 3.8 Live voice limitation:** the accent and pitch/tone of the voice may occasionally drift during a call. This is a known limitation of the **Gemini 3.8 Live** model itself and is especially noticeable with the **female voice in Spanish** (which may occasionally shift to a Latin-American accent or a deeper tone despite the prompt instructions).
 
 ---
 
