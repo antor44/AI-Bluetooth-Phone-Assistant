@@ -1,6 +1,8 @@
 {
+  "home_country_code": "34",
+  "home_national_length": 9,
   "providers": [
     "https://www.listaspam.com/busca.php?Telefono={national}",
-    "https://www.tellows.es/num/%2B34{national}"
+    "https://www.tellows.es/num/{e164}"
   ]
 }
