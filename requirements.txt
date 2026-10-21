@@ -1,4 +1,4 @@
-# AI Bluetooth Phone Assistant & Switchboard - Version 2.4
+# AI Bluetooth Phone Assistant & Switchboard - Version 2.6
 google-genai
 aiohttp
 curl_cffi

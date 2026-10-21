@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# my_gui.sh v. 2.4 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 2.6 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #
 # Author: Antonio R.
-# Version: 2.4
+# Version: 2.6
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -168,13 +168,13 @@ if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0"
 
     case "$SELECTED_TERMINAL" in
         "xfce4-terminal")
-            xfce4-terminal --title="AI Phone Assistant Daemon v2.4" --command="bash -c '$DAEMON_CMD'" &
+            xfce4-terminal --title="AI Phone Assistant Daemon v2.6" --command="bash -c '$DAEMON_CMD'" &
             ;;
         "gnome-terminal")
-            gnome-terminal --title="AI Phone Assistant Daemon v2.4" -- bash -c "$DAEMON_CMD" &
+            gnome-terminal --title="AI Phone Assistant Daemon v2.6" -- bash -c "$DAEMON_CMD" &
             ;;
         "mate-terminal")
-            mate-terminal --title="AI Phone Assistant Daemon v2.4" --command="bash -c '$DAEMON_CMD'" &
+            mate-terminal --title="AI Phone Assistant Daemon v2.6" --command="bash -c '$DAEMON_CMD'" &
             ;;
         *)
             "$SELECTED_TERMINAL" -e bash -c "$DAEMON_CMD" &
@@ -201,7 +201,7 @@ else
 fi
 
 # Launch the Streamlit application in the current terminal
-echo "[INFO] Starting AI Switchboard Web Interface v2.4..."
+echo "[INFO] Starting AI Switchboard Web Interface v2.6..."
 
 if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
     LOCAL_IP=$(hostname -I | awk '{print $1}')

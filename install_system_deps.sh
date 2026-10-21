@@ -11,7 +11,7 @@
 # Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 2.4
+# Version: 2.6
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -449,7 +449,7 @@ fi
 # ============================================================
 echo ""
 echo -e "${C_BLUE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.4)${C_RESET}"
+echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.6)${C_RESET}"
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  Whisper Mode : ${C_GREEN}${ACCEL}${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  Tor access   : $( [ "$WITH_TOR" = "1" ] && echo "tor + openssl installed" || echo "not installed (use --with-tor)" )"

@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 2.4
+Version: 2.6
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -149,10 +149,32 @@ def get_default_sink() -> str:
 
 
 MODEL_LIVE = "gemini-3.8-live"
+# Fallback prebuilt voices, used only when the language file does not define "voice_names".
+DEFAULT_VOICE_FEMALE = "Aoede"
+DEFAULT_VOICE_MALE = "Puck"
 API_KEY = os.environ.get("GEMINI_API_KEY")
 
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
+
+APP_VERSION = "2.6"
+DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
+
+# Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
+PLAYBACK_BYTES_PER_SECOND = 24000 * 2   # Gemini Live output: 24 kHz, 16-bit, mono PCM
+HANGUP_AUDIO_TAIL_SECONDS = 1.2         # Extra time after the estimated end of playback (PipeWire + Bluetooth SCO latency)
+DEFAULT_VAD_SILENCE_DURATION_MS = 700    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
+ASSISTANT_TURN_GAP_SECONDS = 4.0         # Output chunks closer than this belong to the same assistant turn (farewell detection)
+HANGUP_STREAM_QUIET_SECONDS = 1.0       # No new audio from the model for this long before cutting the call
+HANGUP_MAX_WAIT_SECONDS = 20.0          # Safety limit: never wait longer than this for the audio to finish
+
+# Bluetooth reconnection watchdog (see BluetoothWatchdog).
+BT_HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"  # Hands-Free Audio Gateway profile (the phone side)
+BT_WATCHDOG_INTERVAL_SECONDS = 10.0
+BT_RECONNECT_BACKOFF_MIN_SECONDS = 10.0
+BT_RECONNECT_BACKOFF_MAX_SECONDS = 120.0
+BT_CONNECT_TIMEOUT_SECONDS = 30
+BT_MODEM_MISSING_CYCLES = 3             # Connected phone without an oFono modem for this many cycles -> reconnect the profile
 
 ACTIVE_ASSISTANT = None
 ACTIVE_TASKS = set()
@@ -174,34 +196,121 @@ OUTPUT_SCHEMA = {
 }
 
 
-def normalize_phone_candidates(raw_number: str) -> Tuple[str, str, List[str]]:
-    """Normalizes an incoming phone number into digits_only, 9-digit national, and matching candidates."""
-    digits = re.sub(r"\D", "", raw_number or "")
+def get_home_numbering(lang_code: str = "") -> Dict[str, Any]:
+    """Loads the home country numbering plan (home_country_code, home_national_length) from the active language's spam.json."""
+    active_lang = lang_code
+    if not active_lang:
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
+            active_lang = row[0] if row and row[0] else DEFAULT_LANGUAGE
+        except Exception:
+            active_lang = DEFAULT_LANGUAGE
+        finally:
+            if conn:
+                conn.close()
+    path = os.path.join(LANG_DIR, active_lang, "spam.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def build_e164(raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> str:
+    """Builds an E.164 number (with a leading "+") from a caller ID string.
+
+    A "+" or "00" prefix is trusted as is. For numbers without an international marker, the home numbering plan
+    of the active language (spam.json: "home_country_code" and "home_national_length") decides whether the
+    country code must be added. Without that information the digits are assumed to be complete."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    raw = (raw_number or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return ""
+    if raw.startswith("+"):
+        return f"+{digits}"
     if digits.startswith("00"):
-        digits = digits[2:]
-    if digits.startswith("34") and len(digits) == 11:
-        national = digits[2:]
-    elif len(digits) > 9:
-        national = digits[-9:]
+        return f"+{digits[2:]}"
+    country_code = re.sub(r"\D", "", str(numbering.get("home_country_code", "")))
+    try:
+        national_length = int(numbering.get("home_national_length", 0))
+    except (TypeError, ValueError):
+        national_length = 0
+    if not country_code or national_length <= 0:
+        return f"+{digits}"
+    significant = digits[1:] if (digits.startswith("0") and len(digits) - 1 == national_length) else digits
+    if len(significant) == national_length:
+        return f"+{country_code}{significant}"
+    return f"+{digits}"
+
+
+def normalize_phone_candidates(raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
+    """Normalizes an incoming phone number into (digits_only, national_or_full_digits, matching_candidates) using the active numbering plan."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    raw = (raw_number or "").strip()
+    raw_digits = re.sub(r"\D", "", raw)
+    has_intl_prefix = raw.startswith("+") or raw_digits.startswith("00")
+    digits = raw_digits[2:] if raw_digits.startswith("00") else raw_digits
+
+    country_code = re.sub(r"\D", "", str(numbering.get("home_country_code", "")))
+    try:
+        national_length = int(numbering.get("home_national_length", 0))
+    except (TypeError, ValueError):
+        national_length = 0
+
+    if country_code and national_length > 0:
+        if digits.startswith(country_code) and len(digits) == len(country_code) + national_length:
+            national = digits[len(country_code):]
+        elif digits.startswith(country_code + "0") and len(digits) == len(country_code) + 1 + national_length:
+            national = digits[len(country_code) + 1:]
+        elif not has_intl_prefix and digits.startswith("0") and len(digits) - 1 == national_length:
+            national = digits[1:]
+        else:
+            national = digits
     else:
         national = digits
 
+    e164 = build_e164(raw_number, numbering)
+    e164_digits = e164.lstrip("+")
+
     candidates = []
-    for item in [national, digits, (raw_number or "").strip()]:
+    for item in [national, digits, e164_digits, e164, raw]:
         if item and item not in candidates:
             candidates.append(item)
     return digits, national, candidates
 
 
-def normalize_contact_pattern(pattern: str) -> str:
-    """Normalizes a stored contact number or wildcard pattern."""
-    cleaned = re.sub(r"[^\d\*\?\+]", "", (pattern or "").strip())
+def normalize_contact_pattern(pattern: str, numbering: Optional[Dict[str, Any]] = None) -> str:
+    """Normalizes a stored contact number or wildcard pattern while preserving * and ? characters."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    raw = (pattern or "").strip()
+    cleaned = re.sub(r"[^\d\*\?\+]", "", raw)
+    has_intl_prefix = cleaned.startswith("+") or cleaned.startswith("00")
     if cleaned.startswith("00"):
         cleaned = cleaned[2:]
     elif cleaned.startswith("+"):
         cleaned = cleaned[1:]
-    if not any(w in cleaned for w in ("*", "?")) and cleaned.startswith("34") and len(cleaned) == 11:
-        cleaned = cleaned[2:]
+
+    if not any(w in cleaned for w in ("*", "?")):
+        country_code = re.sub(r"\D", "", str(numbering.get("home_country_code", "")))
+        try:
+            national_length = int(numbering.get("home_national_length", 0))
+        except (TypeError, ValueError):
+            national_length = 0
+        if country_code and national_length > 0:
+            if cleaned.startswith(country_code) and len(cleaned) == len(country_code) + national_length:
+                cleaned = cleaned[len(country_code):]
+            elif cleaned.startswith(country_code + "0") and len(cleaned) == len(country_code) + 1 + national_length:
+                cleaned = cleaned[len(country_code) + 1:]
+            elif not has_intl_prefix and cleaned.startswith("0") and len(cleaned) - 1 == national_length:
+                cleaned = cleaned[1:]
     return cleaned
 
 
@@ -329,9 +438,11 @@ def interleave_to_stereo(left_pcm: bytes, right_pcm: bytes) -> bytes:
     return stereo.tobytes()
 
 
-def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
+def match_contact_rule(caller_number: str, numbering: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
     """Matches caller_number against contacts (Exact match first, most specific wildcard second)."""
-    _, _, caller_candidates = normalize_phone_candidates(caller_number)
+    if numbering is None:
+        numbering = get_home_numbering()
+    _, _, caller_candidates = normalize_phone_candidates(caller_number, numbering)
     if not caller_candidates:
         return None
 
@@ -351,7 +462,7 @@ def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
 
     for row in rows:
         pat_raw, c_type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days = row
-        pat_norm = normalize_contact_pattern(pat_raw)
+        pat_norm = normalize_contact_pattern(pat_raw, numbering)
         if not pat_norm:
             continue
 
@@ -387,18 +498,22 @@ def match_contact_rule(caller_number: str) -> Optional[Dict[str, str]]:
     return None
 
 
-def format_spam_url(url_template: str, raw_number: str) -> str:
-    """Formats a SPAM lookup URL supporting {number}, {national}, and {e164} without duplicate prefixes."""
-    digits, national, _ = normalize_phone_candidates(raw_number)
-    e164 = f"+34{national}" if len(national) == 9 and (digits.startswith("34") or len(digits) == 9) else f"+{digits}"
+def format_spam_url(url_template: str, raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> str:
+    """Formats a SPAM lookup URL supporting {number}, {national}, and {e164} (URL-encoded, "+" becomes %2B)."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    digits, national, _ = normalize_phone_candidates(raw_number, numbering)
+    e164 = build_e164(raw_number, numbering)
 
     url = url_template
-    if "%2B34{number}" in url or "+34{number}" in url:
-        url = url.replace("{number}", national)
-    else:
-        url = url.replace("{number}", digits)
+    # A template that already carries a country code before {number} (e.g. "/num/%2B34{number}") needs the national part only.
+    embedded = re.search(r"(?:%2B|\+)(\d{1,3})\{number\}", url)
+    number_value = digits
+    if embedded and digits.startswith(embedded.group(1)):
+        number_value = digits[len(embedded.group(1)):]
+    url = url.replace("{number}", number_value)
     url = url.replace("{national}", national)
-    url = url.replace("{e164}", e164)
+    url = url.replace("{e164}", urllib.parse.quote(e164, safe=""))
     return url
 
 
@@ -419,27 +534,45 @@ def clean_html_for_spam(raw_html: str) -> str:
     return f"{title_text} — {text}".strip(" —") if title_text else text
 
 
-async def fetch_spam_page_async(url: str, http_session: aiohttp.ClientSession) -> Tuple[int, str]:
+def build_accept_language(lang_code: str) -> str:
+    """Builds the Accept-Language header from the active language (e.g. "es-ES" -> "es-ES,es;q=0.9,en;q=0.8")."""
+    active = lang_code or DEFAULT_LANGUAGE
+    primary = active.split("-")[0]
+    fallback = DEFAULT_LANGUAGE.split("-")[0]
+    header = f"{active},{primary};q=0.9"
+    if primary != fallback:
+        header += f",{fallback};q=0.8"
+    return header
+
+
+async def fetch_spam_page_async(url: str, http_session: aiohttp.ClientSession, lang_code: str = DEFAULT_LANGUAGE) -> Tuple[int, str]:
     """Fetches a SPAM lookup page using curl_cffi (Chrome TLS), aiohttp, or system curl with browser headers."""
     parsed = urllib.parse.urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}/" if parsed.scheme and parsed.netloc else "https://www.google.com/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Referer": origin,
-        "Upgrade-Insecure-Requests": "1"
-    }
+    accept_lang = build_accept_language(lang_code)
 
     if curl_requests is not None:
         try:
+            # Do not override User-Agent when impersonating Chrome: curl_cffi sets matching Chrome headers and TLS fingerprint
+            chrome_headers = {
+                "Accept-Language": accept_lang,
+                "Referer": origin
+            }
             resp = await asyncio.to_thread(
-                curl_requests.get, url, headers=headers, impersonate="chrome", timeout=5
+                curl_requests.get, url, headers=chrome_headers, impersonate="chrome", timeout=5
             )
             if resp.status_code == 200 and resp.text:
                 return resp.status_code, resp.text
         except Exception:
             pass
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": accept_lang,
+        "Referer": origin,
+        "Upgrade-Insecure-Requests": "1"
+    }
 
     if shutil.which("curl"):
         try:
@@ -470,10 +603,15 @@ async def fetch_spam_page_async(url: str, http_session: aiohttp.ClientSession) -
 def apply_language_defaults(lang_code: str) -> None:
     """Applies default localized settings to the database if missing."""
     path = os.path.join(LANG_DIR, lang_code, "gui.json")
+    spam_path = os.path.join(LANG_DIR, lang_code, "spam.json")
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 gui_data = json.load(f)
+            spam_data = {}
+            if os.path.exists(spam_path):
+                with open(spam_path, "r", encoding="utf-8") as sf:
+                    spam_data = json.load(sf)
             defaults = gui_data.get("defaults", {})
             if defaults:
                 conn = sqlite3.connect(DB_PATH)
@@ -488,6 +626,10 @@ def apply_language_defaults(lang_code: str) -> None:
                     default_warning = gui_data.get("default_legal_warning", "")
                     if default_warning:
                         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (db_greeting_key, default_warning))
+
+                default_providers = spam_data.get("providers", [])
+                conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (f"{lang_code}_spam_providers", json.dumps(default_providers, ensure_ascii=False)))
+                conn.execute("DELETE FROM settings WHERE key='spam_providers'")
                 conn.commit()
                 conn.close()
         except Exception:
@@ -537,7 +679,7 @@ def ensure_database_exists() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('software_echo_suppression', 'false')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'disabled')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'none')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'en-US')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', ?)", (DEFAULT_LANGUAGE,))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
 
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'priority')")
@@ -553,8 +695,14 @@ def ensure_database_exists() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_start_sensitivity', 'LOW')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_end_sensitivity', 'HIGH')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', '500')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', '500')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', ?)", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    # One-time migration: the new default replaces the value stored by previous versions (INSERT OR IGNORE never overwrites it)
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
+    if c.rowcount == 1:
+        c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('protect_initial_greeting', 'true')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_grace_seconds', '2.0')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_cancel_min_words', '3')")
 
     c.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_state', 'running')")
     c.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
@@ -574,7 +722,7 @@ def ensure_database_exists() -> None:
     try:
         conn = sqlite3.connect(DB_PATH)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
-        current_lang = res_lang[0] if res_lang else "en-US"
+        current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
         res_asst = conn.execute("SELECT value FROM settings WHERE key=?", (f"{current_lang}_assistant_name",)).fetchone()
         conn.close()
         if res_asst is None:
@@ -780,17 +928,20 @@ def get_config(key: str, default_value: str) -> str:
     try:
         conn = sqlite3.connect(DB_PATH)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
-        current_lang = res_lang[0] if res_lang else "en-US"
+        current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
         localized_keys = [
             "boss_name", "assistant_name", "assistant_gender", "owner_type",
             "priority_keywords", "memory_rules", "business_description",
-            "expected_calls", "initial_greeting", "extra_prompt", "text_model"
+            "expected_calls", "initial_greeting", "extra_prompt", "text_model",
+            "spam_providers"
         ]
         if key in localized_keys:
             res = conn.execute("SELECT value FROM settings WHERE key=?", (f"{current_lang}_{key}",)).fetchone()
             if res is not None:
                 return res[0]
+            if key == "spam_providers":
+                return default_value
 
         res_global = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return res_global[0] if res_global is not None else default_value
@@ -799,6 +950,230 @@ def get_config(key: str, default_value: str) -> str:
     finally:
         if conn:
             conn.close()
+
+
+def set_runtime_setting(key: str, value: Any) -> None:
+    """Writes a runtime value (status, counters) to the shared SQLite settings table."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+def increment_runtime_counter(key: str) -> int:
+    """Increments an integer counter stored in the settings table and returns the new value."""
+    try:
+        current = int(float(get_config(key, "0")))
+    except ValueError:
+        current = 0
+    set_runtime_setting(key, current + 1)
+    return current + 1
+
+
+class BluetoothWatchdog:
+    """Keeps the Bluetooth link with the paired phone alive without restarting the switchboard.
+
+    Every cycle it looks at the paired phones that offer the Hands-Free Audio Gateway profile:
+      * a phone that is not connected is reconnected with BlueZ (exponential back-off while it is out of range);
+      * a phone that is connected but has no oFono modem gets its HFP profile reconnected;
+      * oFono modems are powered on and put online again after a reconnection;
+      * the Bluetooth adapter is powered on if it was switched off.
+    Status and error counters are written to the settings table so the Web GUI can show them."""
+
+    def __init__(self) -> None:
+        self.link_state: Dict[str, bool] = {}
+        self.backoff_seconds: Dict[str, float] = {}
+        self.next_attempt_time: Dict[str, float] = {}
+        self.modem_missing_cycles: Dict[str, int] = {}
+        self.published_state: Tuple[str, str] = ("", "")
+
+    @staticmethod
+    def _mac_token(object_path: str) -> str:
+        """Returns the 'AA_BB_CC_DD_EE_FF' part of a BlueZ device path or an oFono modem path."""
+        match = re.search(r"dev_([0-9A-Fa-f_]+)", object_path)
+        return match.group(1).upper() if match else ""
+
+    @staticmethod
+    def _is_paired_phone(props: Any) -> bool:
+        if not props.get("Paired", False):
+            return False
+        return any(str(uuid).lower() == BT_HFP_AG_UUID for uuid in props.get("UUIDs", []))
+
+    @staticmethod
+    def _record_event(code: str, detail: str = "") -> None:
+        """Stores the last event as 'code|HH:MM:SS|detail'; the Web GUI translates the code."""
+        set_runtime_setting("bt_last_event", f"{code}|{get_timestamp()}|{detail}")
+
+    def _publish_state(self, state: str, device_name: str) -> None:
+        if (state, device_name) != self.published_state:
+            self.published_state = (state, device_name)
+            set_runtime_setting("bt_state", state)
+            set_runtime_setting("bt_device_name", device_name)
+
+    def _ensure_adapters_powered(self, bus: Any, objects: Any) -> None:
+        for path, interfaces in objects.items():
+            adapter = interfaces.get("org.bluez.Adapter1")
+            if adapter is not None and not adapter.get("Powered", False):
+                try:
+                    props_iface = dbus.Interface(bus.get_object("org.bluez", path), "org.freedesktop.DBus.Properties")
+                    props_iface.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Adapter {path} was powered off. Powered on again.{_R}")
+                except Exception as e:
+                    print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Bluetooth] Could not power on adapter {path}: {e}{_R}")
+
+    def _ofono_modem_tokens(self, bus: Any) -> set:
+        """Returns the device tokens of the oFono modems, powering on and putting online any that are not."""
+        tokens = set()
+        try:
+            manager = dbus.Interface(bus.get_object("org.ofono", "/"), "org.ofono.Manager")
+            modems = manager.GetModems()
+        except Exception:
+            return tokens
+        for modem_path, modem_props in modems:
+            tokens.add(self._mac_token(str(modem_path)))
+            try:
+                modem = dbus.Interface(bus.get_object("org.ofono", modem_path), "org.ofono.Modem")
+                if not modem_props.get("Powered", False):
+                    modem.SetProperty("Powered", dbus.Boolean(True))
+                    print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] oFono modem powered on: {modem_path}{_R}")
+                if not modem_props.get("Online", False):
+                    modem.SetProperty("Online", dbus.Boolean(True))
+                    print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] oFono modem set online: {modem_path}{_R}")
+            except Exception:
+                pass
+        return tokens
+
+    def _connect_phone(self, bus: Any, device_path: str, device_name: str) -> None:
+        """Asks BlueZ to connect the HFP profile of the phone and updates the back-off and the counters."""
+        now = time.time()
+        print(f"{_C_WARN}[{get_timestamp()}] {ICON_CONN}[Bluetooth] Trying to reconnect {device_name}...{_R}")
+        try:
+            device = dbus.Interface(bus.get_object("org.bluez", device_path), "org.bluez.Device1")
+            try:
+                device.ConnectProfile(BT_HFP_AG_UUID, timeout=BT_CONNECT_TIMEOUT_SECONDS)
+            except dbus.exceptions.DBusException as e:
+                if e.get_dbus_name() in ("org.bluez.Error.NotAvailable", "org.bluez.Error.NotSupported"):
+                    device.Connect(timeout=BT_CONNECT_TIMEOUT_SECONDS)
+                else:
+                    raise
+            self.backoff_seconds.pop(device_path, None)
+            self.next_attempt_time[device_path] = now + BT_WATCHDOG_INTERVAL_SECONDS
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] Reconnection request accepted for {device_name}.{_R}")
+        except Exception as e:
+            error_name = e.get_dbus_name() if hasattr(e, "get_dbus_name") else ""
+            error_text = e.get_dbus_message() if hasattr(e, "get_dbus_message") else str(e)
+            if error_name == "org.bluez.Error.AlreadyConnected":
+                return
+            backoff = min(
+                BT_RECONNECT_BACKOFF_MAX_SECONDS,
+                max(BT_RECONNECT_BACKOFF_MIN_SECONDS, self.backoff_seconds.get(device_path, BT_RECONNECT_BACKOFF_MIN_SECONDS / 2) * 2)
+            )
+            self.backoff_seconds[device_path] = backoff
+            self.next_attempt_time[device_path] = now + backoff
+            if error_name != "org.bluez.Error.InProgress":
+                total = increment_runtime_counter("bt_failed_attempts_count")
+                self._record_event("failed", error_text)
+                print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Bluetooth] Reconnection of {device_name} failed ({error_text}). "
+                      f"Failed attempts: {total}. Next attempt in {int(backoff)}s.{_R}")
+
+    def _check_phone(self, bus: Any, device_path: str, props: Any, modem_tokens: set) -> bool:
+        """Checks one paired phone and returns True if it is connected."""
+        device_name = str(props.get("Alias") or props.get("Name") or device_path)
+        connected = bool(props.get("Connected", False))
+        previous = self.link_state.get(device_path)
+        self.link_state[device_path] = connected
+        now = time.time()
+
+        if not props.get("Trusted", False):
+            try:
+                props_iface = dbus.Interface(bus.get_object("org.bluez", device_path), "org.freedesktop.DBus.Properties")
+                props_iface.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+            except Exception:
+                pass
+
+        if connected:
+            if previous is False:
+                total = increment_runtime_counter("bt_restored_count")
+                self._record_event("restored", device_name)
+                print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] {device_name} is connected again. Restored connections: {total}.{_R}")
+            self.backoff_seconds.pop(device_path, None)
+
+            if self._mac_token(device_path) in modem_tokens:
+                self.modem_missing_cycles[device_path] = 0
+            else:
+                cycles = self.modem_missing_cycles.get(device_path, 0) + 1
+                self.modem_missing_cycles[device_path] = cycles
+                if cycles >= BT_MODEM_MISSING_CYCLES and now >= self.next_attempt_time.get(device_path, 0.0):
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] {device_name} is connected but has no oFono modem. Reconnecting its HFP profile.{_R}")
+                    self._connect_phone(bus, device_path, device_name)
+            return True
+
+        if previous is True:
+            total = increment_runtime_counter("bt_lost_count")
+            self._record_event("lost", device_name)
+            self.next_attempt_time[device_path] = 0.0
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Connection with {device_name} lost. Lost connections: {total}.{_R}")
+
+        self.modem_missing_cycles[device_path] = 0
+        if now >= self.next_attempt_time.get(device_path, 0.0):
+            self._connect_phone(bus, device_path, device_name)
+        return False
+
+    def check_once(self) -> None:
+        """Runs one watchdog cycle. It is blocking (D-Bus), so the caller runs it in a worker thread."""
+        bus = dbus.SystemBus()
+        manager = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+        objects = manager.GetManagedObjects()
+        self._ensure_adapters_powered(bus, objects)
+
+        phones = [
+            (str(path), interfaces["org.bluez.Device1"])
+            for path, interfaces in objects.items()
+            if "org.bluez.Device1" in interfaces and self._is_paired_phone(interfaces["org.bluez.Device1"])
+        ]
+        if not phones:
+            self._publish_state("no_device", "")
+            return
+
+        modem_tokens = self._ofono_modem_tokens(bus)
+        connected_name = ""
+        first_name = ""
+        for device_path, props in phones:
+            name = str(props.get("Alias") or props.get("Name") or device_path)
+            first_name = first_name or name
+            if self._check_phone(bus, device_path, props, modem_tokens) and not connected_name:
+                connected_name = name
+
+        if connected_name:
+            self._publish_state("connected", connected_name)
+        else:
+            self._publish_state("disconnected", first_name)
+
+
+async def bluetooth_watchdog_loop() -> None:
+    """Runs the Bluetooth watchdog while the daemon is alive (also when the switchboard is paused).
+    It stays idle during a call so it never interferes with the audio link."""
+    watchdog = BluetoothWatchdog()
+    loop = asyncio.get_running_loop()
+    last_error = ""
+    while True:
+        try:
+            state = get_config("daemon_state", "running")
+            call_active = ACTIVE_ASSISTANT is not None and getattr(ACTIVE_ASSISTANT, "running", False)
+            if state != "stopped" and not call_active:
+                await loop.run_in_executor(None, watchdog.check_once)
+                last_error = ""
+        except Exception as e:
+            if str(e) != last_error:
+                last_error = str(e)
+                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Watchdog error: {e}{_R}")
+        await asyncio.sleep(BT_WATCHDOG_INTERVAL_SECONDS)
 
 
 def load_language_data(lang_code: str, file_name: str = "assistant.json") -> dict:
@@ -810,6 +1185,44 @@ def load_language_data(lang_code: str, file_name: str = "assistant.json") -> dic
         except Exception:
             pass
     return {}
+
+
+def is_female_gender(gender_value: str, gui_data: dict) -> bool:
+    """Language-neutral gender check: the first entry of "gender_types" in gui.json is the female option."""
+    gender_types = gui_data.get("gender_types", []) if gui_data else []
+    if gender_value in gender_types:
+        return gender_types.index(gender_value) == 0
+    return str(gender_value).lower().startswith(("fem", "fém"))
+
+
+def pick_role_text(role_map: dict, is_female: bool, default: str) -> str:
+    """Language-neutral lookup of the role text: tolerates localized keys (e.g. 'femenino'/'masculino')."""
+    if not role_map:
+        return default
+    canonical = "female" if is_female else "male"
+    if canonical in role_map:
+        return role_map[canonical]
+    keys = list(role_map.keys())
+    fem_key = next((k for k in keys if k.lower().startswith(("fem", "fém"))), None)
+    if is_female:
+        return role_map.get(fem_key, default) if fem_key else default
+    male_key = next((k for k in keys if k != fem_key), None)
+    return role_map.get(male_key, default) if male_key else default
+
+
+def pick_owner_text(owner_map: dict, owner_type: str, default: str) -> str:
+    """Language-neutral lookup of the owner description: exact key first, then by canonical position."""
+    if not owner_map:
+        return default
+    if owner_type in owner_map:
+        return owner_map[owner_type]
+    canonical_order = ["private", "professional", "business"]
+    values = list(owner_map.values())
+    if owner_type in canonical_order:
+        idx = canonical_order.index(owner_type)
+        if idx < len(values):
+            return values[idx]
+    return default
 
 
 def calculate_rms(data_pcm: bytes) -> float:
@@ -851,11 +1264,65 @@ def clean_whisper_output(stdout_str: str) -> str:
     return " ".join(cleaned)
 
 
+def matches_any_phrase(text: str, phrases: list) -> bool:
+    """True if any phrase appears in text: multi-word phrases as substrings, single words on word boundaries."""
+    t = text.replace("\u2019", "'").replace("\u2018", "'").lower()
+    for phrase in phrases:
+        phrase_l = phrase.replace("\u2019", "'").lower().strip()
+        if not phrase_l:
+            continue
+        if " " in phrase_l:
+            if phrase_l in t:
+                return True
+        else:
+            if re.search(r"(?<![a-záéíóúñüàèìòùâêîôûäëïöüãõ])" + re.escape(phrase_l) + r"(?![a-záéíóúñüàèìòùâêîôûäëïöüãõ])", t):
+                return True
+    return False
+
+
+def strip_quoted_text(text: str) -> str:
+    """Removes quoted fragments: a word between quotes is being mentioned (listed, cited), not said."""
+    t = re.sub(r'"[^"]*"|\u201c[^\u201d]*\u201d|\u00ab[^\u00bb]*\u00bb', " ", text)
+    return re.sub(r"(?<!\w)['\u2018][^'\u2019]{1,60}?['\u2019](?!\w)", " ", t)
+
+
+def find_farewell(text: str, farewell_words: list, veto_words: list, meta_words: list = ()) -> bool:
+    """True when the text holds a real farewell: a farewell word that is neither quoted, nor in a sentence that
+    talks about words/commands/examples (meta words, whole sentence), nor in a clause with a negation or
+    conditional (veto words, same clause only). Without veto and meta words it is a plain farewell match.
+
+    Examples of what is NOT a farewell: 'I will not hang up', 'if you say goodbye as part of a test',
+    'examples include phrases like goodbye, or have a good day', 'words like "bye" or "see you"'.
+    """
+    if not farewell_words:
+        return False
+    text = strip_quoted_text(text)
+    if not veto_words and not meta_words:
+        return matches_any_phrase(text, farewell_words)
+    for sentence in re.split(r"[.!?¿¡…\n]+", text):
+        if not sentence.strip() or (meta_words and matches_any_phrase(sentence, meta_words)):
+            continue
+        for clause in re.split(r"[,;:]+", sentence):
+            clause = clause.strip()
+            if clause and matches_any_phrase(clause, farewell_words) and not matches_any_phrase(clause, veto_words):
+                return True
+    return False
+
+
 def clean_ai_text(text: str) -> str:
+    """Removes command artifacts leaked into the model transcription (tool-call tokens and <no speech> markers).
+
+    Ordinary words such as "call" or "start" are kept; they are only removed when part of a command token.
+    """
     t = re.sub(r"start\s*\{.*?\}\s*endcall", "", text, flags=re.IGNORECASE)
     t = re.sub(r"start\s*\{.*?\}", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\{.*?\}", "", t)
-    return re.sub(r"\b(call:hangup|hangup|call|endcall|start)\b", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"<[^<>\n]{1,40}>", "", t)
+    t = re.sub(r"<?\s*\b(?:no\s+speech(?:\s+detected)?|noise\s+detected|speech\s+detected)\b\s*>?", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[<>]", "", t)
+    t = re.sub(r"\bcall\s*:\s*\w+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b(?:call|start)\s*(?=[{(])", "", t, flags=re.IGNORECASE)
+    return re.sub(r"\b(hangup|endcall)\b", "", t, flags=re.IGNORECASE)
 
 
 def clean_transcript_for_memory(raw_transcript: str) -> str:
@@ -937,7 +1404,6 @@ class PhoneAssistant:
     def __init__(self, dbus_path: str, caller_number: str):
         self.dbus_path = dbus_path
         self.caller_number = caller_number
-        self.digits_number, self.national_number, self.caller_candidates = normalize_phone_candidates(caller_number)
         self.running = False
         self._post_processed = False
 
@@ -947,7 +1413,16 @@ class PhoneAssistant:
         self.expected_calls = get_config("expected_calls", "")
         self.assistant_name = get_config("assistant_name", "Assistant")
         self.assistant_gender = get_config("assistant_gender", "female")
-        self.current_lang = get_config("language", "en-US")
+        self.current_lang = get_config("language", DEFAULT_LANGUAGE)
+
+        self.assistant_data = load_language_data(self.current_lang, "assistant.json")
+        self.gui_data = load_language_data(self.current_lang, "gui.json")
+        self.spam_data = load_language_data(self.current_lang, "spam.json")
+        self.words_data = self.assistant_data.get("words", {})
+        self.prompts_data = self.assistant_data.get("inline_prompts", {})
+        self.labels_data = self.assistant_data.get("labels", {})
+
+        self.digits_number, self.national_number, self.caller_candidates = normalize_phone_candidates(caller_number, self.spam_data)
 
         mac_match = re.search(r"dev_([0-9A-Z_]+)", dbus_path)
         if mac_match:
@@ -957,12 +1432,6 @@ class PhoneAssistant:
         else:
             self.pw_record_target = DEFAULT_PW_INPUT
             self.pw_playback_target = DEFAULT_PW_OUTPUT
-
-        self.assistant_data = load_language_data(self.current_lang, "assistant.json")
-        self.gui_data = load_language_data(self.current_lang, "gui.json")
-        self.words_data = self.assistant_data.get("words", {})
-        self.prompts_data = self.assistant_data.get("inline_prompts", {})
-        self.labels_data = self.assistant_data.get("labels", {})
 
         self.policy_engine = CallPolicyEngine(owner_name=self.boss_name, parent=self)
 
@@ -975,6 +1444,7 @@ class PhoneAssistant:
 
         self._asst_chunk_buffer = ""
         self._asst_chunk_last_time = 0.0
+        self._in_angle_tag = False
 
         self.hello_question_sent = False
         self.cutoff_sent = False
@@ -982,6 +1452,21 @@ class PhoneAssistant:
         self.hangup_triggered_time = 0.0
         self.hangup_reason = "completed"
         self.hangup_message_appended = False
+
+        # Pending farewell: a farewell word was detected in the assistant's current turn. The call is only cut once
+        # the audio has finished, the farewell still stands in the full turn text and the caller had a grace time.
+        self.farewell_pending = False
+        self.farewell_drained_since = 0.0
+        self._asst_turn_text = ""
+        self._asst_turn_last_time = 0.0
+        try:
+            self.farewell_grace_seconds = float(get_config("farewell_grace_seconds", "2.0"))
+        except ValueError:
+            self.farewell_grace_seconds = 2.0
+        try:
+            self.farewell_cancel_min_words = int(get_config("farewell_cancel_min_words", "3"))
+        except ValueError:
+            self.farewell_cancel_min_words = 3
 
         self.user_takeover = False
         self.mic_node_active = False
@@ -1007,6 +1492,7 @@ class PhoneAssistant:
         self.recording_buffer_wav = bytearray()
         self.caller_recording_buffer = []
         self.currently_playing = False
+        self.playback_end_time = 0.0  # Estimated moment when everything written to the speaker path has been played
         self._routing_diag_logged = False
         self._removed_loop_links = set()
         self._monitor_volume_applied = {}
@@ -1044,9 +1530,9 @@ class PhoneAssistant:
         except ValueError:
             self.vad_prefix_padding_ms = 500
         try:
-            self.vad_silence_duration_ms = int(get_config("vad_silence_duration_ms", "500"))
+            self.vad_silence_duration_ms = int(get_config("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)))
         except ValueError:
-            self.vad_silence_duration_ms = 500
+            self.vad_silence_duration_ms = DEFAULT_VAD_SILENCE_DURATION_MS
 
         self.final_transcription_mode = get_config("final_transcription_mode", "disabled")
 
@@ -1139,6 +1625,7 @@ class PhoneAssistant:
         rows = []
         try:
             placeholders = ",".join(["?"] * len(self.caller_candidates)) if self.caller_candidates else "'__none__'"
+            valid_filter = "AND COALESCE(transcript, '') != '' AND COALESCE(tag, '') != ? AND COALESCE(tag, '') != 'IN PROGRESS' AND COALESCE(summary, '') NOT LIKE 'Blocked by rule%'"
 
             # Level 2: category rule (tag of the contact rule or tag of the previous call of this number)
             target_tag = ""
@@ -1146,7 +1633,7 @@ class PhoneAssistant:
                 target_tag = (contact_match or {}).get("tag", "").strip()
                 if not target_tag and self.caller_candidates:
                     prev_tag_row = conn.execute(
-                        f"SELECT tag FROM calls WHERE id != ? AND number IN ({placeholders}) AND tag != ? AND tag != 'IN PROGRESS' ORDER BY id DESC LIMIT 1",
+                        f"SELECT tag FROM calls WHERE id != ? AND number IN ({placeholders}) {valid_filter} ORDER BY id DESC LIMIT 1",
                         [self.call_id or -1] + self.caller_candidates + [in_progress_lbl]
                     ).fetchone()
                     if prev_tag_row and prev_tag_row[0]:
@@ -1173,33 +1660,33 @@ class PhoneAssistant:
             if scope == "number" and self.caller_candidates:
                 query = (
                     f"SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
-                    f"WHERE id != ? AND number IN ({placeholders}) AND date >= ? "
+                    f"WHERE id != ? AND number IN ({placeholders}) AND date >= ? {valid_filter} "
                     f"ORDER BY id DESC LIMIT ?"
                 )
-                params = [self.call_id or -1] + self.caller_candidates + [cutoff_str, max_calls]
+                params = [self.call_id or -1] + self.caller_candidates + [cutoff_str, in_progress_lbl, max_calls]
                 rows = conn.execute(query, params).fetchall()
 
             elif scope == "category":
                 if target_tag:
                     rows = conn.execute(
-                        "SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
-                        "WHERE id != ? AND tag = ? AND date >= ? ORDER BY id DESC LIMIT ?",
-                        (self.call_id or -1, target_tag, cutoff_str, max_calls)
+                        f"SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
+                        f"WHERE id != ? AND tag = ? AND date >= ? {valid_filter} ORDER BY id DESC LIMIT ?",
+                        (self.call_id or -1, target_tag, cutoff_str, in_progress_lbl, max_calls)
                     ).fetchall()
                 elif self.caller_candidates:
                     query = (
                         f"SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
-                        f"WHERE id != ? AND number IN ({placeholders}) AND date >= ? "
+                        f"WHERE id != ? AND number IN ({placeholders}) AND date >= ? {valid_filter} "
                         f"ORDER BY id DESC LIMIT ?"
                     )
-                    rows = conn.execute(query, [self.call_id or -1] + self.caller_candidates + [cutoff_str, max_calls]).fetchall()
+                    rows = conn.execute(query, [self.call_id or -1] + self.caller_candidates + [cutoff_str, in_progress_lbl, max_calls]).fetchall()
 
             elif scope == "global":
                 rows = conn.execute(
-                    "SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
-                    "WHERE id != ? AND date >= ? AND spam_score < 65 AND tag != ? AND tag NOT LIKE '%SPAM%' "
-                    "ORDER BY id DESC LIMIT ?",
-                    (self.call_id or -1, cutoff_str, spam_lbl, max_calls)
+                    f"SELECT date, number, client_name, company, tag, summary, transcript FROM calls "
+                    f"WHERE id != ? AND date >= ? AND spam_score < 65 AND tag != ? AND tag NOT LIKE '%SPAM%' {valid_filter} "
+                    f"ORDER BY id DESC LIMIT ?",
+                    (self.call_id or -1, cutoff_str, spam_lbl, in_progress_lbl, max_calls)
                 ).fetchall()
         except Exception as e:
             print(f"{_C_WARN}[Memory] Query warning: {e}{_R}")
@@ -1282,13 +1769,17 @@ class PhoneAssistant:
                 except Exception:
                     pass
 
-        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[SpamCheck] AI evaluating {self.caller_number} (National: {self.national_number}) across databases...{_R}")
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[SpamCheck] AI evaluating {self.caller_number} (Normalized: {self.national_number}) across databases...{_R}")
 
         providers_json = get_config("spam_providers", "")
-        try:
-            providers = json.loads(providers_json) if providers_json else load_language_data(self.current_lang, "spam.json").get("providers", [])
-        except Exception:
-            providers = []
+        providers = []
+        if providers_json:
+            try:
+                providers = json.loads(providers_json)
+            except Exception:
+                providers = []
+        if not providers:
+            providers = self.spam_data.get("providers", [])
 
         schema = {
             "type": "object",
@@ -1301,9 +1792,9 @@ class PhoneAssistant:
 
         async with aiohttp.ClientSession() as http_session:
             for url_template in providers:
-                url = format_spam_url(url_template, self.caller_number)
+                url = format_spam_url(url_template, self.caller_number, self.spam_data)
                 try:
-                    status_code, html = await fetch_spam_page_async(url, http_session)
+                    status_code, html = await fetch_spam_page_async(url, http_session, self.current_lang)
                     if status_code != 200:
                         print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] HTTP {status_code} from {url}{_R}")
                         continue
@@ -1778,6 +2269,23 @@ class PhoneAssistant:
 
             await asyncio.sleep(1.0)
 
+    def is_playback_drained(self) -> bool:
+        """True when the model's audio has really finished playing. The audio queue is empty long before that:
+        the model streams faster than real time and PipeWire / the Bluetooth link buffer the rest, so the
+        end of playback is estimated from the amount of audio written, plus a tail for the Bluetooth latency."""
+        now = time.time()
+        return (
+            self.audio_out_queue.empty()
+            and now - self.last_chunk_audio_time > HANGUP_STREAM_QUIET_SECONDS
+            and now >= self.playback_end_time + HANGUP_AUDIO_TAIL_SECONDS
+        )
+
+    async def wait_for_playback_drain(self, max_wait: float = HANGUP_MAX_WAIT_SECONDS) -> None:
+        """Waits (bounded) until the audio that is still being played has finished."""
+        deadline = time.time() + max_wait
+        while time.time() < deadline and not self.is_playback_drained():
+            await asyncio.sleep(0.1)
+
     def sync_playback_loop(self) -> None:
         cmd = ["pw-play", f"--target={self.pw_playback_target}", "-P", '{"node.dont-reconnect": true}', "--format=s16", "--rate=24000", "--channels=1", "-"]
         env = os.environ.copy()
@@ -1813,6 +2321,7 @@ class PhoneAssistant:
                         proc.stdin.write(chunk)
                         proc.stdin.flush()
                         self.last_chunk_audio_time = time.time()
+                        self.playback_end_time = max(self.playback_end_time, self.last_chunk_audio_time) + len(chunk) / PLAYBACK_BYTES_PER_SECOND
                     except Exception:
                         pass
 
@@ -1860,6 +2369,14 @@ class PhoneAssistant:
             return 0.0
         wa, wb = set(a.split()), set(b.split())
         return (len(wa & wb) / len(wa | wb)) if (wa and wb) else 0.0
+
+    def _strip_foreign_words(self, text: str) -> str:
+        """Removes words listed as foreign noise for the current language; returns "" if nothing is left."""
+        foreign = set(self.words_data.get("foreign_noise", []))
+        if not foreign:
+            return text
+        kept = [w for w in text.split() if w.strip(".,;:!?¿¡\"'()[]").lower() not in foreign]
+        return " ".join(kept).strip()
 
     def _has_foreign_language_noise(self, text: str) -> bool:
         words = text.lower().split()
@@ -1923,6 +2440,39 @@ class PhoneAssistant:
             if os.path.exists(tmp_wav):
                 os.remove(tmp_wav)
 
+    def _strip_streamed_angle_tags(self, text: str) -> str:
+        """Strips <...> tags from streamed output chunks even when a tag is split across two or more chunks."""
+        out = []
+        i = 0
+        n = len(text)
+        while i < n:
+            if self._in_angle_tag:
+                close_idx = text.find(">", i)
+                if close_idx == -1:
+                    return "".join(out)
+                self._in_angle_tag = False
+                i = close_idx + 1
+            else:
+                open_idx = text.find("<", i)
+                if open_idx == -1:
+                    out.append(text[i:])
+                    break
+                if open_idx > i:
+                    out.append(text[i:open_idx])
+                close_idx = text.find(">", open_idx + 1)
+                if close_idx == -1:
+                    self._in_angle_tag = True
+                    break
+                i = close_idx + 1
+        return "".join(out)
+
+    def _is_assistant_placeholder(self, text: str) -> bool:
+        """True when assistant output has no real words (dots, ellipsis, <no speech detected>) or is only a configured placeholder phrase."""
+        normalized = re.sub(r"[^\w\s]", "", text, flags=re.UNICODE).strip().lower()
+        if not normalized or normalized in ("no speech", "no speech detected", "detected", "noise detected", "speech detected"):
+            return True
+        return normalized in set(self.words_data.get("assistant_placeholder_phrases", []))
+
     def is_valid_text(self, text: str) -> bool:
         if re.search(r"[\u4e00-\u9fff\uac00-\ud7a3\u3040-\u30ff\u1100-\u11ff]", text):
             return False
@@ -1982,18 +2532,26 @@ class PhoneAssistant:
             }
 
     def _matches_any_phrase(self, text: str, phrases: list) -> bool:
-        t = text.lower()
-        for phrase in phrases:
-            phrase_l = phrase.lower().strip()
-            if not phrase_l:
-                continue
-            if " " in phrase_l:
-                if phrase_l in t:
-                    return True
-            else:
-                if re.search(r"(?<![a-záéíóúñüàèìòùâêîôûäëïöüãõ])" + re.escape(phrase_l) + r"(?![a-záéíóúñüàèìòùâêîôûäëïöüãõ])", t):
-                    return True
-        return False
+        return matches_any_phrase(text, phrases)
+
+    def _is_farewell(self, text: str) -> bool:
+        """True when the text holds a real farewell (farewell word neither denied nor merely mentioned)."""
+        return find_farewell(text, self.words_data.get("cut_words", []), self.words_data.get("goodbye_veto_words", []), self.words_data.get("goodbye_meta_words", []))
+
+    def _cancel_pending_farewell(self, reason: str) -> None:
+        self.farewell_pending = False
+        self.farewell_drained_since = 0.0
+        self._asst_chunk_buffer = ""
+        print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[SYSTEM]: Pending farewell cancelled ({reason}).{_R}")
+
+    def _commit_farewell_hangup(self, reason: str) -> None:
+        self.farewell_pending = False
+        self.farewell_drained_since = 0.0
+        self.hanging_up = self.hangup_triggered = True
+        self.hangup_triggered_time = time.time()
+        self.hangup_source = "cut_words"
+        self.hangup_reason = "completed"
+        print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Farewell confirmed ({reason}). Initiating clean call cut...{_R}")
 
     def _check_wait_return(self, text: str) -> bool:
         triggers = list(self.words_data.get("return_triggers", []))
@@ -2009,7 +2567,14 @@ class PhoneAssistant:
 
         initial_greeting = get_config("initial_greeting", "")
         if initial_greeting:
-            greeting = f"[SYSTEM: Start the call by saying EXACTLY this phrase, word by word, without adding anything else: '{initial_greeting}']"
+            exact_template = self.prompts_data.get(
+                "greeting_exact",
+                "[SYSTEM: Start the call by saying EXACTLY this phrase, word by word, without adding anything else: '{phrase}']"
+            )
+            try:
+                greeting = exact_template.format(phrase=initial_greeting)
+            except (KeyError, ValueError, IndexError):
+                greeting = exact_template.replace("{phrase}", initial_greeting)
         else:
             greeting = self.prompts_data.get("greeting", "").format(assistant_name=self.assistant_name, boss_name=self.boss_name)
 
@@ -2027,8 +2592,22 @@ class PhoneAssistant:
         print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Connected. Conversation started.{_R}")
 
         while self.running:
-            if self.hanging_up and self.audio_out_queue.empty():
-                if time.time() - self.last_chunk_audio_time > 1.0 or time.time() - getattr(self, "hangup_triggered_time", time.time()) > 3.5:
+            if self.farewell_pending and not self.hanging_up:
+                if self.is_playback_drained():
+                    if self.farewell_drained_since <= 0.0:
+                        self.farewell_drained_since = time.time()
+                    elif time.time() - self.farewell_drained_since >= self.farewell_grace_seconds:
+                        if self._is_farewell(self._asst_turn_text):
+                            self._commit_farewell_hangup("no caller reply after the farewell")
+                        else:
+                            self._cancel_pending_farewell("the farewell no longer stands in the full turn")
+                else:
+                    self.farewell_drained_since = 0.0
+
+            if self.hanging_up:
+                if self.hangup_triggered_time <= 0.0:
+                    self.hangup_triggered_time = time.time()
+                if self.is_playback_drained() or time.time() - self.hangup_triggered_time > HANGUP_MAX_WAIT_SECONDS:
                     print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Final goodbye audio finished playing. Cutting call.{_R}")
                     self.hangup_call()
                     await asyncio.sleep(0.5)
@@ -2094,7 +2673,7 @@ class PhoneAssistant:
                             print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] {self.assistant_name} requested hangup via tool. Waiting for audio to finish...{_R}")
                         elif fc.name == "save_message":
                             self.save_to_db(fc.args.get("caller_name"), fc.args.get("message_text"))
-                        function_responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
+                            function_responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
                     else:
                         print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[SECURITY POLICY]: Action '{fc.name}' denied. Reason: {decision.reason}{_R}")
                         function_responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": False, "error": f"Action denied by security policy: {decision.reason}"}))
@@ -2109,7 +2688,9 @@ class PhoneAssistant:
 
                 if itx and getattr(itx, "text", None):
                     cleaned_caller_txt = self._strip_assistant_echo_from_input(itx.text)
-                    if not cleaned_caller_txt or not self.is_valid_text(cleaned_caller_txt):
+                    cleaned_caller_txt = re.sub(r"<[^<>\n]{1,40}>", "", cleaned_caller_txt or "")
+                    cleaned_caller_txt = self._strip_foreign_words(cleaned_caller_txt)
+                    if not cleaned_caller_txt or not self.is_valid_text(cleaned_caller_txt) or self._is_transcription_noise(cleaned_caller_txt):
                         itx = None
                     else:
                         itx.text = cleaned_caller_txt
@@ -2117,6 +2698,14 @@ class PhoneAssistant:
                 if itx and getattr(itx, "text", None):
                     self.last_user_spoke_time = time.time()
                     self.hello_question_sent = self.cutoff_sent = False
+                    self._in_angle_tag = False
+
+                    if self.farewell_pending:
+                        if self._is_farewell(itx.text):
+                            self._commit_farewell_hangup("caller also said goodbye")
+                        elif len(itx.text.split()) >= self.farewell_cancel_min_words:
+                            self._cancel_pending_farewell("caller kept talking")
+                    self._asst_turn_text = ""
 
                     if self.waiting_definitive_cut:
                         print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[SYSTEM]: Interruption during grace period. Cancelling hangup...{_R}")
@@ -2174,6 +2763,7 @@ class PhoneAssistant:
                         prefix = "> " if self.on_hold else ""
                         print(f"\n\n{_C_MUTED}{prefix}[{ts}]{_R} {_C_AUDIO}{ICON_USER_STR}{itx.text}{_R}")
                         self.accumulated_transcript += f"\n\n🗣 [{ts}]: {itx.text}"
+                        self.last_speaker = None
                         self.update_transcription_db()
 
                         if self.final_transcription_mode == "realtime" and len(self.user_turn_audio) > 0:
@@ -2214,7 +2804,11 @@ class PhoneAssistant:
                 otx = getattr(sc, "output_transcription", None)
                 if otx and getattr(otx, "text", None):
                     self.user_turn_audio.clear()
-                    clean_otx = clean_ai_text(otx.text)
+                    tag_stripped = self._strip_streamed_angle_tags(otx.text)
+                    clean_otx = clean_ai_text(tag_stripped) if tag_stripped else ""
+                    if clean_otx and self._is_assistant_placeholder(clean_otx):
+                        # Placeholder utterance (e.g. "..." or "Nothing" or "<no speech detected>"): keep it out of the transcript and the memory
+                        clean_otx = ""
                     if clean_otx:
                         clean_norm = re.sub(r"[^\w\s]", "", clean_otx.lower()).strip()
                         now = time.time()
@@ -2261,16 +2855,29 @@ class PhoneAssistant:
                                     "⏳"
                                 )
 
-                        if not self.hangup_triggered and not self.waiting_definitive_cut and not self.hello_question_sent and self._matches_any_phrase(eval_text, self.words_data.get("cut_words", [])):
-                            self.hanging_up = self.hangup_triggered = True
-                            self.hangup_triggered_time = time.time()
-                            self.hangup_source = "cut_words"
-                            self.hangup_reason = "completed"
-                            print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Goodbye detected in assistant text. Initiating clean call cut...{_R}")
+                        now_turn = time.time()
+                        if now_turn - self._asst_turn_last_time < ASSISTANT_TURN_GAP_SECONDS:
+                            self._asst_turn_text += " " + clean_otx
+                        else:
+                            self._asst_turn_text = clean_otx
+                        self._asst_turn_last_time = now_turn
+
+                        # The farewell is judged on the whole assistant turn (not only the latest chunk): the clause that
+                        # holds the farewell word can still grow into an explanation or a denial in later chunks.
+                        farewell_now = self._is_farewell(self._asst_turn_text)
+                        if farewell_now and not self.hangup_triggered and not self.farewell_pending and not self.waiting_definitive_cut and not self.hello_question_sent:
+                            self.farewell_pending = True
+                            self.farewell_drained_since = 0.0
+                            print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Goodbye detected in assistant text. Waiting for the audio to finish and the caller's reply...{_R}")
+                        elif self.farewell_pending and not self.hanging_up:
+                            if not farewell_now:
+                                self._cancel_pending_farewell("farewell word is part of an explanation or was denied")
+                            elif self._matches_any_phrase(eval_text, self.words_data.get("cancel_goodbye_phrases", [])) and not self._is_farewell(eval_text):
+                                self._cancel_pending_farewell("assistant asked if there is anything else")
 
                         if self.hanging_up and self.hangup_source == "cut_words":
                             cancel_phrases = self.words_data.get("cancel_goodbye_phrases", [])
-                            has_goodbye = self._matches_any_phrase(eval_text, self.words_data.get("cut_words", []))
+                            has_goodbye = self._is_farewell(eval_text)
                             has_cancel = self._matches_any_phrase(eval_text, cancel_phrases)
                             if has_cancel and not has_goodbye:
                                 self.hanging_up = self.hangup_triggered = False
@@ -2306,11 +2913,13 @@ class PhoneAssistant:
         return ""
 
     async def correct_transcript_with_whisper(self, raw_whisper: str) -> str:
-        prompt = (
-            f"We have two transcriptions of a call:\n1. LIVE TRANSCRIPT (📞 correct, 🗣 may have noise).\n2. RAW WHISPER (🗣 only).\n"
-            f"Task: Align and correct 🗣 parts in LIVE TRANSCRIPT using RAW WHISPER. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
-            f"If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\nLIVE TRANSCRIPT:\n{self.accumulated_transcript}\n\nRAW WHISPER:\n{raw_whisper}"
+        template = self.assistant_data.get("transcript_fix_whisper_prompt") or (
+            "We have two transcriptions of a call held in the language with code {lang}:\n1. LIVE TRANSCRIPT (📞 correct, 🗣 may have noise).\n2. RAW WHISPER (🗣 only).\n"
+            "Task: Align and correct 🗣 parts in LIVE TRANSCRIPT using RAW WHISPER. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
+            "Write everything in the call language and treat words in any other language as noise. If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\n"
+            "LIVE TRANSCRIPT:\n{live_transcript}\n\nRAW WHISPER:\n{raw_whisper}"
         )
+        prompt = template.replace("{lang}", self.current_lang).replace("{live_transcript}", self.accumulated_transcript).replace("{raw_whisper}", raw_whisper)
         try:
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
@@ -2330,10 +2939,11 @@ class PhoneAssistant:
             with open(wav_path, "rb") as f:
                 audio_bytes = f.read()
             audio_mime = "audio/mp3" if wav_path.lower().endswith(".mp3") else "audio/wav"
-            prompt = (
-                f"Task: Align and correct 🗣 parts in LIVE TRANSCRIPT by listening to audio. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
-                f"If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\nLIVE TRANSCRIPT:\n{self.accumulated_transcript}"
+            template = self.assistant_data.get("transcript_fix_audio_prompt") or (
+                "Task: the call is held in the language with code {lang}. Align and correct 🗣 parts in LIVE TRANSCRIPT by listening to audio. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
+                "Write everything in the call language and treat words in any other language as noise. If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\nLIVE TRANSCRIPT:\n{live_transcript}"
             )
+            prompt = template.replace("{lang}", self.current_lang).replace("{live_transcript}", self.accumulated_transcript)
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
                 resp = await asyncio.to_thread(
@@ -2347,6 +2957,21 @@ class PhoneAssistant:
             return self.accumulated_transcript
 
     async def post_process_call(self) -> None:
+        if not getattr(self, "answered_call", False):
+            contact_match = match_contact_rule(self.caller_number, self.spam_data)
+            final_tag = (contact_match or {}).get("tag", "").strip() or self.labels_data.get("general", "GENERAL")
+            client_n = (contact_match or {}).get("note", "").strip()
+            unanswered_trans = f"❌ [{get_timestamp()}]: [SYSTEM]: Call ended by caller before answering."
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute(
+                "UPDATE calls SET duration=0, tag=?, client_name=?, transcript=?, audio_path='', client_audio_path='', summary='' WHERE id=?",
+                (final_tag, client_n, unanswered_trans, self.call_id)
+            )
+            conn.commit()
+            conn.close()
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Post-Processing] Unanswered call recorded.{_R}")
+            return
+
         print(f"\n{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Saving recordings, generating summary, and evaluating categories...{_R}")
 
         caller_pcm_raw = b"".join(self.caller_recording_buffer) if self.caller_recording_buffer else b""
@@ -2433,7 +3058,7 @@ class PhoneAssistant:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running {self.model_text} Audio alignment...{_R}")
                 final_trans = await self.correct_transcript_with_gemini_audio(self.client_recording_path)
 
-        contact_match = match_contact_rule(self.caller_number)
+        contact_match = match_contact_rule(self.caller_number, self.spam_data)
         custom_contact_tag = (contact_match or {}).get("tag", "").strip()
 
         if custom_contact_tag:
@@ -2474,9 +3099,9 @@ class PhoneAssistant:
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Post-Processing] Complete. Tagged as: {final_tag}{_R}")
 
     async def run(self) -> None:
-        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Caller] Raw: '{self.caller_number}' | Normalized National: '{self.national_number}'{_R}")
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Caller] Raw: '{self.caller_number}' | Normalized: '{self.national_number}'{_R}")
 
-        contact_match = match_contact_rule(self.caller_number)
+        contact_match = match_contact_rule(self.caller_number, self.spam_data)
         if contact_match:
             print(
                 f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[ContactMatch] Matched pattern '{contact_match['pattern']}' "
@@ -2519,8 +3144,8 @@ class PhoneAssistant:
         try:
             instruction = raw_instruction.format(
                 assistant_name=self.assistant_name,
-                role_assistant=self.assistant_data.get("role_mappings", {}).get("female" if "fem" in self.assistant_gender.lower() else "male", "Secretary"),
-                owner_desc=self.assistant_data.get("owner_type_mappings", {}).get(self.owner_type, "Private"),
+                role_assistant=pick_role_text(self.assistant_data.get("role_mappings", {}), is_female_gender(self.assistant_gender, self.gui_data), "Secretary"),
+                owner_desc=pick_owner_text(self.assistant_data.get("owner_type_mappings", {}), self.owner_type, "Private"),
                 boss_name=self.boss_name,
                 business_details=self.business_description
             )
@@ -2537,17 +3162,19 @@ class PhoneAssistant:
 
         extra_prompt = get_config("extra_prompt", "")
         if extra_prompt:
-            instruction += f"\n\nEXTRA INSTRUCTIONS/PERSONALITY:\n{extra_prompt}"
+            extra_header = self.assistant_data.get("extra_prompt_header", "EXTRA INSTRUCTIONS/PERSONALITY:")
+            instruction += f"\n\n{extra_header}\n{extra_prompt}"
 
+        tool_texts = self.assistant_data.get("tool_descriptions", {})
         tools_list = [types.Tool(function_declarations=[
             types.FunctionDeclaration(
                 name="hangup",
-                description="Terminates the call immediately if spam or successfully finished.",
+                description=tool_texts.get("hangup", "Terminates the call immediately if spam or successfully finished."),
                 parameters_json_schema={"type": "object", "properties": {"reason": {"type": "string"}}}
             ),
             types.FunctionDeclaration(
                 name="save_message",
-                description="MANDATORY: Execute this tool to save ANY actionable message, task, delivery notice, or completed appointment details for the owner. Do not say it is noted without invoking this tool.",
+                description=tool_texts.get("save_message", "MANDATORY: Execute this tool to save ANY actionable message, task, delivery notice, or completed appointment details for the owner. Do not say it is noted without invoking this tool."),
                 parameters_json_schema={
                     "type": "object",
                     "properties": {"caller_name": {"type": "string"}, "message_text": {"type": "string"}},
@@ -2567,17 +3194,30 @@ class PhoneAssistant:
             else types.EndSensitivity.END_SENSITIVITY_HIGH
         )
 
+        is_female_voice = is_female_gender(self.assistant_gender, self.gui_data)
+        voice_names = self.assistant_data.get("voice_names", {})
+        voice_name = voice_names.get("female" if is_female_voice else "male") or (
+            DEFAULT_VOICE_FEMALE if is_female_voice else DEFAULT_VOICE_MALE
+        )
+        voice_config = types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+        )
+        # Optional explicit speech language (BCP-47) from the language file; empty disables it.
+        speech_lang_code = str(self.assistant_data.get("speech_language_code", "")).strip()
+        speech_config = None
+        if speech_lang_code:
+            try:
+                speech_config = types.SpeechConfig(voice_config=voice_config, language_code=speech_lang_code)
+            except Exception as e:
+                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Voice] language_code not supported by this SDK, ignoring it: {e}{_R}")
+        if speech_config is None:
+            speech_config = types.SpeechConfig(voice_config=voice_config)
+
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=types.Content(parts=[types.Part(text=instruction)]),
             tools=tools_list,
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Aoede" if "fem" in self.assistant_gender.lower() else "Puck"
-                    )
-                )
-            ),
+            speech_config=speech_config,
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=start_sens_enum,
@@ -2634,6 +3274,7 @@ class PhoneAssistant:
                                     self.update_transcription_db()
                                     await session.send_realtime_input(text=self.prompts_data.get("spam_detected", ""))
                                     await asyncio.sleep(4)
+                                    await self.wait_for_playback_drain()
                                     self.hangup_call()
                                     self.running = False
                                     break
@@ -3018,7 +3659,7 @@ async def run_cli_spam_test(test_number: str) -> None:
     """CLI utility to test a phone number against all configured SPAM providers and the LLM."""
     ensure_database_exists()
     dummy = PhoneAssistant(dbus_path="/org/ofono/test", caller_number=test_number)
-    print(f"{_C_SERVER}Testing number {test_number} (National: {dummy.national_number}) against SPAM providers...{_R}")
+    print(f"{_C_SERVER}Testing number {test_number} (Normalized: {dummy.national_number}) against SPAM providers...{_R}")
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM spam_cache WHERE number=?", (dummy.national_number or dummy.digits_number,))
     conn.commit()
@@ -3099,11 +3740,12 @@ if __name__ == "__main__":
     main_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(main_loop)
     main_loop.create_task(daemon_heartbeat_loop(main_loop))
+    main_loop.create_task(bluetooth_watchdog_loop())
 
     dbus_thread = threading.Thread(target=run_dbus_loop, args=(main_loop,), daemon=True)
     dbus_thread.start()
 
-    print(f"{_C_SERVER}{ICON_SERVER}--- BLUETOOTH AI SWITCHBOARD v2.0 ---{_R}")
+    print(f"{_C_SERVER}{ICON_SERVER}--- BLUETOOTH AI SWITCHBOARD v{APP_VERSION} ---{_R}")
     print("Waiting for incoming calls via oFono...\n")
 
     try:
@@ -3112,4 +3754,3 @@ if __name__ == "__main__":
         print(f"\n{_C_WARN}{ICON_WARN}Switchboard manually stopped.{_R}")
         ONION.stop()
         os._exit(0)
-

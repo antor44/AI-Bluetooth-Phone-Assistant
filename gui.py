@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 2.4
+Version: 2.6
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -38,7 +38,7 @@ import shutil
 import subprocess
 import urllib.request
 import urllib.parse
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from google import genai
 from google.genai import types
 
@@ -49,6 +49,8 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
+DEFAULT_VAD_SILENCE_DURATION_MS = 700  # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
+DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 LANG_DIR = os.path.join(BASE_DIR, "languages")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 WHISPER_CPP_DIR = os.path.expanduser("~/whisper.cpp")
@@ -97,34 +99,140 @@ def find_quantize_bin() -> str:
     return ""
 
 
-def normalize_phone_pattern(raw_input: str) -> str:
+def get_home_numbering(lang_code: str = "") -> Dict[str, Any]:
+    """Loads the home country numbering plan (home_country_code, home_national_length) from the active language's spam.json."""
+    active_lang = lang_code
+    if not active_lang:
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
+            active_lang = row[0] if row and row[0] else DEFAULT_LANGUAGE
+        except Exception:
+            active_lang = DEFAULT_LANGUAGE
+        finally:
+            if conn:
+                conn.close()
+    path = os.path.join(LANG_DIR, active_lang, "spam.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def build_e164(raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> str:
+    """Builds an E.164 number (with a leading "+") from a caller ID string.
+
+    A "+" or "00" prefix is trusted as is. For numbers without an international marker, the home numbering plan
+    of the active language (spam.json: "home_country_code" and "home_national_length") decides whether the
+    country code must be added. Without that information the digits are assumed to be complete."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    raw = (raw_number or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return ""
+    if raw.startswith("+"):
+        return f"+{digits}"
+    if digits.startswith("00"):
+        return f"+{digits[2:]}"
+    country_code = re.sub(r"\D", "", str(numbering.get("home_country_code", "")))
+    try:
+        national_length = int(numbering.get("home_national_length", 0))
+    except (TypeError, ValueError):
+        national_length = 0
+    if not country_code or national_length <= 0:
+        return f"+{digits}"
+    significant = digits[1:] if (digits.startswith("0") and len(digits) - 1 == national_length) else digits
+    if len(significant) == national_length:
+        return f"+{country_code}{significant}"
+    return f"+{digits}"
+
+
+def normalize_phone_candidates(raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
+    """Normalizes a phone number into (digits_only, national_or_full_digits, matching_candidates) using the active numbering plan."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    raw = (raw_number or "").strip()
+    raw_digits = re.sub(r"\D", "", raw)
+    has_intl_prefix = raw.startswith("+") or raw_digits.startswith("00")
+    digits = raw_digits[2:] if raw_digits.startswith("00") else raw_digits
+
+    country_code = re.sub(r"\D", "", str(numbering.get("home_country_code", "")))
+    try:
+        national_length = int(numbering.get("home_national_length", 0))
+    except (TypeError, ValueError):
+        national_length = 0
+
+    if country_code and national_length > 0:
+        if digits.startswith(country_code) and len(digits) == len(country_code) + national_length:
+            national = digits[len(country_code):]
+        elif digits.startswith(country_code + "0") and len(digits) == len(country_code) + 1 + national_length:
+            national = digits[len(country_code) + 1:]
+        elif not has_intl_prefix and digits.startswith("0") and len(digits) - 1 == national_length:
+            national = digits[1:]
+        else:
+            national = digits
+    else:
+        national = digits
+
+    e164 = build_e164(raw_number, numbering)
+    e164_digits = e164.lstrip("+")
+
+    candidates = []
+    for item in [national, digits, e164_digits, e164, raw]:
+        if item and item not in candidates:
+            candidates.append(item)
+    return digits, national, candidates
+
+
+def normalize_phone_pattern(raw_input: str, numbering: Optional[Dict[str, Any]] = None) -> str:
     """Normalizes a phone number or wildcard pattern while preserving * and ? characters."""
-    raw = raw_input.strip()
+    if numbering is None:
+        numbering = get_home_numbering()
+    raw = (raw_input or "").strip()
     cleaned = re.sub(r"[^\d\*\?\+]", "", raw)
+    has_intl_prefix = cleaned.startswith("+") or cleaned.startswith("00")
     if cleaned.startswith("00"):
         cleaned = cleaned[2:]
     elif cleaned.startswith("+"):
         cleaned = cleaned[1:]
-    if not any(ch in cleaned for ch in ("*", "?")) and cleaned.startswith("34") and len(cleaned) == 11:
-        cleaned = cleaned[2:]
+
+    if not any(ch in cleaned for ch in ("*", "?")):
+        country_code = re.sub(r"\D", "", str(numbering.get("home_country_code", "")))
+        try:
+            national_length = int(numbering.get("home_national_length", 0))
+        except (TypeError, ValueError):
+            national_length = 0
+        if country_code and national_length > 0:
+            if cleaned.startswith(country_code) and len(cleaned) == len(country_code) + national_length:
+                cleaned = cleaned[len(country_code):]
+            elif cleaned.startswith(country_code + "0") and len(cleaned) == len(country_code) + 1 + national_length:
+                cleaned = cleaned[len(country_code) + 1:]
+            elif not has_intl_prefix and cleaned.startswith("0") and len(cleaned) - 1 == national_length:
+                cleaned = cleaned[1:]
     return cleaned or raw
 
 
-def format_spam_test_url(url_template: str, raw_number: str) -> str:
-    """Formats a SPAM provider URL template using {number}, {national}, and {e164} placeholders."""
-    digits = re.sub(r"\D", "", raw_number)
-    if digits.startswith("00"):
-        digits = digits[2:]
-    national = digits[2:] if (digits.startswith("34") and len(digits) == 11) else (digits[-9:] if len(digits) > 9 else digits)
-    e164 = f"+{digits}" if not digits.startswith("34") and len(digits) > 9 else (f"+34{national}" if len(national) == 9 else f"+{digits}")
+def format_spam_test_url(url_template: str, raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> str:
+    """Formats a SPAM provider URL template using {number}, {national}, and {e164} (URL-encoded, "+" becomes %2B)."""
+    if numbering is None:
+        numbering = get_home_numbering()
+    digits, national, _ = normalize_phone_candidates(raw_number, numbering)
+    e164 = build_e164(raw_number, numbering)
 
     url = url_template
-    if "%2B34{number}" in url or "+34{number}" in url:
-        url = url.replace("{number}", national)
-    else:
-        url = url.replace("{number}", digits)
+    # A template that already carries a country code before {number} (e.g. "/num/%2B34{number}") needs the national part only.
+    embedded = re.search(r"(?:%2B|\+)(\d{1,3})\{number\}", url)
+    number_value = digits
+    if embedded and digits.startswith(embedded.group(1)):
+        number_value = digits[len(embedded.group(1)):]
+    url = url.replace("{number}", number_value)
     url = url.replace("{national}", national)
-    url = url.replace("{e164}", e164)
+    url = url.replace("{e164}", urllib.parse.quote(e164, safe=""))
     return url
 
 
@@ -145,25 +253,43 @@ def clean_html_for_spam(raw_html: str) -> str:
     return f"{title_text} — {text}".strip(" —") if title_text else text
 
 
-def fetch_spam_page_sync(url: str) -> Tuple[int, str]:
+def build_accept_language(lang_code: str) -> str:
+    """Builds the Accept-Language header from the active language (e.g. "es-ES" -> "es-ES,es;q=0.9,en;q=0.8")."""
+    active = lang_code or DEFAULT_LANGUAGE
+    primary = active.split("-")[0]
+    fallback = DEFAULT_LANGUAGE.split("-")[0]
+    header = f"{active},{primary};q=0.9"
+    if primary != fallback:
+        header += f",{fallback};q=0.8"
+    return header
+
+
+def fetch_spam_page_sync(url: str, lang_code: str = DEFAULT_LANGUAGE) -> Tuple[int, str]:
     """Fetches a SPAM lookup URL using curl_cffi (Chrome TLS), system curl with browser headers, or urllib."""
     parsed = urllib.parse.urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}/" if parsed.scheme and parsed.netloc else "https://www.google.com/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Referer": origin,
-        "Upgrade-Insecure-Requests": "1"
-    }
+    accept_lang = build_accept_language(lang_code)
 
     if curl_requests is not None:
         try:
-            resp = curl_requests.get(url, headers=headers, impersonate="chrome", timeout=6)
+            # Do not override User-Agent when impersonating Chrome: curl_cffi sets matching Chrome headers and TLS fingerprint
+            chrome_headers = {
+                "Accept-Language": accept_lang,
+                "Referer": origin
+            }
+            resp = curl_requests.get(url, headers=chrome_headers, impersonate="chrome", timeout=6)
             if resp.status_code == 200 and resp.text:
                 return resp.status_code, resp.text
         except Exception:
             pass
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": accept_lang,
+        "Referer": origin,
+        "Upgrade-Insecure-Requests": "1"
+    }
 
     if shutil.which("curl"):
         try:
@@ -399,7 +525,7 @@ def init_db() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('software_echo_suppression', 'false')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'disabled')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'none')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', 'es-ES')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', ?)", (DEFAULT_LANGUAGE,))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
 
     c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'priority')")
@@ -415,48 +541,73 @@ def init_db() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_start_sensitivity', 'LOW')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_end_sensitivity', 'HIGH')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', '500')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', '500')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', ?)", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    # One-time migration: the new default replaces the value stored by previous versions (INSERT OR IGNORE never overwrites it)
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
+    if c.rowcount == 1:
+        c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('protect_initial_greeting', 'true')")
 
     conn.commit()
     conn.close()
 
 
+LOCALIZED_KEYS = [
+    "boss_name", "assistant_name", "assistant_gender", "owner_type",
+    "priority_keywords", "memory_rules", "business_description",
+    "expected_calls", "initial_greeting", "extra_prompt", "text_model",
+    "spam_providers"
+]
+
+
 def get_config(key: str, default_value: str) -> str:
     """Retrieves standard or language-localized configuration elements from the database."""
     conn = sqlite3.connect(DB_PATH)
     res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
-    current_lang = res_lang[0] if res_lang else "es-ES"
+    current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
-    localized_keys = [
-        "boss_name", "assistant_name", "assistant_gender", "owner_type",
-        "priority_keywords", "memory_rules", "business_description",
-        "expected_calls", "initial_greeting", "extra_prompt", "text_model"
-    ]
-    if key in localized_keys:
+    if key in LOCALIZED_KEYS:
         lang_key = f"{current_lang}_{key}"
         res = conn.execute("SELECT value FROM settings WHERE key=?", (lang_key,)).fetchone()
         if res is not None:
             conn.close()
             return res[0]
+        if key == "spam_providers":
+            conn.close()
+            return default_value
 
     res_global = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     conn.close()
     return res_global[0] if res_global is not None else default_value
 
 
+def has_config(key: str) -> bool:
+    """True when a setting has ever been stored (an empty value still counts), using the same lookup order as get_config."""
+    conn = sqlite3.connect(DB_PATH)
+    res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
+    current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
+
+    if key == "spam_providers":
+        keys_to_check = [f"{current_lang}_{key}"]
+    elif key in LOCALIZED_KEYS:
+        keys_to_check = [f"{current_lang}_{key}", key]
+    else:
+        keys_to_check = [key]
+    found = any(
+        conn.execute("SELECT 1 FROM settings WHERE key=?", (k,)).fetchone() is not None
+        for k in keys_to_check
+    )
+    conn.close()
+    return found
+
+
 def set_config(key: str, value: Any) -> None:
     """Persists standard or localized settings dynamically to the database."""
     conn = sqlite3.connect(DB_PATH)
     res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
-    current_lang = res_lang[0] if res_lang else "es-ES"
+    current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
-    localized_keys = [
-        "boss_name", "assistant_name", "assistant_gender", "owner_type",
-        "priority_keywords", "memory_rules", "business_description",
-        "expected_calls", "initial_greeting", "extra_prompt", "text_model"
-    ]
-    db_key = f"{current_lang}_{key}" if key in localized_keys else key
+    db_key = f"{current_lang}_{key}" if key in LOCALIZED_KEYS else key
 
     conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (db_key, str(value)))
     conn.commit()
@@ -476,9 +627,25 @@ def db_slider(label: str, config_key: str, widget_key: str, default_value: str, 
             st.session_state[widget_key] = cast(float(default_value))
 
     def _save_value() -> None:
-        set_config(config_key, st.session_state[widget_key])
+        if widget_key in st.session_state:
+            set_config(config_key, st.session_state[widget_key])
 
     return st.slider(label, key=widget_key, on_change=_save_value, **slider_kwargs)
+
+
+def db_checkbox(label: str, config_key: str, widget_key: str, default_value: bool = False) -> bool:
+    """Checkbox bound to a database setting through a stable widget key.
+
+    The stored value is loaded once per browser session and written inside the on_change callback,
+    so the choice survives page reloads, new sessions and other devices (e.g. the Android app)."""
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = get_config(config_key, "true" if default_value else "false") == "true"
+
+    def _save_value() -> None:
+        if widget_key in st.session_state:
+            set_config(config_key, "true" if st.session_state[widget_key] else "false")
+
+    return st.checkbox(label, key=widget_key, on_change=_save_value)
 
 
 ONION_DIR = os.path.join(BASE_DIR, "onion_data")
@@ -513,12 +680,71 @@ def make_qr_png(text: str):
         return None
 
 
-def _rerun_tor_panel() -> None:
+def _rerun_fragment() -> None:
     """Refreshes only the Tor panel when it runs as a fragment, otherwise the whole page."""
     try:
         st.rerun(scope="fragment")
     except st.errors.StreamlitAPIException:
         st.rerun()
+
+
+@st.fragment(run_every=3)
+def render_bluetooth_panel() -> None:
+    """Phone Bluetooth link status and the error counters kept by the daemon's reconnection watchdog.
+    It is a fragment that refreshes itself, so the status follows the daemon without reloading the page."""
+    def _counter(key: str) -> int:
+        try:
+            return int(float(get_config(key, "0")))
+        except ValueError:
+            return 0
+
+    with st.container(border=True):
+        try:
+            heartbeat_age = time.time() - float(get_config("daemon_heartbeat", "0"))
+        except ValueError:
+            heartbeat_age = float("inf")
+
+        bt_state = get_config("bt_state", "unknown")
+        bt_device = get_config("bt_device_name", "")
+        if heartbeat_age > 15.0 or bt_state == "unknown":
+            bt_badge = trans.get("ui_bt_status_unknown", "⚪ Unknown (daemon offline or not checked yet)")
+        elif bt_state == "connected":
+            bt_badge = trans.get("ui_bt_status_connected", "🟢 Connected ({device})").format(device=bt_device)
+        elif bt_state == "no_device":
+            bt_badge = trans.get("ui_bt_status_no_device", "⚪ No paired phone found")
+        else:
+            bt_badge = trans.get("ui_bt_status_disconnected", "🔴 Disconnected ({device}) - reconnecting automatically").format(device=bt_device)
+        st.markdown(f"**{trans.get('ui_bt_status_label', 'Status:')}** {bt_badge}")
+
+        st.caption(trans.get(
+            "ui_bt_counters",
+            "Lost connections: {lost} | Restored connections: {restored} | Failed reconnection attempts: {failed}"
+        ).format(
+            lost=_counter("bt_lost_count"),
+            restored=_counter("bt_restored_count"),
+            failed=_counter("bt_failed_attempts_count")
+        ))
+
+        last_event = get_config("bt_last_event", "")
+        if last_event:
+            event_code, _, event_rest = last_event.partition("|")
+            event_time, _, event_detail = event_rest.partition("|")
+            event_labels = trans.get("ui_bt_event_labels", {
+                "lost": "Connection lost",
+                "restored": "Connection restored",
+                "failed": "Reconnection attempt failed"
+            })
+            event_text = event_labels.get(event_code, event_code)
+            if event_detail:
+                event_text = f"{event_text}: {event_detail}"
+            st.caption(trans.get("ui_bt_last_event", "Last event ({time}): {event}").format(time=event_time, event=event_text))
+
+        if st.button(trans.get("ui_btn_bt_reset_counters", "🧹 Reset counters"), key="btn_bt_reset_counters", use_container_width=True):
+            for counter_key in ("bt_lost_count", "bt_restored_count", "bt_failed_attempts_count"):
+                set_config(counter_key, 0)
+            set_config("bt_last_event", "")
+            st.toast(trans.get("ui_toast_bt_counters_reset", "Bluetooth counters reset"))
+            _rerun_fragment()
 
 
 @st.fragment(run_every=2)
@@ -569,11 +795,11 @@ def render_tor_panel() -> None:
                 st.session_state.confirm_tor_disable = False
                 set_config("tor_enabled", "true")
                 st.toast(trans.get("ui_toast_tor_enabled", "Remote access enabled"))
-                _rerun_tor_panel()
+                _rerun_fragment()
         elif not st.session_state.confirm_tor_disable:
             if st.button(trans.get("ui_btn_tor_disable", "⏹️ Disable remote access"), key="btn_tor_disable", use_container_width=True):
                 st.session_state.confirm_tor_disable = True
-                _rerun_tor_panel()
+                _rerun_fragment()
         else:
             st.warning(trans.get("ui_tor_disable_warning", "⚠️ If you are using this panel through the Android app, disabling remote access will cut your connection."))
             tc1, tc2 = st.columns(2)
@@ -582,30 +808,32 @@ def render_tor_panel() -> None:
                     st.session_state.confirm_tor_disable = False
                     set_config("tor_enabled", "false")
                     st.toast(trans.get("ui_toast_tor_disabled", "Remote access disabled"))
-                    _rerun_tor_panel()
+                    _rerun_fragment()
             with tc2:
                 if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_tor_disable_no", use_container_width=True):
                     st.session_state.confirm_tor_disable = False
-                    _rerun_tor_panel()
+                    _rerun_fragment()
 
         if "show_tor_pairing" not in st.session_state:
             st.session_state.show_tor_pairing = False
 
         if tor_shown == "running" and tor_onion:
-            st.markdown(f"**{trans.get('ui_tor_onion_label', 'Onion address:')}** `{tor_onion}`")
+            st.markdown(f"**{trans.get('ui_tor_onion_label', 'Onion address:')}**")
+            st.code(tor_onion, language=None)
+            copy_button(tor_onion, trans.get("ui_btn_copy", "📋 Copy"), trans.get("ui_copied", "✓ Copied"))
             if not st.session_state.show_tor_pairing:
                 if st.button(trans.get("ui_btn_tor_show_pairing", "🔑 Show pairing code"), key="btn_tor_show_pairing", use_container_width=True):
                     st.session_state.show_tor_pairing = True
-                    _rerun_tor_panel()
+                    _rerun_fragment()
             else:
                 st.warning(trans.get("ui_tor_pairing_warning", "🔑 Keep this code secret: anyone who has it can reach this panel through Tor."))
-                st.caption(trans.get("ui_tor_pairing_hint", "In the Android app, scan the QR code or paste this text:"))
+                st.caption(trans.get("ui_tor_pairing_hint", "Android app: scan the QR code, or paste the onion address and the access key in its two boxes, or paste the full pairing link in the first box. Tor Browser (PC): open the onion address and paste the access key when it asks for it."))
                 copy_label = trans.get("ui_btn_copy", "📋 Copy")
                 copied_label = trans.get("ui_copied", "✓ Copied")
                 for client_idx, tor_client in enumerate(load_onion_clients()):
                     pairing_uri = f"aiphone://pair?onion={tor_onion}&key={tor_client['priv']}"
                     st.markdown(f"**{trans.get('ui_tor_pairing_device', 'Device: {name}').format(name=tor_client['name'])}**")
-                    st.caption(trans.get("ui_tor_key_label", "Access key (paste only this part in the app):"))
+                    st.caption(trans.get("ui_tor_key_label", "Access key:"))
                     st.code(tor_client["priv"], language=None)
                     copy_button(tor_client["priv"], copy_label, copied_label)
                     with st.expander(trans.get("ui_tor_full_link", "Full pairing link (advanced)")):
@@ -616,7 +844,7 @@ def render_tor_panel() -> None:
                         st.image(qr_png, width=240)
                 if st.button(trans.get("ui_btn_tor_hide_pairing", "🙈 Hide pairing code"), key="btn_tor_hide_pairing", use_container_width=True):
                     st.session_state.show_tor_pairing = False
-                    _rerun_tor_panel()
+                    _rerun_fragment()
         else:
             st.session_state.show_tor_pairing = False
 
@@ -736,7 +964,7 @@ def import_legacy_messages_from_transcripts() -> int:
 
 def get_available_languages() -> List[str]:
     if not os.path.exists(LANG_DIR):
-        return ["es-ES"]
+        return [DEFAULT_LANGUAGE]
     return sorted([d for d in os.listdir(LANG_DIR) if os.path.isdir(os.path.join(LANG_DIR, d))])
 
 
@@ -753,6 +981,7 @@ def load_language_data(lang_code: str, file_name: str = "gui.json") -> Dict[str,
 
 def apply_language_defaults(lang_code: str) -> None:
     gui_data = load_language_data(lang_code, "gui.json")
+    spam_data = load_language_data(lang_code, "spam.json")
     defaults = gui_data.get("defaults", {})
     conn = sqlite3.connect(DB_PATH)
     if defaults:
@@ -762,32 +991,47 @@ def apply_language_defaults(lang_code: str) -> None:
             conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (db_key, str_val))
     for g_key, g_val in [
         ("wait_seconds", "5"),
+        ("auto_block_spam", "false"),
+        ("spam_cache_days", "7"),
         ("caller_gain", "1.5"),
         ("noise_gate_base", "50"),
         ("vad_start_sensitivity", "LOW"),
         ("vad_end_sensitivity", "HIGH"),
         ("vad_prefix_padding_ms", "500"),
-        ("vad_silence_duration_ms", "500"),
+        ("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)),
         ("protect_initial_greeting", "true")
     ]:
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (g_key, g_val))
+    # Restore the default greeting (legal notice) and default SPAM provider URLs of the selected language
+    default_greeting = gui_data.get("default_legal_warning", "")
+    if default_greeting:
+        conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (f"{lang_code}_initial_greeting", default_greeting))
+    default_providers = spam_data.get("providers", [])
+    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (f"{lang_code}_spam_providers", json.dumps(default_providers, ensure_ascii=False)))
+    conn.execute("DELETE FROM settings WHERE key='spam_providers'")
     conn.commit()
     conn.close()
 
 
 init_db()
 
+# Clear widget session state at the very start of the rerun (before any widgets are instantiated)
+if st.session_state.pop("_clear_session_on_rerun", False):
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+
 available_langs = get_available_languages()
-current_lang = get_config("language", "es-ES")
+current_lang = get_config("language", DEFAULT_LANGUAGE)
 if current_lang not in available_langs and available_langs:
     current_lang = available_langs[0]
 
 trans = load_language_data(current_lang, "gui.json")
 
-if not get_config("assistant_name", ""):
+# Language defaults are written only on the first run of a language, never because a field was left empty.
+if not has_config("assistant_name"):
     apply_language_defaults(current_lang)
 
-if not get_config("initial_greeting", ""):
+if not has_config("initial_greeting"):
     set_config("initial_greeting", trans.get("default_legal_warning", ""))
 
 current_assistant_name = get_config("assistant_name", "Assistant")
@@ -797,7 +1041,7 @@ st.set_page_config(
     page_icon="📞",
     layout="wide"
 )
-st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.0")
+st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.6")
 
 st.markdown("""
 <style>
@@ -847,7 +1091,8 @@ _live_refresh_html = """
 <script>
 const runLiveRefresh = () => {
     setTimeout(() => {
-        window.parent.document.querySelector('section.main').click();
+        const mainSection = window.parent.document.querySelector('section.main');
+        if (mainSection) mainSection.click();
         runLiveRefresh();
     }, 3000);
 };
@@ -875,8 +1120,7 @@ def confirm_language_dialog() -> None:
             conn.commit()
             conn.close()
             st.session_state.pending_lang = None
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
+            st.session_state["_clear_session_on_rerun"] = True
             st.rerun()
     with c_defaults:
         if st.button(target_trans.get("modal_btn_defaults", "🔄 Load Defaults"), key="modal_defaults_btn"):
@@ -886,24 +1130,18 @@ def confirm_language_dialog() -> None:
             conn.close()
             apply_language_defaults(st.session_state.pending_lang)
             st.session_state.pending_lang = None
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
+            st.session_state["_clear_session_on_rerun"] = True
             st.rerun()
     with c_keep:
         if st.button(target_trans.get("modal_btn_keep", "📌 Keep Current"), key="modal_keep_btn"):
-            old_lang = get_config("language", "es-ES")
+            old_lang = get_config("language", DEFAULT_LANGUAGE)
             target_lang = st.session_state.pending_lang
-            localized_keys = [
-                "boss_name", "assistant_name", "assistant_gender", "owner_type",
-                "priority_keywords", "memory_rules", "business_description",
-                "expected_calls", "initial_greeting", "extra_prompt", "text_model"
-            ]
 
             conn = sqlite3.connect(DB_PATH)
-            for key in localized_keys:
+            for key in LOCALIZED_KEYS:
                 old_key = f"{old_lang}_{key}"
                 res = conn.execute("SELECT value FROM settings WHERE key=?", (old_key,)).fetchone()
-                if res is None:
+                if res is None and key != "spam_providers":
                     res = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
                 val = res[0] if res else ""
                 target_key = f"{target_lang}_{key}"
@@ -913,8 +1151,7 @@ def confirm_language_dialog() -> None:
             conn.close()
 
             st.session_state.pending_lang = None
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
+            st.session_state["_clear_session_on_rerun"] = True
             st.rerun()
     with c_cancel:
         if st.button(target_trans.get("modal_btn_cancel", "❌ Cancel"), key="modal_cancel_btn"):
@@ -923,6 +1160,8 @@ def confirm_language_dialog() -> None:
 
 
 CALLS_PAGE_SIZE = 20
+MESSAGES_PAGE_SIZE = 20
+CONTACTS_PAGE_SIZE = 20
 CONTACT_MEMORY_MODES = ["inherit", "none", "custom"]
 MEMORY_MODE_ALIASES = {"per_number": "only_numbers", "per_category": "only_categories", "global": "only_global"}
 
@@ -935,23 +1174,40 @@ def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=Non
         "custom": "Custom limits"
     })
     current = mem_mode_db if mem_mode_db in ("none", "custom") else "inherit"
+    mode_key = f"{key_prefix}_mem_mode"
+    mode_sync_key = f"{key_prefix}_mem_mode_synced"
+    if st.session_state.get(mode_key) not in CONTACT_MEMORY_MODES or st.session_state.get(mode_sync_key) != current:
+        st.session_state[mode_key] = current
+        st.session_state[mode_sync_key] = current
+
     chosen = st.selectbox(
         trans.get("ui_contact_memory_label", "Memory for this number:"),
         CONTACT_MEMORY_MODES,
-        index=CONTACT_MEMORY_MODES.index(current),
         format_func=lambda x: labels.get(x, x),
-        key=f"{key_prefix}_mem_mode"
+        key=mode_key
     )
     mc1, mc2 = st.columns(2)
     with mc1:
+        calls_default = int(mem_calls or 1)
+        calls_key = f"{key_prefix}_mem_calls"
+        calls_sync_key = f"{key_prefix}_mem_calls_synced"
+        if calls_key not in st.session_state or st.session_state.get(calls_sync_key) != calls_default:
+            st.session_state[calls_key] = calls_default
+            st.session_state[calls_sync_key] = calls_default
         calls_val = st.number_input(
             trans.get("ui_contact_memory_calls", "Calls to remember:"),
-            min_value=1, max_value=20, value=int(mem_calls or 1), step=1, key=f"{key_prefix}_mem_calls"
+            min_value=1, max_value=20, step=1, key=calls_key
         )
     with mc2:
+        days_default = int(mem_days or 30)
+        days_key = f"{key_prefix}_mem_days"
+        days_sync_key = f"{key_prefix}_mem_days_synced"
+        if days_key not in st.session_state or st.session_state.get(days_sync_key) != days_default:
+            st.session_state[days_key] = days_default
+            st.session_state[days_sync_key] = days_default
         days_val = st.number_input(
             trans.get("ui_contact_memory_days", "Max age (days):"),
-            min_value=1, max_value=365, value=int(mem_days or 30), step=1, key=f"{key_prefix}_mem_days"
+            min_value=1, max_value=365, step=1, key=days_key
         )
     if chosen == "custom":
         return "custom", int(calls_val), int(days_val)
@@ -975,7 +1231,7 @@ with col1:
     conn = sqlite3.connect(DB_PATH)
     total_calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
     calls = conn.execute(
-        "SELECT id, number, date, spam_score, transcript, audio_path, tag, client_name, company, summary "
+        "SELECT id, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary "
         "FROM calls ORDER BY id DESC LIMIT ?",
         (calls_visible,)
     ).fetchall()
@@ -984,7 +1240,7 @@ with col1:
     if calls:
         st.caption(trans.get("ui_calls_showing", "Showing {shown} of {total}").format(shown=len(calls), total=total_calls))
         for call in calls:
-            id_call, number, date, spam_score, transcript, audio_path, tag, client_name, company, summary = call
+            id_call, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary = call
 
             in_progress_str = trans.get("ui_in_progress", "IN PROGRESS")
             if tag and tag.strip() == in_progress_str:
@@ -1002,7 +1258,8 @@ with col1:
 
             tag_display = tag if tag and tag != in_progress_str else trans.get("ui_general_call", "GENERAL CALL")
 
-            with st.expander(f"{prefix} {number}{caller_display} — {date} | {tag_display} (Risk: {spam_score}/100)"):
+            risk_label = trans.get("ui_call_risk", "Risk: {score}/100").format(score=spam_score)
+            with st.expander(f"{prefix} {number}{caller_display} — {date} | {tag_display} ({risk_label})"):
                 if summary and summary.strip():
                     st.info(f"**📋 {trans.get('ui_call_summary', 'AI Summary:')}** {summary}")
 
@@ -1117,11 +1374,22 @@ with col1:
                         tag_options.append(tag_display)
                     tag_current_val = tag_display if tag_display in tag_options else tag_options[-1]
 
+                    # The widget state is the single source of truth: it is seeded through
+                    # session_state (no "index" argument) and re-synced only when the stored
+                    # value changes outside of this widget.
+                    tag_widget_key = f"tag_{id_call}"
+                    tag_synced_key = f"tag_synced_{id_call}"
+                    if (
+                        st.session_state.get(tag_widget_key) not in tag_options
+                        or st.session_state.get(tag_synced_key) != tag_current_val
+                    ):
+                        st.session_state[tag_widget_key] = tag_current_val
+                        st.session_state[tag_synced_key] = tag_current_val
+
                     new_tag = st.selectbox(
                         trans.get("ui_tag_label", "Classification:"),
                         tag_options,
-                        index=tag_options.index(tag_current_val),
-                        key=f"tag_{id_call}"
+                        key=tag_widget_key
                     )
                     if new_tag != tag_current_val:
                         conn_loc = sqlite3.connect(DB_PATH)
@@ -1156,25 +1424,22 @@ with col1:
                 st.write("")
                 c_act1, c_act2, c_act3, c_act4 = st.columns(4)
                 with c_act1:
-                    if audio_path and os.path.exists(audio_path):
+                    if (audio_path and os.path.exists(audio_path)) or (client_audio_path and os.path.exists(client_audio_path)):
                         if st.button(trans.get("ui_btn_delete_audio", "Delete Audio"), key=f"delaud_{id_call}"):
-                            try:
-                                remove_audio_files(audio_path)
-                            except Exception:
-                                pass
+                            for ap_to_del in (audio_path, client_audio_path):
+                                if ap_to_del:
+                                    remove_audio_files(ap_to_del)
                             conn_loc = sqlite3.connect(DB_PATH)
-                            conn_loc.execute("UPDATE calls SET audio_path='' WHERE id=?", (id_call,))
+                            conn_loc.execute("UPDATE calls SET audio_path='', client_audio_path='' WHERE id=?", (id_call,))
                             conn_loc.commit()
                             conn_loc.close()
                             st.toast(trans.get("ui_toast_audio_deleted", "Audio deleted"))
                             st.rerun()
                 with c_act2:
                     if st.button(trans.get("ui_btn_delete_record", "Delete Record"), key=f"delreg_{id_call}"):
-                        if audio_path and os.path.exists(audio_path):
-                            try:
-                                remove_audio_files(audio_path)
-                            except Exception:
-                                pass
+                        for ap_to_del in (audio_path, client_audio_path):
+                            if ap_to_del:
+                                remove_audio_files(ap_to_del)
                         conn_loc = sqlite3.connect(DB_PATH)
                         conn_loc.execute("DELETE FROM calls WHERE id=?", (id_call,))
                         conn_loc.commit()
@@ -1185,10 +1450,12 @@ with col1:
                     if st.button(trans.get("ui_btn_whitelist", "Whitelist"), key=f"wht_{id_call}"):
                         norm_num = normalize_phone_pattern(number)
                         conn_loc = sqlite3.connect(DB_PATH)
-                        conn_loc.execute(
-                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'whitelist', '', '', '')",
-                            (norm_num,)
-                        )
+                        cur = conn_loc.execute("UPDATE contacts SET type='whitelist' WHERE number=?", (norm_num,))
+                        if cur.rowcount == 0:
+                            conn_loc.execute(
+                                "INSERT INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'whitelist', '', '', '')",
+                                (norm_num,)
+                            )
                         conn_loc.commit()
                         conn_loc.close()
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
@@ -1197,10 +1464,12 @@ with col1:
                     if st.button(trans.get("ui_btn_blacklist", "Blacklist"), key=f"blk_{id_call}"):
                         norm_num = normalize_phone_pattern(number)
                         conn_loc = sqlite3.connect(DB_PATH)
-                        conn_loc.execute(
-                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'blacklist', '', '', '')",
-                            (norm_num,)
-                        )
+                        cur = conn_loc.execute("UPDATE contacts SET type='blacklist' WHERE number=?", (norm_num,))
+                        if cur.rowcount == 0:
+                            conn_loc.execute(
+                                "INSERT INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'blacklist', '', '', '')",
+                                (norm_num,)
+                            )
                         conn_loc.commit()
                         conn_loc.close()
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
@@ -1230,10 +1499,11 @@ with col2:
     with st.container(border=True):
         c_imp1, c_imp2 = st.columns([2, 1])
         with c_imp1:
-            show_unread_only = st.checkbox(
+            show_unread_only = db_checkbox(
                 trans.get("ui_messages_unread_only", "Show unread only"),
-                value=False,
-                key="chk_unread_msgs"
+                "show_unread_only",
+                "chk_unread_msgs",
+                False
             )
         with c_imp2:
             if st.button(trans.get("ui_messages_import_btn", "📥 Import Old"), key="btn_import_legacy_msgs", use_container_width=True):
@@ -1242,8 +1512,12 @@ with col2:
                 st.rerun()
 
         filtered_msgs = [m for m in messages_rows if (not show_unread_only or m[7] == 0)]
+        messages_visible = st.session_state.setdefault("messages_visible", MESSAGES_PAGE_SIZE)
         if filtered_msgs:
-            for msg in filtered_msgs:
+            if len(filtered_msgs) > MESSAGES_PAGE_SIZE:
+                st.caption(trans.get("ui_messages_showing", "Showing {shown} of {total} messages").format(
+                    shown=min(messages_visible, len(filtered_msgs)), total=len(filtered_msgs)))
+            for msg in filtered_msgs[:messages_visible]:
                 msg_id, msg_call_id, msg_num, msg_date, msg_time, msg_caller, msg_text, msg_read = msg
                 status_icon = "🟢" if msg_read == 0 else "✅"
                 header_label = f"{status_icon} [{msg_date} {msg_time}] {msg_caller or msg_num} ({msg_num})"
@@ -1268,6 +1542,10 @@ with col2:
                             conn_m.commit()
                             conn_m.close()
                             st.rerun()
+            if len(filtered_msgs) > messages_visible:
+                if st.button(trans.get("ui_btn_show_more", "➕ Show more"), key="messages_show_more", use_container_width=True):
+                    st.session_state.messages_visible = messages_visible + MESSAGES_PAGE_SIZE
+                    st.rerun()
         else:
             st.caption(trans.get("ui_no_messages", "No saved caller messages yet."))
 
@@ -1311,8 +1589,12 @@ with col2:
     contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
 
+    contacts_visible = st.session_state.setdefault("contacts_visible", CONTACTS_PAGE_SIZE)
     if contacts:
-        for idx_c, c_row in enumerate(contacts):
+        if len(contacts) > CONTACTS_PAGE_SIZE:
+            st.caption(trans.get("ui_contacts_showing", "Showing {shown} of {total} rules").format(
+                shown=min(contacts_visible, len(contacts)), total=len(contacts)))
+        for idx_c, c_row in enumerate(contacts[:contacts_visible]):
             c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days = c_row
             badge = "🛡️ WHITELIST" if c_type == "whitelist" else "🚫 BLACKLIST"
             wildcard_badge = " [WILDCARD]" if any(w in c_num for w in ("*", "?")) else ""
@@ -1373,6 +1655,10 @@ with col2:
                         conn_c.close()
                         st.toast(trans.get("ui_toast_record_deleted", "Deleted"))
                         st.rerun()
+        if len(contacts) > contacts_visible:
+            if st.button(trans.get("ui_btn_show_more", "➕ Show more"), key="contacts_show_more", use_container_width=True):
+                st.session_state.contacts_visible = contacts_visible + CONTACTS_PAGE_SIZE
+                st.rerun()
     else:
         st.caption(trans.get("ui_no_contacts", "No contacts or wildcard rules configured yet."))
 
@@ -1472,6 +1758,12 @@ with col3:
                 if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_reboot_no", use_container_width=True):
                     st.session_state.confirm_server_reboot = False
                     st.rerun()
+
+    st.write("---")
+
+    # --- PHONE BLUETOOTH LINK: STATUS & ERROR COUNTERS (reconnection handled by the daemon) ---
+    st.markdown(f"**📶 {trans.get('ui_bt_title', 'Phone Bluetooth connection')}**")
+    render_bluetooth_panel()
 
     st.write("---")
 
@@ -1613,21 +1905,23 @@ with col3:
             conn_sc.close()
             st.toast(trans.get("ui_toast_spam_cache_cleared", "SPAM cache cleared"))
 
+    spam_data = load_language_data(current_lang, "spam.json")
     spam_providers_json = get_config("spam_providers", "")
-    if not spam_providers_json:
-        spam_data = load_language_data(current_lang, "spam.json")
-        spam_urls_list = spam_data.get("providers", [])
-    else:
+    spam_urls_list = []
+    if spam_providers_json:
         try:
             spam_urls_list = json.loads(spam_providers_json)
         except Exception:
             spam_urls_list = []
+    if not spam_urls_list:
+        spam_urls_list = spam_data.get("providers", [])
 
     st.caption(trans.get("ui_spam_providers_desc", "Add one URL per line. Placeholders: {number}, {national}, {e164}"))
     current_spam_text = "\n".join(spam_urls_list)
     new_spam_text = st.text_area(
         trans.get("ui_spam_providers_label", "SPAM URLs:"),
         value=current_spam_text,
+        key=f"spam_urls_textarea_{current_lang}",
         label_visibility="collapsed"
     )
 
@@ -1641,25 +1935,25 @@ with col3:
         if st.button(trans.get("ui_spam_test_btn", "Run SPAM Test"), key="btn_run_spam_test") and test_num_inp.strip():
             active_text_model = get_config("text_model", "gemini-3-flash-preview")
             for tpl in spam_urls_list:
-                formatted_url = format_spam_test_url(tpl, test_num_inp.strip())
+                formatted_url = format_spam_test_url(tpl, test_num_inp.strip(), spam_data)
                 try:
-                    status_code, raw_html = fetch_spam_page_sync(formatted_url)
+                    status_code, raw_html = fetch_spam_page_sync(formatted_url, current_lang)
                     if status_code == 200:
                         clean_txt = clean_html_for_spam(raw_html)
-                        st.success(f"HTTP {status_code} — {formatted_url} ({len(clean_txt)} chars)")
+                        st.success(trans.get("ui_spam_test_http_ok", "HTTP {status} — {url} ({chars} chars)").format(status=status_code, url=formatted_url, chars=len(clean_txt)))
                         st.caption(clean_txt[:500] + ("..." if len(clean_txt) > 500 else ""))
                         verdict = evaluate_spam_text_with_ai(clean_txt, test_num_inp.strip(), active_text_model, current_lang)
                         v_spam = bool(verdict.get("is_spam"))
                         v_score = int(verdict.get("risk_score", 0))
                         v_reason = verdict.get("reason", "")
                         if v_spam or v_score > 70:
-                            st.error(f"🚨 **AI Verdict: SPAM ({v_score}/100)** — {v_reason}")
+                            st.error(trans.get("ui_spam_test_verdict_spam", "🚨 **AI Verdict: SPAM ({score}/100)** — {reason}").format(score=v_score, reason=v_reason))
                         else:
-                            st.info(f"✅ **AI Verdict: CLEAN ({v_score}/100)** — {v_reason}")
+                            st.info(trans.get("ui_spam_test_verdict_clean", "✅ **AI Verdict: CLEAN ({score}/100)** — {reason}").format(score=v_score, reason=v_reason))
                     else:
-                        st.error(f"HTTP {status_code} — {formatted_url}")
+                        st.error(trans.get("ui_spam_test_http_error", "HTTP {status} — {url}").format(status=status_code, url=formatted_url))
                 except Exception as e:
-                    st.error(f"Failed: {formatted_url} -> {e}")
+                    st.error(trans.get("ui_spam_test_failed", "Failed: {url} -> {error}").format(url=formatted_url, error=e))
 
     # --- CONFIGURABLE CONTEXT MEMORY & SUMMARIES ---
     st.write("---")
@@ -1991,7 +2285,7 @@ with col3:
 
         db_slider(
             trans.get("vad_silence_duration_label", "VAD Silence Duration (ms):"),
-            "vad_silence_duration_ms", "slider_vad_silence_duration", "500", int,
+            "vad_silence_duration_ms", "slider_vad_silence_duration", str(DEFAULT_VAD_SILENCE_DURATION_MS), int,
             min_value=200, max_value=2000, step=100
         )
 
@@ -2010,7 +2304,7 @@ with col3:
 
     if new_owner_type != current_owner_type:
         set_config("owner_type", new_owner_type)
-        if not get_config("initial_greeting", ""):
+        if not has_config("initial_greeting"):
             set_config("initial_greeting", trans.get("default_legal_warning", ""))
         st.rerun()
 
