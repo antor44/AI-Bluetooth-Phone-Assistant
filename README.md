@@ -175,7 +175,7 @@ Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Heb
 The assistant's voice and speech language are configured in each language's `assistant.json` file:
 * **`voice_names`:** sets the female and male voices used by Gemini Live (by default `Aoede` for female and `Charon` for male). You can change them to any prebuilt Gemini voice name.
 * **`speech_language_code`:** sets the spoken language code (such as `es-ES` or `en-US`). Leave it empty (`""`) if you want Gemini to detect the language automatically.
-* **Known Gemini 3.8 Live voice limitation:** the accent and pitch/tone of the voice may occasionally drift during a call. This is a known limitation of the **Gemini 3.8 Live** model itself and is especially noticeable with the **female voice in Spanish** (which may occasionally shift to a Latin-American accent or a deeper tone despite the prompt instructions).
+* **Known Gemini 3.8 Live voice limitation:** the accent and pitch/tone of the voice may occasionally drift during a call. This is a known limitation of the **Gemini 3.8 Live** model itself and is especially noticeable with the **female voice in Spanish**.
 
 ---
 
