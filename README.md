@@ -140,7 +140,7 @@ This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire,
 
 *   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases. Since v2.6 each language file starts with a **voice and accent profile** and can set an explicit `speech_language_code` (BCP-47, e.g. `es-ES`); see *Voice Synthesis (TTS) Restrictions* below. Accent drift cannot be fully eliminated with Gemini 3.8 Live; if it persists, try other voices in `voice_names`.
 *   **GUI Personality Changes:** You can radically modify the secretary's personality via the GUI (e.g., changing instructions, strictness, or tone). Note that significant personality changes may affect the reliability of structural commands like hanging up or saving messages.
-*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. For a new language also set `home_country_code` and `home_national_length` in `spam.json`, and adapt the voice and accent profile at the top of the prompt, `speech_language_code`, `voice_names`, and the word lists (`cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). Missing keys fall back to built-in defaults or, for the word lists, simply disable that protection.
+*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. For a new language also set `home_country_code` and `home_national_length` in `spam.json`, and adapt the voice and accent profile at the top of the prompt, `speech_language_code`, `voice_names`, and the word lists (`cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). Always copy **all** the keys from the English or Spanish files: missing keys can cause incomplete texts or unexpected behavior.
 
 ### Recommended Operating Profile
 For a balanced default experience, the recommended profile is:
@@ -202,9 +202,24 @@ chmod +x install_system_deps.sh my_gui.sh
 # The flags can be combined, e.g. ./install_system_deps.sh --with-tor --with-whisper
 ./install_system_deps.sh --with-tor
 ```
-The installer always installs the MP3 encoder `lameenc` for call recordings (if it cannot be installed, recordings are saved as WAV instead).
+The installer always installs the MP3 encoder `lameenc` for call recordings (if it cannot be installed, recordings are saved as WAV instead). It must be run from the installation directory (`~/AI-Bluetooth-Phone-Assistant` by default); it creates and manages the Python virtual environment (`venv`) by itself, so you do not need to activate it.
+
+The switchboard runs its own private Tor instance, so the system-wide `tor` service installed by `--with-tor` is not needed. To disable it: `sudo systemctl disable --now tor`.
 
 After the installer finishes, **reboot your machine once** (`sudo reboot`) so user groups, D-Bus permissions, and Bluetooth kernel rules take effect.
+
+### Updating an Existing Installation
+Run these commands on the PC, or on the Orange Pi / SBC over SSH (adjust the path if you cloned the project elsewhere):
+```bash
+cd ~/AI-Bluetooth-Phone-Assistant
+git pull
+./install_system_deps.sh
+```
+Add `--with-tor` and/or `--with-whisper` if you want those optional components (see above). Users coming from a version older than v2.4 also get the `lameenc` MP3 encoder this way. Existing databases are migrated automatically.
+
+* **Local changes:** if you modified any project file (for example `languages/*`), back it up first, because `git pull` may refuse to overwrite it.
+* **Custom languages:** copy the new keys from the English or Spanish files and translate them (see *Localization*).
+* **Restart:** if you launch it manually, close it and run `./my_gui.sh` again (it can be started from any directory and activates the `venv` automatically). If you use the systemd service: `systemctl --user restart ai-switchboard.service`.
 
 ---
 
@@ -452,7 +467,7 @@ tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
 ##### Option B — Built-in Tor (private onion service, no third parties)
 The switchboard can publish its Web GUI as a **private Tor onion service protected by an access key** (Tor "client authorization"): without the key nobody can even see that the service exists. It needs no account, no open ports and no router configuration, and it works behind CGNAT. The trade-off is speed: pages load slower than on a VPN, and a connection can occasionally fail and need a retry.
 
-1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl`
+1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl`. The switchboard uses its own private Tor instance, so you can disable the system-wide service with `sudo systemctl disable --now tor`.
 2. Open the Web GUI and find the **Remote access (Tor)** panel. Press **▶️ Enable remote access** and wait until the status says **🟢 Active** (the first start can take a minute or two).
 3. The onion address is shown with a **copy button**. Press **🔑 Show pairing code** to see the access key (also with a copy button), the full pairing link that joins both, and a QR code. **Keep them secret**: whoever has them can reach your panel.
 4. Connect a device:
@@ -570,8 +585,8 @@ The official APK (`android/AI-Switchboard.apk`, version 1.0.0) has this SHA-256:
 5. In the app, **scan the QR code**, or paste the pairing text. The GUI shows the onion address and the access key separately: paste the onion address in the first box and the key in the second, or paste the full pairing link in the first box only.
 6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
 
-### 🔍 About the QR scanner (for the very meticulous)
-Scanning the QR code is optional and uses Google’s code scanner, a component of Google Play services. Images are processed on your device and the app only receives the resulting text. It requires Google Play services, which may download the scanner module the first time you use it. If you prefer not to use it, simply paste the onion address and key manually.
+### 🔍 About the QR scanner (optional)
+Scanning the QR code is optional and uses Google's *code scanner*, a component of Google Play services. Images are processed on your device and the app only receives the resulting text. It requires Google Play services, which may download the scanner module the first time you use it. If you prefer not to use it, simply paste the onion address and key manually: the rest of the app never talks to Google.
 
 ### Troubleshooting
 | Problem | What to do |
