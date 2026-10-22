@@ -571,7 +571,7 @@ The official APK (`android/AI-Switchboard.apk`, version 1.0.0) has this SHA-256:
 6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
 
 ### 🔍 About the QR scanner (for the very meticulous)
-Everything above is true for the app itself. The one exception is the optional **QR scan**: it uses Google's *code scanner* component of Google Play services. Google documents that the image is processed on the device and that Google does not store the scan results or images, and the app receives only the text. However it is a Google component: it requires Google Play services, and the first time you use it the phone may download the scanner module from Google. **If you prefer to avoid it completely, do not scan: paste the onion address and key instead** — the rest of the app never talks to Google.
+Scanning the QR code is optional and uses Google’s code scanner, a component of Google Play services. Images are processed on your device and the app only receives the resulting text. It requires Google Play services, which may download the scanner module the first time you use it. If you prefer not to use it, simply paste the onion address and key manually.
 
 ### Troubleshooting
 | Problem | What to do |
