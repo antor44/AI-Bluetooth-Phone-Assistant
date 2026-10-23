@@ -419,6 +419,32 @@ On a headless SBC (e.g., Orange Pi Zero 3 via SSH) or to expose the Web GUI over
 ```
 Then open `http://<YOUR_DEVICE_IP>:8501` from any browser on your local network.
 
+#### 🔒 When is the Web GUI exposed to the local network?
+The launcher decides who can reach the Web GUI (port 8501) like this:
+
+| How you launch it | Desktop session detected? | Web GUI reachable from |
+| :--- | :--- | :--- |
+| `./my_gui.sh` | Yes | Only the device itself (`localhost`) |
+| `./my_gui.sh` | **No** (for example, over plain SSH) | **Your whole local network** (`0.0.0.0`) |
+| `./my_gui.sh --lan` (or `--headless`) | Any | Your whole local network (`0.0.0.0`) |
+| `./my_gui.sh --local` | Any | Only the device itself (`localhost`) |
+
+A desktop session is detected when the `DISPLAY` or `WAYLAND_DISPLAY` environment variable has a value. These variables are normally empty when you log in over SSH, so **launching `./my_gui.sh` from an SSH session without any argument opens the Web GUI to your local network automatically** (a connection made with `ssh -X` or `ssh -Y` sets `DISPLAY` and counts as a desktop session).
+
+Because the Web GUI has no login (see the security warning below), you may not want this automatic behavior. Add `--local` to turn it off:
+
+```bash
+./my_gui.sh --local
+```
+
+With `--local` the Web GUI listens only on `127.0.0.1`, even when no desktop is detected, and nobody else on your network can open it. To use it from another computer, create an SSH tunnel from that computer and then open `http://localhost:8501` in its browser:
+
+```bash
+ssh -L 8501:localhost:8501 <user>@<YOUR_DEVICE_IP>
+```
+
+`--local` cannot be combined with `--lan` or `--headless`. It only affects the Web GUI: the assistant daemon starts as usual (in a new terminal window if there is a desktop, in the background otherwise).
+
 #### 📱 Accessing the Web GUI from a Smartphone (Same LAN or Tethering)
 The Web GUI is a regular web page, so you can manage the switchboard directly from the **browser of the phone used for the calls**, or from **any other smartphone or tablet**, as long as the device running the assistant and the phone are on the **same local network** (home Wi-Fi/router) or connected through **tethering** (the phone's Wi-Fi hotspot, or USB tethering).
 
@@ -524,6 +550,8 @@ sudo loginctl enable-linger "$USER"
 systemctl --user daemon-reload
 systemctl --user enable --now ai-switchboard.service
 ```
+
+> 🔒 This service starts the Web GUI with `--lan`, so it is reachable from your local network. If you prefer to keep it reachable only from the device itself, replace `--lan` with `--local` in the `ExecStart` line (and reach it through an SSH tunnel, see *Manual Launch*).
 
 #### Controlling the Background Service
 You can manage the service at any time from your terminal (as well as pausing/stopping the daemon or rebooting the server from the Web GUI):

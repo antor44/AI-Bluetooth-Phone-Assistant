@@ -24,6 +24,13 @@
 #
 # https://github.com/antor44/AI-Bluetooth-Phone-Assistant
 
+# Usage:
+#   ./my_gui.sh            Desktop session detected: Web GUI is local only.
+#                          No desktop session detected: Web GUI is opened to the LAN.
+#   ./my_gui.sh --lan      Always open the Web GUI to the LAN (alias: --headless).
+#   ./my_gui.sh --local    Never open the Web GUI to the LAN, even without a desktop session.
+#   ./my_gui.sh --logs     Follow the live log of the daemon.
+
 # Exit on error
 set -e
 
@@ -74,14 +81,23 @@ show_logs() {
 # ARGUMENT PARSING
 # ---------------------------------------------------------------------------
 FORCE_HEADLESS=0
+FORCE_LOCAL=0
 for arg in "$@"; do
     if [ "$arg" == "--headless" ] || [ "$arg" == "--lan" ]; then
         FORCE_HEADLESS=1
         echo "[INFO] Manual argument detected: Forcing Headless/LAN mode."
+    elif [ "$arg" == "--local" ]; then
+        FORCE_LOCAL=1
+        echo "[INFO] Manual argument detected: Web GUI will only listen on this device (no LAN exposure)."
     elif [ "$arg" == "--logs" ]; then
         show_logs
     fi
 done
+
+if [ "$FORCE_HEADLESS" = "1" ] && [ "$FORCE_LOCAL" = "1" ]; then
+    echo "[ERROR] --local cannot be combined with --lan or --headless."
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # API KEY EXTRACTION (Bypassing non-interactive shell limitations)
@@ -207,7 +223,15 @@ fi
 # Launch the Streamlit application in the current terminal
 echo "[INFO] Starting AI Switchboard Web Interface v2.8..."
 
-if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
+if [ "$FORCE_LOCAL" = "1" ]; then
+    # Local-only mode: the Web GUI never listens on the network, even without a desktop session.
+    echo "[INFO] Local-only mode: the Web GUI listens on 127.0.0.1:8501 and is not reachable from the LAN."
+    if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+        streamlit run gui.py $STREAMLIT_COMMON_OPTS --server.headless=true --server.address=127.0.0.1
+    else
+        streamlit run gui.py $STREAMLIT_COMMON_OPTS --server.address=127.0.0.1
+    fi
+elif [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
     LOCAL_IP=$(hostname -I | awk '{print $1}')
     if [ -z "$LOCAL_IP" ]; then
         LOCAL_IP="YOUR_DEVICE_IP"
