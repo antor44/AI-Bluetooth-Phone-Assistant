@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# my_gui.sh v. 2.6 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 2.8 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #
 # Author: Antonio R.
-# Version: 2.6
+# Version: 2.8
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -149,6 +149,10 @@ if ! python3 -c "import streamlit" &> /dev/null; then
     exit 1
 fi
 
+# Options passed to every Streamlit launch. runner.postScriptGC=false skips the full garbage collection that Streamlit
+# forces after every script run: on slow ARM boards (e.g. Orange Pi Zero 3) it added several seconds to each page load.
+STREAMLIT_COMMON_OPTS="--runner.postScriptGC=false"
+
 # Search for the first available terminal from the preferred list
 SELECTED_TERMINAL=""
 for term in "${PREFERRED_TERMINALS[@]}"; do
@@ -168,13 +172,13 @@ if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0"
 
     case "$SELECTED_TERMINAL" in
         "xfce4-terminal")
-            xfce4-terminal --title="AI Phone Assistant Daemon v2.6" --command="bash -c '$DAEMON_CMD'" &
+            xfce4-terminal --title="AI Phone Assistant Daemon v2.8" --command="bash -c '$DAEMON_CMD'" &
             ;;
         "gnome-terminal")
-            gnome-terminal --title="AI Phone Assistant Daemon v2.6" -- bash -c "$DAEMON_CMD" &
+            gnome-terminal --title="AI Phone Assistant Daemon v2.8" -- bash -c "$DAEMON_CMD" &
             ;;
         "mate-terminal")
-            mate-terminal --title="AI Phone Assistant Daemon v2.6" --command="bash -c '$DAEMON_CMD'" &
+            mate-terminal --title="AI Phone Assistant Daemon v2.8" --command="bash -c '$DAEMON_CMD'" &
             ;;
         *)
             "$SELECTED_TERMINAL" -e bash -c "$DAEMON_CMD" &
@@ -201,7 +205,7 @@ else
 fi
 
 # Launch the Streamlit application in the current terminal
-echo "[INFO] Starting AI Switchboard Web Interface v2.6..."
+echo "[INFO] Starting AI Switchboard Web Interface v2.8..."
 
 if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]; then
     LOCAL_IP=$(hostname -I | awk '{print $1}')
@@ -212,7 +216,7 @@ if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ] || [ "$FORCE_HEADLESS" = "1" ]
     echo "[INFO] ===================================================================="
     echo "[INFO] Open your PC browser and go to:  http://$LOCAL_IP:8501"
     echo "[INFO] ===================================================================="
-    streamlit run gui.py --server.headless=true --server.address=0.0.0.0
+    streamlit run gui.py $STREAMLIT_COMMON_OPTS --server.headless=true --server.address=0.0.0.0
 else
-    streamlit run gui.py
+    streamlit run gui.py $STREAMLIT_COMMON_OPTS
 fi

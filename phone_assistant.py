@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 2.6
+Version: 2.8
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -157,7 +157,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "2.6"
+APP_VERSION = "2.8"
 DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).

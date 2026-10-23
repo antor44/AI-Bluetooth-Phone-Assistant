@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 2.6
+Version: 2.8
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -27,6 +27,7 @@ https://github.com/antor44/AI-Bluetooth-Phone-Assistant
 
 import streamlit as st
 import streamlit.components.v1 as components
+import hashlib
 import html
 import sqlite3
 import os
@@ -1041,7 +1042,7 @@ st.set_page_config(
     page_icon="📞",
     layout="wide"
 )
-st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.6")
+st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.8")
 
 st.markdown("""
 <style>
@@ -1083,6 +1084,30 @@ st.markdown("""
         min-height: 2rem !important;
         padding: 0 0.4rem !important;
         line-height: 1 !important;
+    }
+    /* Pager: first / previous / page number / next / last on a single centered row (any width) */
+    [class*="st-key-pager_"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 0.35rem !important;
+    }
+    [class*="st-key-pager_"] [data-testid="stColumn"] {
+        min-width: 0 !important;
+        width: auto !important;
+        flex: 0 0 auto !important;
+    }
+    [class*="st-key-pager_"] [data-testid="stButton"] button {
+        min-width: 2.2rem !important;
+        min-height: 2.2rem !important;
+        padding: 0 0.5rem !important;
+        line-height: 1 !important;
+    }
+    [class*="st-key-pager_"] [data-testid="stTextInput"] {
+        width: 4.5rem !important;
+    }
+    [class*="st-key-pager_"] input {
+        text-align: center !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1159,12 +1184,72 @@ def confirm_language_dialog() -> None:
             st.rerun()
 
 
-CALLS_PAGE_SIZE = 20
-MESSAGES_PAGE_SIZE = 20
-CONTACTS_PAGE_SIZE = 20
+CALLS_PAGE_SIZE = 10
+MESSAGES_PAGE_SIZE = 10
+CONTACTS_PAGE_SIZE = 10
+
+
+def clamp_page(state_key: str, total_items: int, page_size: int) -> int:
+    """Returns the current page (0-based). The page number (1-based) lives in session state under state_key and is
+    kept inside the pages that exist."""
+    total_pages = max(1, -(-total_items // page_size))
+    try:
+        page = int(st.session_state.get(state_key, 1))
+    except (TypeError, ValueError):
+        page = 1
+    page = min(max(page, 1), total_pages)
+    st.session_state[state_key] = page
+    return page - 1
+
+
+def set_page(state_key: str, target_page: int) -> None:
+    """Callback of the pager buttons."""
+    st.session_state[state_key] = target_page
+
+
+def jump_to_page(state_key: str, box_key: str, total_pages: int) -> None:
+    """Callback of the page number box: goes to the typed page, limited to the existing pages. Text that is not a
+    number is ignored (the box is then reset to the current page)."""
+    try:
+        target = int(str(st.session_state.get(box_key, "")).strip())
+    except ValueError:
+        return
+    st.session_state[state_key] = min(max(target, 1), total_pages)
+
+
+def render_pager(state_key: str, total_items: int, page_size: int, key_prefix: str) -> None:
+    """First / previous / page number box / next / last controls. Nothing is drawn when everything fits in one page."""
+    total_pages = max(1, -(-total_items // page_size))
+    if total_pages <= 1:
+        return
+    page = clamp_page(state_key, total_items, page_size) + 1
+    with st.container(key=f"pager_{key_prefix}"):
+        col_first, col_prev, col_input, col_total, col_next, col_last = st.columns(6)
+        with col_first:
+            st.button("⏮", key=f"{key_prefix}_first_page", help=trans.get("ui_btn_first_page", "First page"),
+                      disabled=page <= 1, on_click=set_page, args=(state_key, 1))
+        with col_prev:
+            st.button("◀", key=f"{key_prefix}_prev_page", help=trans.get("ui_btn_prev_page", "Previous page"),
+                      disabled=page <= 1, on_click=set_page, args=(state_key, page - 1))
+        with col_input:
+            # A text box instead of a number input: a number input marks any value outside its limits as invalid
+            # (red field) and blocks the other controls on phones. The typed text is validated in jump_to_page().
+            box_key = f"{state_key}_box"
+            st.session_state[box_key] = str(page)
+            st.text_input(trans.get("ui_page_go_to", "Go to page"), key=box_key, max_chars=len(str(total_pages)) + 1,
+                          label_visibility="collapsed", on_change=jump_to_page, args=(state_key, box_key, total_pages))
+        with col_total:
+            st.markdown(f"<div style='white-space:nowrap; padding-top:0.45rem'>/ {total_pages}</div>", unsafe_allow_html=True)
+        with col_next:
+            st.button("▶", key=f"{key_prefix}_next_page", help=trans.get("ui_btn_next_page", "Next page"),
+                      disabled=page >= total_pages, on_click=set_page, args=(state_key, page + 1))
+        with col_last:
+            st.button("⏭", key=f"{key_prefix}_last_page", help=trans.get("ui_btn_last_page", "Last page"),
+                      disabled=page >= total_pages, on_click=set_page, args=(state_key, total_pages))
+
+
 CONTACT_MEMORY_MODES = ["inherit", "none", "custom"]
 MEMORY_MODE_ALIASES = {"per_number": "only_numbers", "per_category": "only_categories", "global": "only_global"}
-
 
 def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=None, mem_days=None):
     """Renders the per-number memory controls and returns (mem_mode, mem_calls, mem_days) ready for the database."""
@@ -1227,18 +1312,17 @@ with col1:
         key="toggle_sys_msg"
     )
 
-    calls_visible = st.session_state.setdefault("calls_visible", CALLS_PAGE_SIZE)
     conn = sqlite3.connect(DB_PATH)
     total_calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+    calls_page = clamp_page("calls_page", total_calls, CALLS_PAGE_SIZE)
     calls = conn.execute(
         "SELECT id, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary "
-        "FROM calls ORDER BY id DESC LIMIT ?",
-        (calls_visible,)
+        "FROM calls ORDER BY id DESC LIMIT ? OFFSET ?",
+        (CALLS_PAGE_SIZE, calls_page * CALLS_PAGE_SIZE)
     ).fetchall()
     conn.close()
 
     if calls:
-        st.caption(trans.get("ui_calls_showing", "Showing {shown} of {total}").format(shown=len(calls), total=total_calls))
         for call in calls:
             id_call, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary = call
 
@@ -1264,6 +1348,11 @@ with col1:
                     st.info(f"**📋 {trans.get('ui_call_summary', 'AI Summary:')}** {summary}")
 
                 st.write(f"**{trans.get('ui_transcript', 'Transcript:')}**")
+
+                # Reading mode renders the transcript as a single text element. The per-phrase edit and delete
+                # controls (several widgets per phrase) are built only while this switch is on.
+                edit_mode = st.toggle(trans.get("ui_toggle_edit_phrases", "Edit phrases"), key=f"edit_mode_{id_call}")
+                pending_lines: List[str] = []
 
                 blocks_raw = [b.strip() for b in (transcript or "").split("\n\n") if b.strip()]
                 edit_key = f"edit_phrase_{id_call}"
@@ -1295,7 +1384,14 @@ with col1:
                     elif is_assistant:
                         prefix_md = f"📞 {ts_str} **[{current_assistant_name}]:**"
                     else:
+                        if pending_lines:
+                            st.markdown("\n\n".join(pending_lines))
+                            pending_lines = []
                         st.caption(block)
+                        continue
+
+                    if not edit_mode:
+                        pending_lines.append(f"{prefix_md} {pure_text}")
                         continue
 
                     with st.container(key=f"phrase_{id_call}_{idx_b}"):
@@ -1358,6 +1454,9 @@ with col1:
                                         if st.button("X", key=f"del_no_{id_call}_{idx_b}"):
                                             st.session_state[del_confirm_key] = False
                                             st.rerun()
+
+                if pending_lines:
+                    st.markdown("\n\n".join(pending_lines))
 
                 if audio_path and os.path.exists(audio_path):
                     try:
@@ -1474,10 +1573,7 @@ with col1:
                         conn_loc.close()
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
-        if total_calls > len(calls):
-            if st.button(trans.get("ui_btn_show_more", "Show more"), key="calls_show_more", use_container_width=True):
-                st.session_state.calls_visible = calls_visible + CALLS_PAGE_SIZE
-                st.rerun()
+        render_pager("calls_page", total_calls, CALLS_PAGE_SIZE, "calls")
     else:
         st.info(trans.get("ui_no_calls", "No calls recorded yet."))
 
@@ -1512,12 +1608,10 @@ with col2:
                 st.rerun()
 
         filtered_msgs = [m for m in messages_rows if (not show_unread_only or m[7] == 0)]
-        messages_visible = st.session_state.setdefault("messages_visible", MESSAGES_PAGE_SIZE)
         if filtered_msgs:
-            if len(filtered_msgs) > MESSAGES_PAGE_SIZE:
-                st.caption(trans.get("ui_messages_showing", "Showing {shown} of {total} messages").format(
-                    shown=min(messages_visible, len(filtered_msgs)), total=len(filtered_msgs)))
-            for msg in filtered_msgs[:messages_visible]:
+            messages_page = clamp_page("messages_page", len(filtered_msgs), MESSAGES_PAGE_SIZE)
+            messages_start = messages_page * MESSAGES_PAGE_SIZE
+            for msg in filtered_msgs[messages_start:messages_start + MESSAGES_PAGE_SIZE]:
                 msg_id, msg_call_id, msg_num, msg_date, msg_time, msg_caller, msg_text, msg_read = msg
                 status_icon = "🟢" if msg_read == 0 else "✅"
                 header_label = f"{status_icon} [{msg_date} {msg_time}] {msg_caller or msg_num} ({msg_num})"
@@ -1542,10 +1636,7 @@ with col2:
                             conn_m.commit()
                             conn_m.close()
                             st.rerun()
-            if len(filtered_msgs) > messages_visible:
-                if st.button(trans.get("ui_btn_show_more", "➕ Show more"), key="messages_show_more", use_container_width=True):
-                    st.session_state.messages_visible = messages_visible + MESSAGES_PAGE_SIZE
-                    st.rerun()
+            render_pager("messages_page", len(filtered_msgs), MESSAGES_PAGE_SIZE, "messages")
         else:
             st.caption(trans.get("ui_no_messages", "No saved caller messages yet."))
 
@@ -1589,13 +1680,16 @@ with col2:
     contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
 
-    contacts_visible = st.session_state.setdefault("contacts_visible", CONTACTS_PAGE_SIZE)
     if contacts:
-        if len(contacts) > CONTACTS_PAGE_SIZE:
-            st.caption(trans.get("ui_contacts_showing", "Showing {shown} of {total} rules").format(
-                shown=min(contacts_visible, len(contacts)), total=len(contacts)))
-        for idx_c, c_row in enumerate(contacts[:contacts_visible]):
+        contacts_page = clamp_page("contacts_page", len(contacts), CONTACTS_PAGE_SIZE)
+        contacts_start = contacts_page * CONTACTS_PAGE_SIZE
+        for c_row in contacts[contacts_start:contacts_start + CONTACTS_PAGE_SIZE]:
             c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days = c_row
+            # Widget keys come from the stored contact itself, not from its position in the list: Streamlit keeps the
+            # state of a key and ignores the new default values, so position-based keys showed the data of another
+            # contact after an insertion. The key also changes when the stored row changes (e.g. the quick
+            # Whitelist/Blacklist buttons), so the fields are rebuilt from the database.
+            ckey = hashlib.md5(repr(c_row).encode("utf-8")).hexdigest()[:12]
             badge = "🛡️ WHITELIST" if c_type == "whitelist" else "🚫 BLACKLIST"
             wildcard_badge = " [WILDCARD]" if any(w in c_num for w in ("*", "?")) else ""
             note_str = f" — {c_note}" if c_note else ""
@@ -1605,7 +1699,7 @@ with col2:
                 edit_num = st.text_input(
                     trans.get("ui_form_phone", "Phone / Pattern:"),
                     value=c_num,
-                    key=f"edit_c_num_{idx_c}"
+                    key=f"edit_c_num_{ckey}"
                 )
                 ec1, ec2 = st.columns(2)
                 with ec1:
@@ -1613,28 +1707,28 @@ with col2:
                         trans.get("ui_form_category", "Action:"),
                         ["whitelist", "blacklist"],
                         index=0 if c_type == "whitelist" else 1,
-                        key=f"edit_c_type_{idx_c}"
+                        key=f"edit_c_type_{ckey}"
                     )
                 with ec2:
                     edit_tag = st.text_input(
                         trans.get("ui_form_tag", "Custom Tag:"),
                         value=c_tag or "",
-                        key=f"edit_c_tag_{idx_c}"
+                        key=f"edit_c_tag_{ckey}"
                     )
                 edit_note = st.text_input(
                     trans.get("ui_form_note", "Note:"),
                     value=c_note or "",
-                    key=f"edit_c_note_{idx_c}"
+                    key=f"edit_c_note_{ckey}"
                 )
                 edit_prompt = st.text_area(
                     trans.get("ui_form_prompt", "Custom Instructions:"),
                     value=c_prompt or "",
-                    key=f"edit_c_prompt_{idx_c}"
+                    key=f"edit_c_prompt_{ckey}"
                 )
-                edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{idx_c}", c_mem_mode, c_mem_calls, c_mem_days)
+                edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{ckey}", c_mem_mode, c_mem_calls, c_mem_days)
                 eb1, eb2 = st.columns(2)
                 with eb1:
-                    if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{idx_c}", use_container_width=True):
+                    if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{ckey}", use_container_width=True):
                         norm_new_num = normalize_phone_pattern(edit_num)
                         conn_c = sqlite3.connect(DB_PATH)
                         if norm_new_num != c_num:
@@ -1648,17 +1742,14 @@ with col2:
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
                 with eb2:
-                    if st.button(trans.get("ui_btn_delete_contact", "🗑️ Delete"), key=f"btn_del_c_{idx_c}", use_container_width=True):
+                    if st.button(trans.get("ui_btn_delete_contact", "🗑️ Delete"), key=f"btn_del_c_{ckey}", use_container_width=True):
                         conn_c = sqlite3.connect(DB_PATH)
                         conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
                         conn_c.commit()
                         conn_c.close()
                         st.toast(trans.get("ui_toast_record_deleted", "Deleted"))
                         st.rerun()
-        if len(contacts) > contacts_visible:
-            if st.button(trans.get("ui_btn_show_more", "➕ Show more"), key="contacts_show_more", use_container_width=True):
-                st.session_state.contacts_visible = contacts_visible + CONTACTS_PAGE_SIZE
-                st.rerun()
+        render_pager("contacts_page", len(contacts), CONTACTS_PAGE_SIZE, "contacts")
     else:
         st.caption(trans.get("ui_no_contacts", "No contacts or wildcard rules configured yet."))
 
