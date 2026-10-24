@@ -11,7 +11,7 @@
 # Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 2.8
+# Version: 2.9
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -387,7 +387,7 @@ if [ "$WITH_WHISPER" = "1" ]; then
         fi
     done
 else
-    step "STEPS 6 & 7 — Skipping whisper.cpp build (Default in v2.0)"
+    step "STEPS 6 & 7 — Skipping whisper.cpp build"
     ok "Gemini 3.8 Live transcribes calls natively. To install whisper.cpp later, run: ./install_system_deps.sh --with-whisper"
 fi
 
@@ -449,7 +449,7 @@ fi
 # ============================================================
 echo ""
 echo -e "${C_BLUE}╔══════════════════════════════════════════════════════╗${C_RESET}"
-echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.8)${C_RESET}"
+echo -e "${C_BLUE}║${C_RESET}  ${C_BOLD}${C_GREEN}Installation complete! (v2.9)${C_RESET}"
 echo -e "${C_BLUE}╠══════════════════════════════════════════════════════╣${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  Whisper Mode : ${C_GREEN}${ACCEL}${C_RESET}"
 echo -e "${C_BLUE}║${C_RESET}  Tor access   : $( [ "$WITH_TOR" = "1" ] && echo "tor + openssl installed" || echo "not installed (use --with-tor)" )"

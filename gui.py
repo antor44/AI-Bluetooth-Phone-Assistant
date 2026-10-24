@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 2.8
+Version: 2.9
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -1042,7 +1042,7 @@ st.set_page_config(
     page_icon="📞",
     layout="wide"
 )
-st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.8")
+st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.9")
 
 st.markdown("""
 <style>

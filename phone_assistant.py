@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 2.8
+Version: 2.9
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -157,7 +157,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "2.8"
+APP_VERSION = "2.9"
 DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
@@ -3337,6 +3337,8 @@ def _torrc_quote(path: str) -> str:
 # The Android app polls it periodically and shows a local notification for each new item.
 
 NOTIFY_MAX_ITEMS = 20
+NOTIFY_MAX_WAIT_SECONDS = 30        # upper bound for the optional long-poll ("wait") parameter
+NOTIFY_WAIT_STEP_SECONDS = 1.0      # how often the database is re-checked while waiting
 NOTIFY_SPAM_THRESHOLD = 65          # same threshold used to tag a call as SPAM
 _NOTIFY_SERVER: Optional[ThreadingHTTPServer] = None
 
@@ -3387,7 +3389,12 @@ def build_notify_payload(since_message: Optional[int], since_call: Optional[int]
 
 
 class _NotifyHandler(BaseHTTPRequestHandler):
-    """Serves GET /api/events?since_message=<id>&since_call=<id> as JSON."""
+    """Serves GET /api/events?since_message=<id>&since_call=<id>[&wait=<seconds>] as JSON.
+
+    Without "wait" the answer is immediate. With "wait" (only honoured when both cursors are
+    given) the request is held open until something new exists or the time runs out, which
+    gives near-instant alerts to a client that keeps one request open at all times.
+    """
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -3402,18 +3409,33 @@ class _NotifyHandler(BaseHTTPRequestHandler):
             except (KeyError, IndexError, ValueError):
                 return None
 
+        since_message = _int_param("since_message")
+        since_call = _int_param("since_call")
+        has_cursors = since_message is not None and since_call is not None
+        wait_seconds = (_int_param("wait") or 0) if has_cursors else 0
+        wait_seconds = max(0, min(wait_seconds, NOTIFY_MAX_WAIT_SECONDS))
+        deadline = time.monotonic() + wait_seconds
+
         try:
-            payload = build_notify_payload(_int_param("since_message"), _int_param("since_call"))
+            while True:
+                payload = build_notify_payload(since_message, since_call)
+                if payload["messages"] or payload["calls"] or time.monotonic() >= deadline:
+                    break
+                time.sleep(NOTIFY_WAIT_STEP_SECONDS)
         except Exception:
             self.send_error(500)
             return
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client went away while waiting (normal for phones changing networks).
+            return
 
     def log_message(self, format: str, *args: Any) -> None:
         """Silences the default per-request console logging."""

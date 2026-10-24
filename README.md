@@ -1,6 +1,6 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 2.8](https://img.shields.io/badge/Version-2.8-brightgreen.svg)
+![Version: 2.9](https://img.shields.io/badge/Version-2.9-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
@@ -77,7 +77,7 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
   <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see SBC Audio Note below), so to monitor call audio locally it is recommended to use a USB sound card or USB speakers.</b>
 </div>
 <br>
-Author: Antonio R. | Version: 2.8 | License: GPL 3.0
+Author: Antonio R. | Version: 2.9 | License: GPL 3.0
 
 ---
 
@@ -458,7 +458,7 @@ The Web GUI is a regular web page, so you can manage the switchboard directly fr
 
 > **Tethering note:** when the assistant's device is connected to a phone's hotspot, its IP address is assigned by that phone (usually in a range like `192.168.43.x` or `172.20.10.x`), so check it again with `hostname -I` every time you change network.
 
-> ⚠️ **Security warning:** the Web GUI has **no login or password** and includes sensitive features (call recordings, transcripts, messages, API settings and remote server reboot). Only use it on networks you trust, and **never expose port 8501 to the Internet** (no router port forwarding). For remote access from outside your LAN, see the next section.
+> ⚠️ **Security warning:** the Web GUI has **no login or password** and includes sensitive features (call recordings, transcripts, messages, API settings and remote server reboot). Only use it on networks you trust, and **never expose port 8501 to the Internet** (no router port forwarding). See [Security & Network Exposure](#-security--network-exposure) for a comparison of the access methods and a router checklist. For remote access from outside your LAN, see the next section.
 
 #### 🌍 Remote Access from Anywhere (Outside Your LAN)
 To manage the switchboard while away from home (mobile data, work, travel) **never expose the GUI to the Internet** (no router port forwarding, no `tailscale funnel`): it has no password. There are two safe ways, pick the one that suits you:
@@ -594,6 +594,58 @@ source ~/.bashrc
 
 ---
 
+## 🔐 Security & Network Exposure
+
+The Web GUI (port 8501) has **no login or password**. Whoever can open it can listen to call recordings, read transcripts and messages, change the settings (including the API settings) and reboot the device. So its security depends on **who can reach that port**, and that is decided by how you launch it and how you connect to it.
+
+> ⚠️ **Warnings**
+> * **Never expose port 8501 to the Internet.** No router port forwarding, no `tailscale funnel`, no DMZ / "exposed host".
+> * **LAN mode is plain HTTP.** Nothing is encrypted on your Wi-Fi, and anyone connected to the same network (guests, smart-home gadgets, an infected computer) can open the panel without a password.
+> * **Check how it is launched.** The systemd service of this README starts the Web GUI with `--lan`, and `./my_gui.sh` without arguments from a plain SSH session also opens it to your whole network (see [the table above](#-when-is-the-web-gui-exposed-to-the-local-network)). Use `--local` if you do not need that.
+> * **Do not forward the SSH port to the Internet** unless SSH itself is hardened (key login, no weak passwords). Otherwise the weak point moves from the panel to SSH.
+
+### How safe is each way of access?
+
+| Way of access | Who can reach the panel | Security for a normal user | Notes |
+| :--- | :--- | :--- | :--- |
+| **Local only** (`./my_gui.sh --local`, or the default on a desktop session) | Only the device itself | 🟢 **Very high** | Nothing is published on the network. |
+| **SSH tunnel** (`--local` + `ssh -L 8501:localhost:8501 <user>@<YOUR_DEVICE_IP>`) | Only whoever can log in to the device by SSH | 🟢 **Very high** | Encrypted. It is as strong as your SSH login: use keys or a strong password. |
+| **Private VPN** (Tailscale / WireGuard, see [Option A](#option-a--private-vpn-with-tailscale)) | Only the devices signed in to your VPN | 🟢 **Very high** | Encrypted and works from anywhere. Protect the VPN account (two-factor login if available). |
+| **Built-in Tor** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)) | Only the devices that have the access key | 🟢 **High** | Encrypted end to end. Keep the access key and the pairing link secret. Slower than a VPN. It also works with `--local`: Tor reaches the panel through `127.0.0.1`, so the panel does not need to be opened to your network. |
+| **LAN mode** (`--lan`, systemd service) | Every device on your local network | 🟡 **Lower: depends on your network** | No password and no encryption. Reasonable on a home network you trust, but only if your router does not expose the device (see the checklist below). |
+| **LAN mode + router exposing the device** (port forwarding, UPnP, DMZ / exposed host, open IPv6) | **Anyone on the Internet** | 🔴 **Unsafe** | Your recordings, messages and settings would be public. Never do this. |
+
+If you do not need to open the panel from other devices at home, the safest simple setup is `--local` plus an SSH tunnel or a private VPN for remote access.
+
+### Router checklist (important in LAN mode)
+Opening the panel to your local network is not dangerous by itself: `0.0.0.0` only means "listen on all local interfaces" and does not publish anything to the Internet. It becomes dangerous when the router lets Internet traffic reach the device. Check that:
+
+* There is **no port forwarding / virtual server / NAT rule** from the router to the device's IP address (for port 8501 or any other).
+* **UPnP is turned off**, so no program on your network can open ports on the router by itself.
+* There is **no DMZ / "exposed host" / "default server"** pointing to the device: it sends *all* incoming traffic to that device.
+* If your router gives your devices **public IPv6 addresses**, its IPv6 firewall blocks unsolicited incoming connections (most do by default, but not all).
+
+**Quick test:** with a phone on mobile data (Wi-Fi off), try to open `http://<your public IP address>:8501`. It must **not** load. Your public IP address is shown by any "what is my IP" website. If your Internet provider uses CGNAT (common with mobile and fibre ISPs), incoming connections from the Internet are not possible anyway.
+
+### Optional: firewall on the device (LAN mode)
+To let only your own network reach the panel, even if something changes in the router, add a UFW rule. Run this **on the switchboard device** (PC or Orange Pi), replacing `192.168.1.0/24` with your own network (`ip route` shows it):
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 22 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 8501 proto tcp
+sudo ufw deny 8501/tcp
+sudo ufw enable
+```
+
+* The first line keeps your SSH access: **without it, enabling UFW can lock you out of an SSH session.**
+* The order matters: UFW applies the first rule that matches, so the "allow from your network" rule must come before the `deny`.
+* If you use Tailscale, also run `sudo ufw allow in on tailscale0 to any port 8501 proto tcp` **before** the `deny` line, or the VPN devices will be blocked too.
+
+### Optional: a password inside your network
+The panel has no login of its own. If you want a password even on your LAN, put a reverse proxy with *Basic Authentication* (for example Caddy or nginx) in front of it and start the panel with `--local`, so the proxy is the only way in. The browser asks for the user and password once and remembers them while the browser stays open. Keep in mind that Basic Authentication over plain HTTP sends the password without encryption, so it only keeps casual visitors out: for real protection use an SSH tunnel or a VPN.
+
+---
+
 ## 📱 Android App (AI Switchboard)
 
 A small, free Android app that is the easiest way to reach your switchboard from **anywhere**: it opens the Web GUI through the Tor network built into the app and tells you when a caller leaves a message or a call has finished.
@@ -603,11 +655,11 @@ A small, free Android app that is the easiest way to reach your switchboard from
 ### Why it is worth installing
 * 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
 * 🗄️ **It keeps almost nothing.** The only thing it stores is your pairing key, encrypted with the Android Keystore and excluded from Android backups, plus its own settings. Calls, recordings and messages stay on your switchboard; the panel you see is just a window onto it (like any browser, the phone may cache the pages it shows).
-* 🔔 **Notifications without Google.** Because Tor is private, the app cannot receive instant pushes; instead it *checks your switchboard about every 15 minutes* (Android's minimum for background work; it can be later in battery-saver mode) and notifies you of **new caller messages** and **finished calls with their AI summary**. SPAM and blocked calls are not notified, and a call that left a message produces a single notification. On the lock screen only a generic text is shown; the content appears once you unlock. The first time you switch notifications on, old items are not sent.
+* 🔔 **Notifications without Google.** Because Tor is private, the app cannot receive instant pushes from a server; it *asks* your switchboard instead, and you choose how often in **Settings**: **Power saving** (about every 15 minutes, Android's minimum for background work; lowest battery use, no permanent notification), **Balanced** (every 2, 5 or 10 minutes) or **Instant** (keeps one connection open for near-immediate alerts; highest battery use). Balanced and Instant show a permanent notification, because Android requires it for background services. You can also set a **schedule** with one mode for the day and another for the night (including *Off*). Android can delay the checks in Doze or battery saver. Instant mode works best with the latest switchboard version: with an older one the app notices that the switchboard does not hold requests open and checks about every 15 seconds instead. You are notified of **new caller messages** and **finished calls with their AI summary**. SPAM and blocked calls are not notified, and a call that left a message produces a single notification. On the lock screen only a generic text is shown; the content appears once you unlock. The first time you switch notifications on, old items are not sent.
 * 🆓 **Free and open source (GPL v3).** The *About* button shows the version, the license notice and the licenses of the components it uses.
 
 ### Verify the download (optional)
-The official APK (`android/AI-Switchboard.apk`, version 1.0.0) has this SHA-256: `6a2ebb0383f4b3ba00d301252c8b506acc9e61bfe44964cdb3cca8312e9e8d7d`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
+The official APK (`android/AI-Switchboard.apk`, version 1.1.2) has this SHA-256: `da2779d5d6421336a1ef2e75288ba29ac39efdf9349669bb1f4cb361efc3ff35`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
 
 ### Installation
 1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) (or download it on a PC and copy it over) and open the downloaded file.
@@ -615,7 +667,13 @@ The official APK (`android/AI-Switchboard.apk`, version 1.0.0) has this SHA-256:
 3. Open the app. When it asks for permission to show **notifications**, accept (Android 13+).
 4. On the switchboard, enable **Remote access (Tor)** and press **Show pairing code** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)).
 5. In the app, **scan the QR code**, or paste the pairing text. The GUI shows the onion address and the access key separately: paste the onion address in the first box and the key in the second, or paste the full pairing link in the first box only.
-6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
+6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes; if it seems stuck, press **Refresh**). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
+
+### Using the app
+* **↻ Refresh:** reloads the page. If the page is not showing, or the connection is stuck, it cancels the attempt and restarts the Tor connection from scratch.
+* **⚙️ Settings:** notifications, how often to check, the day/night schedule, the *Allow background activity* button, *About* and *Unpair*.
+* **⏻ Close:** stops the background checks, the permanent notification and Tor, and closes the app completely. Your pairing and settings are kept: when you open the app again, it resumes the checks as you had configured them. After a restart of the phone the background checks also start again by themselves.
+* **Unpair:** forgets the pairing, switches the notifications off and closes the app.
 
 ### 🔍 About the QR scanner (optional)
 Scanning the QR code is optional and uses Google's *code scanner*, a component of Google Play services. Images are processed on your device and the app only receives the resulting text. It requires Google Play services, which may download the scanner module the first time you use it. If you prefer not to use it, simply paste the onion address and key manually: the rest of the app never talks to Google.
@@ -625,11 +683,13 @@ Scanning the QR code is optional and uses Google's *code scanner*, a component o
 |---|---|
 | "App not installed" / the file will not open | Allow *Install unknown apps* for the app you used to open the APK. Android 7–8 has a single "Unknown sources" switch in Security settings. |
 | Play Protect warns about an unknown developer | Expected for apps outside Google Play: *More details → Install anyway*. You can compare the file's SHA-256 with the one published in the release. |
-| Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. Press **Retry**. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
+| Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. If it seems stuck, press **Refresh** (↻) or **Retry**: both cancel the attempt and restart Tor from scratch. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
 | *Cannot reach the switchboard* | The switchboard is off, offline, or remote access is disabled. |
 | *The WebView … does not support the required proxy feature* | Update **Android System WebView** (and Chrome) in Google Play, or on devices without Google Play update the WebView component by the vendor's means. |
 | *Invalid pairing data* | Paste the onion address (56 characters + `.onion`) and the key (52 characters) in the right boxes, or the full `aiphone://pair?…` link. Do not add spaces or quotes. |
-| No notifications | Allow notifications for the app in Android settings; set the app's battery usage to **Unrestricted / Not optimised**; on Xiaomi, Huawei, Oppo, Samsung and similar, allow *autostart* / *background activity* and lock the app in recent apps. Checks happen about every 15 minutes, not instantly, and possibly later in Doze or battery saver. |
+| No notifications | Allow notifications for the app in Android settings; set the app's battery usage to **Unrestricted / Not optimised**; on Xiaomi, Huawei, Oppo, Samsung and similar, allow *autostart* / *background activity* and lock the app in recent apps. In *Power saving* mode checks happen about every 15 minutes, possibly later in Doze or battery saver; choose *Balanced* or *Instant* in the app's Settings for faster alerts. |
+| No permanent notification in *Power saving* mode | Intended. Only *Balanced* and *Instant* use a background service, and Android requires a permanent notification for it. *Power saving* uses Android's own scheduler instead, which is why it uses less battery. |
+| I want to stop the app completely | Use the **⏻ Close** button on the main screen. Pairing and settings are kept. |
 | Notifications appear with a generic text | That is intended on the lock screen; unlock the phone to read them. |
 | The panel is slow | Normal with Tor. For a faster connection use Option A (VPN). |
 | After reinstalling or changing phone | Pair again: the key is deliberately not backed up. |
