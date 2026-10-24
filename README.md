@@ -654,14 +654,24 @@ A small, free Android app that is the easiest way to reach your switchboard from
 
 [**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
 
+### Verify the download (optional)
+The official APK (`android/AI-Switchboard.apk`, version 1.1.2) has this SHA-256: `da2779d5d6421336a1ef2e75288ba29ac39efdf9349669bb1f4cb361efc3ff35`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
+
 ### Why it is worth installing
 * 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
 * 🗄️ **It keeps almost nothing.** The only thing it stores is your pairing key, encrypted with the Android Keystore and excluded from Android backups, plus its own settings. Calls, recordings and messages stay on your switchboard; the panel you see is just a window onto it (like any browser, the phone may cache the pages it shows).
 * 🔔 **Notifications without Google.** Because Tor is private, the app cannot receive instant pushes from a server; it *asks* your switchboard instead, and you choose how often in **Settings**: **Power saving** (about every 15 minutes, Android's minimum for background work; lowest battery use, no permanent notification), **Balanced** (every 2, 5 or 10 minutes) or **Instant** (keeps one connection open for near-immediate alerts; highest battery use). Balanced and Instant show a permanent notification, because Android requires it for background services. You can also set a **schedule** with one mode for the day and another for the night (including *Off*). Android can delay the checks in Doze or battery saver. Instant mode works best with the latest switchboard version: with an older one the app notices that the switchboard does not hold requests open and checks about every 15 seconds instead. You are notified of **new caller messages** and **finished calls with their AI summary**. SPAM and blocked calls are not notified, and a call that left a message produces a single notification. On the lock screen only a generic text is shown; the content appears once you unlock. The first time you switch notifications on, old items are not sent.
 * 🆓 **Free and open source (GPL v3).** The *About* button shows the version, the license notice and the licenses of the components it uses.
 
-### Verify the download (optional)
-The official APK (`android/AI-Switchboard.apk`, version 1.1.2) has this SHA-256: `da2779d5d6421336a1ef2e75288ba29ac39efdf9349669bb1f4cb361efc3ff35`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
+---
+
+## 📸 Screenshots
+
+![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app1.jpg)
+![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app2.jpg)
+![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app3.jpg)
+
+---
 
 ### Installation
 1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) (or download it on a PC and copy it over) and open the downloaded file.
