@@ -65,7 +65,8 @@ class PairingStore(context: Context) {
         prefs.edit().putString("onion", p.onion).putString("key", p.key).apply()
     }
 
+    /** Synchronous on purpose: the process may be killed right after unpairing. */
     fun clear() {
-        prefs.edit().clear().apply()
+        prefs.edit().clear().commit()
     }
 }

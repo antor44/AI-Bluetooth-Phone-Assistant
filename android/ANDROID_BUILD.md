@@ -25,7 +25,7 @@ android/
     └── src/main/
         ├── AndroidManifest.xml
         ├── java/com/aiphone/switchboard/   # Kotlin sources
-        ├── res/                            # strings (English/Spanish), icons
+        ├── res/                            # layouts, theme, icons and texts (values/ = English, values-es/ = Spanish)
         └── assets/licenses/                # license texts shown in About → Licenses
 ```
 
@@ -126,8 +126,10 @@ apksigner verify --print-certs AI-Switchboard.apk
 |---|---|---|
 | App version | `app/build.gradle.kts` → `versionName`, `versionCode` | Raise `versionCode` by 1 for every new build you want to install over a previous one. |
 | Application id | `app/build.gradle.kts` → `applicationId` (`com.aiphone.switchboard`) | If you publish your own modified version, use your own id so it does not clash with the original. |
-| Notifications port | `PollWorker.kt` → `NOTIFY_PORT` (default `8502`) | Must match the **`tor_notify_port`** setting of the switchboard (default `8502`). |
-| Keep Tor connected after each check | `PollWorker.kt` → `RELEASE_TOR_AFTER_POLL` | `true` (default) saves battery; `false` is faster but uses more. |
+| Notifications port | `AppConfig.kt` → `NOTIFY_PORT` (default `8502`) | Must match the **`tor_notify_port`** setting of the switchboard (default `8502`). |
+| Keep Tor connected after each check | `AppConfig.kt` → `RELEASE_TOR_AFTER_POLL` | `true` (default) saves battery; `false` is faster but uses more. |
+| Check intervals and timings | `AppConfig.kt` | Balanced-mode choices (`BALANCED_INTERVAL_CHOICES_MINUTES`), the long-request length of Instant mode, retry delays and the default day/night hours. |
+| Colours and theme | `res/values/colors.xml`, `res/values-night/colors.xml`, `res/values/themes.xml` | One Material 3 theme for all screens, with light and dark colours. |
 | Smaller APK | `app/build.gradle.kts` | Tor ships native libraries for several processors. To keep only ARM devices add inside `defaultConfig`: `ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }` (removes support for x86 emulators). |
 
 ---
@@ -147,9 +149,20 @@ apksigner verify --print-certs AI-Switchboard.apk
 
 ---
 
+## 9b. Adding another language
+
+All texts of the app are in `app/src/main/res/values*/strings.xml`. Android picks the file that matches the phone's language and falls back to English (`values/`).
+
+1. Copy `res/values-es/strings.xml` to a new folder named after the language, for example `res/values-fr/strings.xml` (French), `res/values-de/strings.xml` (German) or `res/values-pt/strings.xml` (Portuguese).
+2. Translate the text between the tags. Do **not** change the `name="..."` values, and keep placeholders such as `%1$d` or `%1$s` exactly as they are.
+3. Strings marked `translatable="false"` (legal texts and licence names) stay in English and must not be copied.
+4. Build again. No Kotlin code needs to change.
+
+If a text is missing in your new file, the English one is shown for that line only.
+
 ## 10. Licenses and notes for redistributing
 
 * The app is licensed under the **GNU GPL v3 or later** (see the `LICENSE` file at the repository root). If you distribute a modified APK you must also make your modified source code available under the same license.
-* The *About → Licenses* screen shows the license notice, the link to the source code and the licenses of the bundled components: Tor (`tor-android`, `jtorctl`; BSD 3-Clause), AndroidX / Kotlin / Kotlinx Coroutines (Apache 2.0) and the Noto Emoji artwork of the icon (Apache 2.0). If you change the icon, update the corresponding entry in `AboutDialog.kt`.
+* The *About → Licenses* screen shows the license notice, the link to the source code and the licenses of the bundled components: Tor (`tor-android`, `jtorctl`; BSD 3-Clause), AndroidX / Kotlin / Kotlinx Coroutines (Apache 2.0) and the Noto Emoji artwork of the icon (Apache 2.0). If you change the icon, update the corresponding entry in `AboutActivity.kt`.
 * The optional **QR scan** uses the Google Play services *code scanner*, a proprietary Google component that is not part of this repository and requires Google Play services. If you need a build without any proprietary component (for example for F-Droid), remove that dependency (`com.google.android.gms:play-services-code-scanner`) and the scan button, and use the paste-the-key pairing instead, or replace it with an open-source scanner.
 * **Never commit** keystores (`*.jks`, `*.keystore`), passwords, `local.properties` or pairing data. The provided `.gitignore` excludes them.

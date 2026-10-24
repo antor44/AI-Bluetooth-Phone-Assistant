@@ -1,22 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AI Switchboard</string>
+
+    <!-- Pairing -->
     <string name="pair_title">Pair with your switchboard</string>
     <string name="pair_hint">Scan the QR code shown by the switchboard, or paste the pairing text.</string>
     <string name="pair_scan">Scan QR code</string>
     <string name="pair_paste_hint">Onion address, or the full pairing text</string>
+    <string name="pair_key_hint">Access key (only if you pasted the onion address above)</string>
     <string name="pair_save">Pair</string>
     <string name="pair_invalid">Invalid pairing data.</string>
     <string name="scan_failed">QR scan failed or was cancelled.</string>
+
+    <!-- Main screen -->
     <string name="connecting">Connecting through Tor… %1$d%%</string>
     <string name="connected">Connected</string>
     <string name="retry">Retry</string>
+    <string name="refresh">Refresh</string>
+    <string name="settings">Settings</string>
+    <string name="back">Back</string>
+    <string name="close_app">Close the app</string>
+    <string name="close_confirm">Close the app? Alerts stop until you open it again. Your pairing and settings are kept.</string>
     <string name="unpair">Unpair</string>
     <string name="unpair_confirm">Remove the pairing from this device? The app will close.</string>
     <string name="error_generic">Connection error: %1$s</string>
     <string name="page_error">Cannot reach the switchboard. It may be offline.</string>
     <string name="webview_unsupported">The WebView of this device does not support the required proxy feature. Update Android System WebView.</string>
-    <string name="notify_switch">Notifications (checked about every 15 min)</string>
+
+    <!-- Notifications -->
     <string name="notify_channel_name">Switchboard alerts</string>
     <string name="notify_channel_desc">New messages and calls received by your switchboard</string>
     <string name="notify_private_title">New switchboard activity</string>
@@ -24,12 +35,60 @@
     <string name="notify_new_call">Call from %1$s</string>
     <string name="notify_unknown_caller">Unknown caller</string>
     <string name="notify_permission_denied">Notifications are blocked. Allow them in the Android settings to use this option.</string>
+
+    <!-- Background service (permanent notification) -->
+    <string name="service_channel_name">Background connection</string>
+    <string name="service_channel_desc">Shown while the app keeps checking your switchboard in the background</string>
+    <string name="service_title">AI Switchboard</string>
+    <string name="service_text_instant">Connected for instant alerts</string>
+    <string name="service_text_balanced">Checking every %1$d min</string>
+    <string name="service_text_saver">Power saving: checking about every %1$d min</string>
+    <string name="service_text_off">Paused: the schedule has notifications turned off</string>
+    <string name="service_special_use_reason" translatable="false">Keeps a private connection to the user\'s own switchboard open through Tor to deliver alerts without Google push services.</string>
+
+    <!-- Settings -->
+    <string name="settings_notify_switch">Notifications</string>
+    <string name="settings_notify_summary">New messages and finished calls. No Google services are used.</string>
+    <string name="settings_section_mode">How often to check</string>
+    <string name="mode_off">Off</string>
+    <string name="mode_saver">Power saving</string>
+    <string name="mode_balanced">Balanced</string>
+    <string name="mode_instant">Instant</string>
+    <string name="mode_saver_desc">About every 15 minutes. Lowest battery use. Android may delay the checks.</string>
+    <string name="mode_balanced_desc">Every few minutes. Moderate battery use. Shows a permanent notification.</string>
+    <string name="mode_instant_desc">Stays connected for near-instant alerts. Highest battery use. Shows a permanent notification.</string>
+    <string name="settings_balanced_interval">Time between checks in Balanced mode</string>
+    <string name="interval_minutes">%1$d min</string>
+    <string name="settings_schedule_switch">Use a schedule</string>
+    <string name="settings_schedule_summary">Choose a different mode for the day and for the night.</string>
+    <string name="settings_day_start">Day starts</string>
+    <string name="settings_day_end">Day ends</string>
+    <string name="settings_day_mode">During the day</string>
+    <string name="settings_night_mode">At night</string>
+    <string name="settings_choose_mode">Choose a mode</string>
+    <string name="settings_pick_time">Select time</string>
+    <string name="settings_section_reliability">Reliability</string>
+    <string name="settings_reliability_hint">Android can pause background apps to save battery. For reliable alerts, allow this app to run in the background. On Xiaomi, Huawei, Oppo, Samsung and similar phones, also enable autostart and lock the app in the recent apps list. While the phone is in deep sleep, even instant alerts can be delayed.</string>
+    <string name="settings_battery_button">Allow background activity</string>
+    <string name="settings_battery_already">Background activity is already allowed.</string>
+
+    <!-- About -->
     <string name="about_button">About</string>
     <string name="about_version">Version %1$s (build %2$d)</string>
     <string name="about_privacy">This app only talks to your own switchboard, through the Tor network. It has no analytics, no ads and no accounts. The pairing key is stored encrypted on this phone and is excluded from Android backups. Scanning the pairing QR code uses the Google Play services code scanner; you can paste the key instead.</string>
     <string name="about_licenses">Licenses</string>
     <string name="about_source">Source code</string>
-    <string name="about_close">Close</string>
-    <string name="about_gpl_notice" translatable="false">AI Switchboard\nCopyright (C) 2026 Antonio R.\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.\n\nThis program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.\n\nThe full license text and the source code are available from the Licenses and Source code buttons.</string>
-    <string name="pair_key_hint">Access key (only if you pasted the onion address above)</string>
+    <string name="about_gpl_notice" translatable="false">AI Switchboard\nCopyright (C) 2026 Antonio R.\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.\n\nThis program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.\n\nThe full license text is listed below, and the source code is available from the Source code button.</string>
+
+    <!-- License entries (names and legal texts stay in English; the explanatory lines are translated) -->
+    <string name="license_app_title" translatable="false">AI Switchboard (this app) - GNU GPL v3</string>
+    <string name="license_app_header" translatable="false">Copyright (C) 2026 Antonio R.\nSource code: %1$s\nLicense: %2$s\n\n</string>
+    <string name="license_tor_title" translatable="false">Tor (tor-android, jtorctl) - BSD 3-Clause</string>
+    <string name="license_tor_header">Embedded Tor by The Tor Project and the Guardian Project.\n%1$s\nCopyright (c) The Tor Project, Inc. and the Guardian Project contributors.\nThe text below is the BSD 3-Clause license these components are distributed under.\n\n</string>
+    <string name="license_androidx_title" translatable="false">AndroidX, Material Components, Kotlin and Kotlinx Coroutines - Apache 2.0</string>
+    <string name="license_androidx_header" translatable="false">Copyright The Android Open Source Project, JetBrains s.r.o. and contributors.\n\n</string>
+    <string name="license_noto_title" translatable="false">Noto Emoji artwork (app icon) - Apache 2.0</string>
+    <string name="license_noto_header">Copyright Google Inc. The app icon is based on a Noto Emoji image.\n%1$s\n\n</string>
+    <string name="license_scanner_title" translatable="false">Google Play services code scanner - Google terms</string>
+    <string name="license_scanner_header">Used only to read the pairing QR code. It is provided by Google Play services at run time and is not part of this app\'s source code. Terms: %1$s\n</string>
 </resources>

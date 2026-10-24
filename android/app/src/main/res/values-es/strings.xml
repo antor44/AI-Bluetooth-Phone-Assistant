@@ -1,22 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Centralita IA</string>
+
+    <!-- Pairing -->
     <string name="pair_title">Vincular con tu centralita</string>
     <string name="pair_hint">Escanea el código QR que muestra la centralita, o pega el texto de emparejamiento.</string>
     <string name="pair_scan">Escanear código QR</string>
     <string name="pair_paste_hint">Dirección onion, o el texto completo de emparejamiento</string>
+    <string name="pair_key_hint">Clave de acceso (solo si arriba pegaste la dirección onion)</string>
     <string name="pair_save">Vincular</string>
     <string name="pair_invalid">Datos de emparejamiento no válidos.</string>
     <string name="scan_failed">El escaneo del QR falló o se canceló.</string>
+
+    <!-- Main screen -->
     <string name="connecting">Conectando a través de Tor… %1$d%%</string>
     <string name="connected">Conectado</string>
     <string name="retry">Reintentar</string>
+    <string name="refresh">Actualizar</string>
+    <string name="settings">Ajustes</string>
+    <string name="back">Atrás</string>
+    <string name="close_app">Cerrar la aplicación</string>
+    <string name="close_confirm">¿Cerrar la aplicación? Los avisos se detienen hasta que la vuelvas a abrir. Se conservan el emparejamiento y los ajustes.</string>
     <string name="unpair">Desvincular</string>
     <string name="unpair_confirm">¿Quitar el emparejamiento de este dispositivo? La aplicación se cerrará.</string>
     <string name="error_generic">Error de conexión: %1$s</string>
     <string name="page_error">No se puede acceder a la centralita. Puede estar apagada.</string>
     <string name="webview_unsupported">El WebView de este dispositivo no admite la función de proxy necesaria. Actualiza Android System WebView.</string>
-    <string name="notify_switch">Avisos (se comprueban cada ~15 min)</string>
+
+    <!-- Notifications -->
     <string name="notify_channel_name">Avisos de la centralita</string>
     <string name="notify_channel_desc">Recados y llamadas nuevas recibidas por tu centralita</string>
     <string name="notify_private_title">Nueva actividad en la centralita</string>
@@ -24,11 +35,51 @@
     <string name="notify_new_call">Llamada de %1$s</string>
     <string name="notify_unknown_caller">Llamante desconocido</string>
     <string name="notify_permission_denied">Las notificaciones están bloqueadas. Permítelas en los ajustes de Android para usar esta opción.</string>
+
+    <!-- Background service (permanent notification) -->
+    <string name="service_channel_name">Conexión en segundo plano</string>
+    <string name="service_channel_desc">Se muestra mientras la app sigue comprobando tu centralita en segundo plano</string>
+    <string name="service_title">Centralita IA</string>
+    <string name="service_text_instant">Conectada para avisos inmediatos</string>
+    <string name="service_text_balanced">Comprobando cada %1$d min</string>
+    <string name="service_text_saver">Ahorro: comprobando más o menos cada %1$d min</string>
+    <string name="service_text_off">En pausa: el horario tiene los avisos apagados</string>
+
+    <!-- Settings -->
+    <string name="settings_notify_switch">Avisos</string>
+    <string name="settings_notify_summary">Recados nuevos y llamadas terminadas. No se usan servicios de Google.</string>
+    <string name="settings_section_mode">Cada cuánto comprobar</string>
+    <string name="mode_off">Apagado</string>
+    <string name="mode_saver">Ahorro</string>
+    <string name="mode_balanced">Equilibrado</string>
+    <string name="mode_instant">Inmediato</string>
+    <string name="mode_saver_desc">Más o menos cada 15 minutos. Es el que menos batería gasta. Android puede retrasar las comprobaciones.</string>
+    <string name="mode_balanced_desc">Cada pocos minutos. Gasto de batería moderado. Muestra una notificación permanente.</string>
+    <string name="mode_instant_desc">Se mantiene conectada para avisar casi al momento. Es el que más batería gasta. Muestra una notificación permanente.</string>
+    <string name="settings_balanced_interval">Tiempo entre comprobaciones en modo Equilibrado</string>
+    <string name="interval_minutes">%1$d min</string>
+    <string name="settings_schedule_switch">Usar un horario</string>
+    <string name="settings_schedule_summary">Elige un modo distinto para el día y para la noche.</string>
+    <string name="settings_day_start">El día empieza a las</string>
+    <string name="settings_day_end">El día termina a las</string>
+    <string name="settings_day_mode">Durante el día</string>
+    <string name="settings_night_mode">Por la noche</string>
+    <string name="settings_choose_mode">Elige un modo</string>
+    <string name="settings_pick_time">Elige la hora</string>
+    <string name="settings_section_reliability">Fiabilidad</string>
+    <string name="settings_reliability_hint">Android puede pausar las apps en segundo plano para ahorrar batería. Para que los avisos lleguen bien, permite que esta app funcione en segundo plano. En móviles Xiaomi, Huawei, Oppo, Samsung y similares, activa también el inicio automático y fija la app en la lista de recientes. Con el móvil en reposo profundo, incluso los avisos inmediatos pueden retrasarse.</string>
+    <string name="settings_battery_button">Permitir actividad en segundo plano</string>
+    <string name="settings_battery_already">La actividad en segundo plano ya está permitida.</string>
+
+    <!-- About -->
     <string name="about_button">Acerca de</string>
     <string name="about_version">Versión %1$s (compilación %2$d)</string>
     <string name="about_privacy">Esta app solo se comunica con tu propia centralita, a través de la red Tor. No tiene analíticas, anuncios ni cuentas. La clave de emparejamiento se guarda cifrada en este teléfono y no entra en las copias de seguridad de Android. Escanear el QR de emparejamiento usa el escáner de Google Play services; puedes pegar la clave en su lugar.</string>
     <string name="about_licenses">Licencias</string>
     <string name="about_source">Código fuente</string>
-    <string name="about_close">Cerrar</string>
-    <string name="pair_key_hint">Clave de acceso (solo si arriba pegaste la dirección onion)</string>
+
+    <!-- License entries (names and legal texts stay in English; the explanatory lines are translated) -->
+    <string name="license_tor_header">Tor incluido en la app, de The Tor Project y el Guardian Project.\n%1$s\nCopyright (c) The Tor Project, Inc. y colaboradores del Guardian Project.\nEl texto de abajo es la licencia BSD de 3 cláusulas con la que se distribuyen estos componentes.\n\n</string>
+    <string name="license_noto_header">Copyright Google Inc. El icono de la app se basa en una imagen de Noto Emoji.\n%1$s\n\n</string>
+    <string name="license_scanner_header">Se usa solo para leer el QR de emparejamiento. Lo proporciona Google Play services mientras la app funciona y no forma parte del código fuente de esta app. Condiciones: %1$s\n</string>
 </resources>

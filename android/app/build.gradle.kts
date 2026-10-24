@@ -11,8 +11,8 @@ android {
         applicationId = "com.aiphone.switchboard"   // change to your own id before publishing
         minSdk = 24                                  // tor-android requires API 24+
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 4
+        versionName = "1.1.2"
     }
 
     buildTypes {
@@ -38,7 +38,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 
-    // Periodic background poll for notifications (every ~15 min)
+    // Material Components: modern buttons, switches, cards and time picker
+    implementation("com.google.android.material:material:1.12.0")
+
+    // Periodic background poll for notifications (power-saving mode, ~every 15 min)
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // Embedded Tor (Guardian Project) + its control library
