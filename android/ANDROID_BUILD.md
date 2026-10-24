@@ -145,7 +145,7 @@ apksigner verify --print-certs AI-Switchboard.apk
 | *The keystore was tampered with, or password incorrect* | Wrong keystore or key password. |
 | *INSTALL_FAILED_UPDATE_INCOMPATIBLE* / "App not installed" over an existing install | The installed app was signed with a different key. Uninstall it first. |
 | The app installs but the old icon stays | Uninstall the previous version; the launcher caches icons. |
-| *Connecting through Tor…* never finishes | The first connection can take 1–3 minutes; check that the switchboard's *Remote access (Tor)* panel is **Active** and that your network does not block Tor. |
+| *Connecting through Tor…* never finishes | The first connection can take 1–3 minutes; if it seems stuck, press **Refresh** (↻) or **Retry**, which restart Tor from scratch. Check that the switchboard's *Remote access (Tor)* panel is **Active** and that your network does not block Tor. |
 
 ---
 
