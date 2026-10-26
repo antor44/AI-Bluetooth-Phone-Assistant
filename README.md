@@ -223,7 +223,9 @@ This is why audio quality matters so much for hold:
 * Background voices (a TV, for example) are transcribed during hold too; if their words happen to contain a return phrase, they can **wake her up**, and their noise can make her **react late** to the real caller.
 * If the gate is too high or the gain too low, the caller who comes back with a soft voice is **not heard**; she keeps waiting, and the wait limit may end the call.
 
-The optional final transcription with Whisper only improves the **saved** text (it appears next to the live text). The live decisions (hold, goodbye, priority) use the live transcription, and Whisper only receives the audio that passed the gate and the echo suppression, so it cannot recover what was muted.
+**What the optional transcription modes (Whisper.cpp / Gemini Flash 3) change:** none of them changes the live decisions. Hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking.
+* **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
+* **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
 
 ### TV or voices behind the caller
 This is the hardest case, because the secretary cannot tell a TV from a person.
