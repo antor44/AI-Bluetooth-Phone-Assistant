@@ -163,19 +163,15 @@ For the audio, echo and voice-detection settings (answer speed, hold mode, trans
 
 ## 🔊 Audio, Echo & Voice Detection Tuning Guide
 
-The secretary can only react to what she hears. The **Audio, Echo & VAD Tuning** block of the Web GUI controls how the caller's voice is filtered, amplified and handed to Gemini Live, and how Gemini decides when the caller starts and stops speaking. These settings therefore affect:
+> ✅ **You probably do not need this section.** The default values work well in most cases, so if your calls sound and transcribe fine, leave everything as it is. Come here only if you notice a specific problem (she answers too slowly, interrupts the caller, misses quiet voices, reacts to noise…). The parts marked **🧪 Advanced** are for the curious and for experienced users; you can skip them.
+
+The secretary can only react to what she hears. The **Audio, Echo & VAD Tuning** block of the Web GUI controls how the caller's voice is cleaned, how loud it is and how the system decides when the caller starts and stops talking (*VAD* = Voice Activity Detection, the part of Gemini Live that notices when somebody is speaking). That affects:
 
 * **How fast she answers:** how long she waits before deciding that the caller has finished.
 * **Interruptions:** whether noise makes her stop or answer for nothing, and whether she misses a quiet caller.
-* **Hold mode:** it is activated, kept and ended by the *words* the caller says (for example "one moment"), so a poor transcript can mean a missed hold or a false wake-up.
-* **Transcript quality**, and with it everything decided from the text: hold, goodbye detection, priority keywords, message capture and the text saved in the call history.
+* **Hold mode and transcript quality:** hold, goodbye detection, priority keywords and saved messages are all decided from the words she understands, so a poor transcript can mean a missed hold or a false wake-up.
 
-Settings are read when a call starts, so a change applies from the **next call**. At the start of each call the terminal prints the gain and base gate in use (`[Mic] Active on node … (Gain: …, Base Gate: …)`).
-
-### How the sound travels
-`Caller → mobile network → caller's phone → your phone → Bluetooth → noise gate → gain → echo / greeting protection → Gemini (voice detection + transcription) → answer`
-
-Every step can lose or distort something, and **no setting can restore what never arrived**. The settings below only tune the part on the switchboard and the voice detection of Gemini.
+Changes apply from the **next call**. Change **one setting at a time**, in small steps, and test with a real call. The table shows the default values, so you can always go back.
 
 ### The settings
 
@@ -183,68 +179,12 @@ Every step can lose or distort something, and **no setting can restore what neve
 | :--- | :--- | :--- | :--- |
 | **Enable Software Echo Suppression (Half-Duplex)** | Off | On / Off | Mutes the caller's audio while the secretary is speaking. |
 | **Protect Initial Greeting from Early Line Interruptions** | On | On / Off | Mutes the caller's audio while the greeting is played. |
-| **Caller Mic Gain (x)** | 1.5 | 0.5 – 5.0 | Makes the caller's voice louder or quieter. |
-| **Base Noise Gate (RMS)** | 50 | 0 – 100 | Level below which sound is treated as silence. |
-| **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily Gemini decides that the caller started speaking. |
-| **VAD Prefix Padding (ms)** | 500 | 50 – 1000 | How much speech must be heard before Gemini accepts that the caller started speaking. |
-| **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily Gemini decides that the caller stopped speaking. |
-| **VAD Silence Duration (ms)** | 700 | 200 – 2000 | How long a silence must last before Gemini decides that the caller finished. |
-
-*VAD = Voice Activity Detection: the part of Gemini Live that decides when somebody is speaking.*
-
-#### Software Echo Suppression (Half-Duplex)
-While the secretary is speaking, whatever comes from the caller's line is replaced by silence before Gemini hears it. **Turn it on** if the secretary hears her own voice coming back (echo from a speakerphone, a car kit or a poor line) and gets confused, repeats herself or interrupts herself. **Leave it off** if there is no echo: with it on, the caller **cannot interrupt** her while she talks, and what the caller says during that time is not heard by Gemini and not transcribed. The call recording still keeps it.
-
-#### Protect Initial Greeting
-During the greeting (at most about 8 seconds, or until it has finished playing) the caller's audio is muted, so clicks, line noise or a quick "hello?" when the call is answered do not cut the greeting. **Keep it on** for a clean, complete greeting. **Turn it off** if you prefer that she can be interrupted from the very first second; the price is that noise at pick-up can cut the greeting, and with it on, words the caller says at once over the greeting are not heard.
-
-#### Caller Mic Gain
-Multiplies the volume of the caller's voice before Gemini hears it. It also changes the volume of the call recording. **Too low:** quiet callers are missed, voice detection fails and transcripts get worse. **Too high:** loud parts distort (clipping) and background noise is amplified, which causes false detections and garbled text. Change it in steps of 0.5. The noise gate below looks at the original level, **before** the gain, so the gain does not change what the gate lets through. Many phones already boost the voice automatically, so avoid stacking a high gain on top of that.
-
-#### Base Noise Gate
-Anything quieter than the gate is replaced by silence before Gemini hears it. The gate **adapts by itself**: the switchboard keeps measuring the background noise of the line and raises the gate when the line is noisy (up to about 65), but never below the base value you set. If you set the base above 65, your value is used as it is. While a call is **on hold** the gate is raised by 15 more (up to 80). The gate works on a very low loudness scale (even 80 is about 52 dB below the maximum level), so it removes **line hiss and very quiet noise**; a TV playing at normal volume next to the caller is usually well above it and **cannot be filtered out with this setting** (see [TV or voices behind the caller](#tv-or-voices-behind-the-caller)). **Lower it** (steps of 5) if quiet callers are cut or words are missing at the start or end. **Raise it** if hiss, hum or distant voices reach Gemini and you see nonsense or `[Noise Filtered]` in the transcript. The gate only affects what Gemini hears: the call recording keeps the full caller audio.
-
-#### VAD Start Sensitivity
-**LOW (default):** Gemini needs clearer speech to decide that somebody started talking: fewer false triggers from clicks, coughs or noise, but a soft-spoken caller may be noticed late. **HIGH:** quieter and shorter sounds count as speech: faster reaction, but noise can interrupt the secretary or start an empty turn.
-
-#### VAD Prefix Padding
-Despite its name, this is the **minimum amount of speech Gemini must hear before it accepts that the caller started talking** (it is not a recording buffer). **Lower values** (50–200 ms): very short words such as "yes", "no" or "hello" are noticed, but short noises also count. **Higher values** (500 ms or more): short noises are ignored, but a very short word may not be recognised and an interruption is noticed a little later.
-
-#### VAD End Sensitivity and VAD Silence Duration
-These two work together and are the main controls of the **answer speed**. *End Sensitivity* says how readily a pause counts as the end of the sentence, and *Silence Duration* says how long that pause must last. Each extra 100 ms of silence duration is 100 ms added to every answer, on top of the time Gemini and the Bluetooth link need.
-* **Faster answers:** End Sensitivity HIGH and a short silence (200–500 ms). Risk: she answers while the caller is only taking a breath or thinking, and cuts into names, phone numbers or spelled words.
-* **More patient:** End Sensitivity LOW and a long silence (1000–2000 ms). Better for slow speakers, older callers and for leaving messages, but answers feel slower and there are awkward silences.
-
-### Hold mode and transcription
-The secretary goes on hold when the words the caller says match the **hold phrases** of the language files ("one moment", "wait a second", …). While on hold she stays silent and ignores everything that is not clearly addressed to her: to resume, what she hears must contain a **return phrase** of the language files, or the assistant's name or the owner's name. Anything else is logged as `Active Hold Ignored background noise / TV`. A call can stay on hold for a limited time (15 minutes in total), and the noise gate is higher during hold.
-
-This is why audio quality matters so much for hold:
-* If the noise garbles "one moment", **hold is not activated** and she keeps talking or asks if the caller is still there.
-* Background voices (a TV, for example) are transcribed during hold too; if their words happen to contain a return phrase, they can **wake her up**, and their noise can make her **react late** to the real caller.
-* If the gate is too high or the gain too low, the caller who comes back with a soft voice is **not heard**; she keeps waiting, and the wait limit may end the call.
-
-**What the optional transcription modes (Whisper.cpp / Gemini Flash 3) change:** none of them changes the live decisions. Hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking.
-* **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
-* **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
-
-### TV or voices behind the caller
-This is the hardest case, because the secretary cannot tell a TV from a person.
-* The **Base Noise Gate does not help much here**: it removes line hiss and very quiet noise, not a TV at normal volume.
-* Gemini hears the TV as speech. While it keeps talking there is **no silence**, so Gemini needs longer to decide that a turn has ended, and the live transcript mixes the TV with the caller's words. This is why the reaction after a hold can be late and the transcription poor.
-* During hold, text that does not contain a return phrase is ignored (`Active Hold Ignored background noise / TV` in the terminal log). So what decides the return is whether the **return phrase is correctly transcribed** among the noise.
-
-What can help:
-1. **Tune the return phrases.** In the `assistant.json` file of your language (`languages/<language>/assistant.json`), inside the `"words"` block, the `"return_triggers"` list holds the phrases that bring her back from hold (the assistant's name and the owner's name also count). The matching is **exact**: single words must match as whole words and longer phrases as text, with no fuzzy or phonetic matching. Add the **short phrases your callers really say** and **the way the transcription actually writes them**; the `Active Hold Ignored background noise / TV '…'` lines of the terminal log show what was heard when the caller came back. Only add entries to the list and keep the keys unchanged. It applies from the next call.
-2. **Do not raise *VAD Prefix Padding*** for this problem: return phrases are short ("hello?") and a high value can make her miss them.
-3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–600 ms. If the TV never stops, this cannot help.
-4. **The caller's side:** a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls makes the biggest difference of all.
-
-### What else changes the result (not adjustable here)
-* **The caller's surroundings:** street, car, wind, a TV or several people talking, speakerphone use. These add noise that no gate can separate from the voice.
-* **The mobile network and the line:** weak coverage and heavy compression produce distorted or missing syllables. A call from a quiet place with good signal is transcribed far better than any setting can achieve.
-* **The phones, on both ends:** many phones apply automatic gain control, noise reduction with several microphones, or AI voice isolation. They can cut the soft ends of words, make background voices appear and disappear, or make the volume pump up and down. If your phone has options such as noise suppression or voice clarity for calls, test with them on and off. The right values for one phone may need a new adjustment after switching phones or after a phone update.
-* **The Bluetooth link:** distance, interference and the narrow call-audio profile used for calls; dropouts mean missing syllables (see [Complex Bluetooth Scenarios](#-complex-bluetooth-scenarios)).
-* **Language and accent:** accuracy changes with the language, the accent and uncommon names.
+| **Caller Mic Gain (x)** | 1.5 | 0.5 – 5.0 | The volume of the caller's voice. |
+| **Base Noise Gate (RMS)** | 50 | 0 – 100 | Sounds quieter than this are treated as silence. |
+| **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily she decides that the caller started speaking. |
+| **VAD Prefix Padding (ms)** | 500 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
+| **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller stopped speaking. |
+| **VAD Silence Duration (ms)** | 700 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
 
 ### Quick troubleshooting
 
@@ -253,15 +193,91 @@ What can help:
 | She answers too slowly | Lower *VAD Silence Duration* by 100 ms; keep *End Sensitivity* HIGH. |
 | She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1000–1500 ms and set *End Sensitivity* to LOW. |
 | She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; try *Start Sensitivity* HIGH or a lower *Prefix Padding*. |
-| She reacts to line hiss or clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at 500 or more; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
+| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at 500 or more; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
 | She hears her own voice and repeats or interrupts herself | Turn on *Software Echo Suppression*. |
-| She asks "are you there?" while the caller speaks softly | The gate is too high, the gain too low, or echo suppression is muting the caller; adjust them in that order. |
+| She asks "are you there?" while the caller speaks softly | The gate may be too high or the gain too low (or echo suppression is muting the caller); adjust them in that order. |
 | The greeting is cut when the call is answered | Keep *Protect Initial Greeting* on. |
 | The first words of a caller who speaks at once are lost | Turn *Protect Initial Greeting* off. |
-| Hold is not activated when the caller says "one moment" | Check the live transcript first. Improve the audio (gain, gate) or lower *Prefix Padding* so a short phrase is not lost. |
+| Hold is not activated when the caller says "one moment" | Improve the audio (gain, gate) or lower *Prefix Padding* so a short phrase is not lost. |
 | Hold ends by itself, or she reacts late when the caller returns, with a TV or voices behind the caller | See [TV or voices behind the caller](#tv-or-voices-behind-the-caller). |
 
-**Tips for tuning:** change **one** setting at a time and in small steps; test with real calls in the conditions you usually have; compare the live transcript in the Web GUI and the terminal log. The defaults are a reasonable starting point for a clean line. Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and what works best depends on your phone and on your usual callers. If a model update on Gemini's side changes the behavior, review these values again.
+Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and what works best depends on your phone and on your usual callers.
+
+### What each setting does
+
+**Software Echo Suppression (Half-Duplex).** While the secretary is speaking, whatever comes from the caller's line is replaced by silence before Gemini hears it. **Turn it on** if she hears her own voice coming back (echo from a speakerphone, a car kit or a poor line) and gets confused, repeats herself or interrupts herself. **Leave it off** otherwise: with it on, the caller **cannot interrupt** her while she talks, and what the caller says in that moment is not heard or transcribed (the call recording still keeps it).
+
+**Protect Initial Greeting.** While the greeting plays (at most about 8 seconds) the caller's audio is muted, so clicks, line noise or a quick "hello?" when the call is answered do not cut the greeting. **Keep it on** for a clean, complete greeting. **Turn it off** if you prefer that she can be interrupted from the very first second; the price is that noise at pick-up can cut the greeting.
+
+**Caller Mic Gain.** The volume of the caller's voice before Gemini hears it; it also changes the volume of the call recording. **Too low:** quiet callers are missed and transcripts get worse. **Too high:** loud parts distort and background noise is amplified, which causes false detections and garbled text. Change it in steps of 0.5. Many phones already boost the voice automatically, so avoid a high gain on top of that.
+
+**Base Noise Gate.** Anything quieter than the gate is replaced by silence before Gemini hears it. It **adapts by itself** to the noise of the line and is a bit higher while a call is on hold. It works on a very low volume scale, so it removes **the hiss of the line and very quiet noise**; a TV playing at normal volume next to the caller is usually well above it and **cannot be filtered out with this setting**. **Lower it** (steps of 5) if quiet callers are cut or words are missing at the start or end. **Raise it** if hiss, hum or distant voices reach Gemini and you see nonsense or `[Noise Filtered]` in the transcript. The gate only affects what Gemini hears: the call recording keeps the full caller audio.
+
+**VAD Start Sensitivity.** **LOW (default):** she needs clearer speech to decide that somebody started talking: fewer false triggers from clicks, coughs or noise, but a soft-spoken caller may be noticed late. **HIGH:** quieter and shorter sounds count as speech: faster reaction, but noise can interrupt her.
+
+**VAD Prefix Padding.** Despite its name, this is the **minimum amount of speech she must hear before accepting that the caller started talking** (it is not a recording buffer). **Lower values** (50–200 ms): very short words such as "yes", "no" or "hello" are noticed, but short noises also count. **Higher values** (500 ms or more): short noises are ignored, but a very short word may be missed.
+
+**VAD End Sensitivity and VAD Silence Duration.** These two work together and are the main controls of the **answer speed**. *End Sensitivity* says how readily a pause counts as the end of the sentence, and *Silence Duration* says how long that pause must last.
+* **Faster answers:** End Sensitivity HIGH and a short silence (200–500 ms). Risk: she answers while the caller is only taking a breath or thinking, and cuts into names, phone numbers or spelled words.
+* **More patient:** End Sensitivity LOW and a long silence (1000–2000 ms). Better for slow speakers, older callers and for leaving messages, but answers feel slower.
+
+<details>
+<summary>🧪 <b>Advanced:</b> exact behavior of the noise gate</summary>
+
+&nbsp;
+
+The gate looks at the original loudness of the caller's audio, **before** the gain is applied, so the gain does not change what the gate lets through. The switchboard keeps measuring the background noise of the line and raises the gate when the line is noisy (up to about 65), but never below the base value you set; if you set the base above 65, your value is used as it is. While a call is on hold the gate is raised by 15 more (up to 80). Even 80 is about 52 dB below the maximum level, which is why it cannot remove a TV. At the start of each call the terminal prints the gain and the base gate in use (`[Mic] Active on node … (Gain: …, Base Gate: …)`).
+
+</details>
+
+### Hold mode
+The secretary goes on hold when the caller says a hold phrase ("one moment", "wait a second"…). While on hold she stays silent and ignores everything that is not clearly addressed to her; she comes back when she hears a return phrase, or her own name or the owner's name. A call can stay on hold for a limited time (15 minutes in total).
+
+Because it all depends on the words she understands, audio quality matters a lot here:
+* If the noise garbles "one moment", **hold is not activated** and she keeps talking or asks if the caller is still there.
+* Background voices (a TV, for example) are also transcribed during hold; their noise can make her **react late** to the real caller, and if their words happen to contain a return phrase they can **wake her up**.
+* If the gate is too high or the gain too low, the caller who comes back with a soft voice is **not heard**; she keeps waiting, and the wait limit may end the call.
+
+### TV or voices behind the caller
+This is the hardest case, because the secretary cannot tell a TV from a person.
+* The **Base Noise Gate does not help much here**: it removes the hiss of the line, not a TV at normal volume.
+* She hears the TV as speech. While it keeps talking there is **no silence**, so she needs longer to decide that the caller finished, and the transcript mixes the TV with the caller's words. That is why the reaction after a hold can be late and the transcription poor.
+
+What can help:
+1. **The caller's side** makes the biggest difference: a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls.
+2. **Do not raise *VAD Prefix Padding*** for this problem: return phrases are short ("hello?") and a high value can make her miss them.
+3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–600 ms. If the TV never stops, this cannot help.
+
+<details>
+<summary>🧪 <b>Advanced:</b> adding return phrases (for the curious and experienced users)</summary>
+
+&nbsp;
+
+During hold, text that does not contain a return phrase is ignored (the terminal log shows `Active Hold Ignored background noise / TV`). So what decides the return is whether a **return phrase is correctly transcribed** among the noise. In the `assistant.json` file of your language (`languages/<language>/assistant.json`), inside the `"words"` block, the `"return_triggers"` list holds those phrases (the assistant's name and the owner's name also count).
+
+The matching is **exact**: single words must match as whole words and longer phrases as text, with no fuzzy or phonetic matching. You can add the **short phrases your callers really say**, written **the way the transcription writes them**; the `Active Hold Ignored background noise / TV '…'` lines of the terminal log (`./my_gui.sh --logs`) show what was heard when the caller came back. Make a backup of the file first, only add entries to the list and keep the keys unchanged. It applies from the next call.
+
+</details>
+
+### What else changes the result (not adjustable here)
+* **The caller's surroundings:** street, car, wind, a TV or several people talking, speakerphone use.
+* **The mobile network and the line:** weak coverage and heavy compression produce distorted or missing syllables. A call from a quiet place with good signal is transcribed far better than any setting can achieve.
+* **The phones, on both ends:** many phones apply automatic gain control, noise reduction with several microphones, or AI voice isolation. They can cut the soft ends of words, make background voices appear and disappear, or make the volume pump up and down. If your phone has options such as noise suppression or voice clarity for calls, test with them on and off. After changing phones, or after a phone update, the values may need a new adjustment.
+* **The Bluetooth link:** distance and interference; dropouts mean missing syllables (see [Complex Bluetooth Scenarios](#-complex-bluetooth-scenarios)).
+* **Language and accent:** accuracy changes with the language, the accent and uncommon names.
+
+No setting can restore what never arrived: a clean line is always the best fix.
+
+<details>
+<summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini Flash 3) change</summary>
+
+&nbsp;
+
+None of them changes the live decisions. Hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking.
+* **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
+* **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
+
+</details>
 
 ---
 
