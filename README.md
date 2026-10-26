@@ -169,7 +169,7 @@ The secretary can only react to what she hears. The **Audio, Echo & VAD Tuning**
 
 * **How fast she answers:** how long she waits before deciding that the caller has finished.
 * **Interruptions:** whether noise makes her stop or answer for nothing, and whether she misses a quiet caller.
-* **Hold mode and transcript quality:** hold, goodbye detection, priority keywords and saved messages are all decided from the words she understands, so a poor transcript can mean a missed hold or a false wake-up.
+* **Hold mode and transcript quality:** the switchboard decides hold, goodbye detection and priority keywords from the words it recognizes, and the AI itself reacts to what it hears, so poor audio can mean a missed hold, a false wake-up or an answer at the wrong moment.
 
 Changes apply from the **next call**. Change **one setting at a time**, in small steps, and test with a real call. The table shows the default values, so you can always go back.
 
@@ -198,7 +198,7 @@ Changes apply from the **next call**. Change **one setting at a time**, in small
 | She asks "are you there?" while the caller speaks softly | The gate may be too high or the gain too low (or echo suppression is muting the caller); adjust them in that order. |
 | The greeting is cut when the call is answered | Keep *Protect Initial Greeting* on. |
 | The first words of a caller who speaks at once are lost | Turn *Protect Initial Greeting* off. |
-| Hold is not activated when the caller says "one moment" | Improve the audio (gain, gate) or lower *Prefix Padding* so a short phrase is not lost. |
+| Hold is not activated when the caller says "one moment" | Improve the audio (gain, gate) or lower *Prefix Padding* so a short phrase is not lost. The switchboard registers the hold only when it recognizes the phrase; the AI may still stay quiet or answer on its own. |
 | Hold ends by itself, or she reacts late when the caller returns, with a TV or voices behind the caller | See [TV or voices behind the caller](#tv-or-voices-behind-the-caller). |
 
 Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and what works best depends on your phone and on your usual callers.
@@ -231,17 +231,19 @@ The gate looks at the original loudness of the caller's audio, **before** the ga
 </details>
 
 ### Hold mode
-The secretary goes on hold when the caller says a hold phrase ("one moment", "wait a second"…). While on hold she stays silent and ignores everything that is not clearly addressed to her; she comes back when she hears a return phrase, or her own name or the owner's name. A call can stay on hold for a limited time (15 minutes in total).
+Hold is handled by **two parts that work at the same time and do not always agree**:
+* **The switchboard's own rules (phrases).** It puts the call on hold when it recognizes a hold phrase ("one moment", "wait a second"…), said by the caller **or by the secretary herself**, and takes it off hold when it recognizes a return phrase, or the assistant's or owner's name, in what the caller says. While on hold it uses a stricter noise gate and a wait limit (15 minutes in total at most).
+* **The AI itself.** Gemini keeps listening all the time and decides on its own whether and when to speak, following its instructions and what it hears. The switchboard does not mute it or give it an order when hold starts or ends (the only exception is a reminder of the time limit when the secretary herself accepts a short hold). So the AI can start talking before the switchboard has noticed the return, stay silent after it has, or react to a TV or to someone near the caller.
 
-Because it all depends on the words she understands, audio quality matters a lot here:
-* If the noise garbles "one moment", **hold is not activated** and she keeps talking or asks if the caller is still there.
-* Background voices (a TV, for example) are also transcribed during hold; their noise can make her **react late** to the real caller, and if their words happen to contain a return phrase they can **wake her up**.
+This is why hold can sometimes seem late, early or inconsistent, and why no setting can make it fully predictable. What helps is to give both parts the cleanest possible audio:
+* If noise garbles "one moment", the switchboard **does not register the hold**, and she may keep talking or ask if the caller is still there.
+* Background voices (a TV, for example) are heard by the AI too: they can make her **react late** or **speak by herself**, and if their words happen to contain a return phrase they can **wake her up**.
 * If the gate is too high or the gain too low, the caller who comes back with a soft voice is **not heard**; she keeps waiting, and the wait limit may end the call.
 
 ### TV or voices behind the caller
 This is the hardest case, because the secretary cannot tell a TV from a person.
 * The **Base Noise Gate does not help much here**: it removes the hiss of the line, not a TV at normal volume.
-* She hears the TV as speech. While it keeps talking there is **no silence**, so she needs longer to decide that the caller finished, and the transcript mixes the TV with the caller's words. That is why the reaction after a hold can be late and the transcription poor.
+* She hears the TV as speech. While it keeps talking there is **no silence**, so she needs longer to decide that the caller finished, and the transcript mixes the TV with the caller's words. The AI may also answer the TV on its own. That is why the reaction after a hold can be late or odd, and the transcription poor.
 
 What can help:
 1. **The caller's side** makes the biggest difference: a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls.
@@ -253,7 +255,7 @@ What can help:
 
 &nbsp;
 
-During hold, text that does not contain a return phrase is ignored (the terminal log shows `Active Hold Ignored background noise / TV`). So what decides the return is whether a **return phrase is correctly transcribed** among the noise. In the `assistant.json` file of your language (`languages/<language>/assistant.json`), inside the `"words"` block, the `"return_triggers"` list holds those phrases (the assistant's name and the owner's name also count).
+During hold, the switchboard ignores text that does not contain a return phrase (the terminal log shows `Active Hold Ignored background noise / TV`). So the switchboard's own detection of the return depends on a **return phrase being correctly transcribed** among the noise. Keep in mind that this only affects the switchboard's rules: the AI hears the audio directly and may react on its own. In the `assistant.json` file of your language (`languages/<language>/assistant.json`), inside the `"words"` block, the `"return_triggers"` list holds those phrases (the assistant's name and the owner's name also count).
 
 The matching is **exact**: single words must match as whole words and longer phrases as text, with no fuzzy or phonetic matching. You can add the **short phrases your callers really say**, written **the way the transcription writes them**; the `Active Hold Ignored background noise / TV '…'` lines of the terminal log (`./my_gui.sh --logs`) show what was heard when the caller came back. Make a backup of the file first, only add entries to the list and keep the keys unchanged. It applies from the next call.
 
@@ -273,7 +275,7 @@ No setting can restore what never arrived: a clean line is always the best fix.
 
 &nbsp;
 
-None of them changes the live decisions. Hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking.
+None of them changes the live decisions. The switchboard's rules for hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking (and the AI itself listens to the audio, not to any transcript).
 * **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
 * **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
 
