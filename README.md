@@ -263,12 +263,12 @@ The matching is **exact**: single words must match as whole words and longer phr
 
 ### What else changes the result (not adjustable here)
 * **The caller's surroundings:** street, car, wind, a TV or several people talking, speakerphone use.
-* **The mobile network and the line:** weak coverage and heavy compression produce distorted or missing syllables. A call from a quiet place with good signal is transcribed far better than any setting can achieve.
-* **The phones, on both ends:** many phones apply automatic gain control, noise reduction with several microphones, or AI voice isolation. They can cut the soft ends of words, make background voices appear and disappear, or make the volume pump up and down. If your phone has options such as noise suppression or voice clarity for calls, test with them on and off. After changing phones, or after a phone update, the values may need a new adjustment.
-* **The Bluetooth link:** distance and interference; dropouts mean missing syllables (see [Complex Bluetooth Scenarios](#-complex-bluetooth-scenarios)).
+* **The mobile network and the line:** weak coverage and heavy compression produce distorted or missing syllables.
+* **The phones, on both ends:** many phones apply automatic gain control, noise reduction with several microphones, or AI voice isolation.
+* **The Bluetooth link:** distance and interference.
 * **Language and accent:** accuracy changes with the language, the accent and uncommon names.
 
-No setting can restore what never arrived: a clean line is always the best fix.
+No setting can restore what never arrived: a call from a quiet place with good signal is transcribed far better than any setting can achieve.
 
 <details>
 <summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini Flash 3) change</summary>
