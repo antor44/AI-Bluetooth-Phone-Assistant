@@ -722,13 +722,18 @@ source ~/.bashrc
 
 ## 🔐 Security & Network Exposure
 
-The Web GUI (port 8501) has **no login or password**. Whoever can open it can listen to call recordings, read transcripts and messages, change the settings (including the API settings) and reboot the device. So its security depends on **who can reach that port**, and that is decided by how you launch it and how you connect to it.
+The startup script automatically selects the access mode for convenience: it uses `--local` when a desktop environment is detected, and `--lan` when running without one (for example, on a headless Orange Pi). LAN mode is more convenient on headless systems because it allows access from other devices on the local network.
 
 > ⚠️ **Warnings**
+> 
+> The Web GUI (port 8501) has **no login or password** by default. Whoever can open it can listen to call recordings, read transcripts and messages, change the settings (including the API settings) and reboot the device. So its security depends on **who can reach that port**, and that is decided by how you launch it and how you connect to it:
+>
+> * **Neither the switchboard code nor Streamlit opens router ports or uses uPnP.**  However, disabling UPnP is recommended as a general precaution, as other programs and devices may use it.
 > * **Never expose port 8501 to the Internet.** No router port forwarding, no `tailscale funnel`, no DMZ / "exposed host".
 > * **LAN mode is plain HTTP.** Nothing is encrypted on your Wi-Fi, and anyone connected to the same network (guests, smart-home gadgets, an infected computer) can open the panel without a password.
 > * **Check how it is launched.** The systemd service of this README starts the Web GUI with `--lan`, and `./my_gui.sh` without arguments from a plain SSH session also opens it to your whole network (see [the table above](#-when-is-the-web-gui-exposed-to-the-local-network)). Use `--local` if you do not need that.
 > * **Do not forward the SSH port to the Internet** unless SSH itself is hardened (key login, no weak passwords). Otherwise the weak point moves from the panel to SSH.
+
 
 ### How safe is each way of access?
 
@@ -737,38 +742,52 @@ The Web GUI (port 8501) has **no login or password**. Whoever can open it can li
 | **Local only** (`./my_gui.sh --local`, or the default on a desktop session) | Only the device itself | 🟢 **Very high** | Nothing is published on the network. |
 | **SSH tunnel** (`--local` + `ssh -L 8501:localhost:8501 <user>@<YOUR_DEVICE_IP>`) | Only whoever can log in to the device by SSH | 🟢 **Very high** | Encrypted. It is as strong as your SSH login: use keys or a strong password. |
 | **Private VPN** (Tailscale / WireGuard, see [Option A](#option-a--private-vpn-with-tailscale)) | Only the devices signed in to your VPN | 🟢 **Very high** | Encrypted and works from anywhere. Protect the VPN account (two-factor login if available). |
-| **Built-in Tor** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)) | Only devices that have the onion address **and** the access key | 🟢 **Very high** | Encrypted end to end, no open ports and no accounts: without the key nobody can even see that the service exists. Keep the access key and the pairing link secret: anyone who can open the panel can see them, so prefer `--local` over LAN mode. Slower than a VPN. It also works with `--local`: Tor reaches the panel through `127.0.0.1`, so the panel does not need to be opened to your network. |
-| **LAN mode** (`--lan`, systemd service) | Every device on your local network | 🟡 **Lower: depends on your network** | No password and no encryption. Reasonable on a home network you trust, but only if your router does not expose the device (see the checklist below). |
-| **LAN mode + router exposing the device** (port forwarding, UPnP, DMZ / exposed host, open IPv6) | **Anyone on the Internet** | 🔴 **Unsafe** | Your recordings, messages and settings would be public. Never do this. |
+| **Built-in Tor** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)) | Only devices with the onion address and the access key | 🟢 **Very high** | Encrypted, no open ports and no third-party accounts. Without the access key, nobody can access the panel, even if they know the onion address. Keep the access key and pairing link secret. Slower than a VPN. It also works with `--local`: Tor reaches the panel through `127.0.0.1`, so the panel does not need to be opened to your network. |
+| **LAN mode** (`--lan`, systemd service) | Devices that can reach the service on your local network | 🟡 **Depends on your network** | No password and no encryption. More convenient, but other devices and programs on the same LAN may be able to access the panel. Use it only on a network you trust, and check that your router does not expose the device to the Internet. |
+| **LAN mode + Internet exposure** (port forwarding, UPnP mappings created by other programs, DMZ / exposed host, or publicly reachable IPv6) | **Potentially anyone on the Internet** | 🔴 **Unsafe** | Your recordings, messages and settings may be accessible to unauthorized users. Never expose the service directly to the Internet. |
 
-If you do not need to open the panel from other devices at home, the safest simple setup is `--local` plus an SSH tunnel, a private VPN or the built-in Tor for remote access.
+> ⚠️ **In short:**
+>
+>  LAN mode is more convenient, but that convenience comes at the cost of increased risk from other devices and programs on the same network. Choose it only if you accept that trade-off.
+>
+>  If you do not need to access the panel from other devices on your local network, the safest simple setup is `--local`. For remote access, use an SSH tunnel, a properly configured private VPN, or the built-in Tor option.
 
 ### Router checklist (important in LAN mode)
-Opening the panel to your local network is not dangerous by itself: `0.0.0.0` only means "listen on all local interfaces" and does not publish anything to the Internet. It becomes dangerous when the router lets Internet traffic reach the device. Check that:
 
-* There is **no port forwarding / virtual server / NAT rule** from the router to the device's IP address (for port 8501 or any other).
-* **UPnP is turned off**, so no program on your network can open ports on the router by itself.
-* There is **no DMZ / "exposed host" / "default server"** pointing to the device: it sends *all* incoming traffic to that device.
-* If your router gives your devices **public IPv6 addresses**, its IPv6 firewall blocks unsolicited incoming connections (most do by default, but not all).
+Listening on `0.0.0.0` means accepting connections through the device's network interfaces. It does **not** publish the service to the Internet by itself. The risk arises if the router or network configuration allows incoming Internet traffic to reach the service.
 
-**Quick test:** with a phone on mobile data (Wi-Fi off), try to open `http://<your public IP address>:8501`. It must **not** load. Your public IP address is shown by any "what is my IP" website. If your Internet provider uses CGNAT (common with mobile and fibre ISPs), incoming connections from the Internet are not possible anyway.
+Check that:
+
+* There is **no port forwarding / virtual server / NAT rule** from the router to the device's IP address for port 8501.
+* **UPnP is turned off**, so other programs and devices cannot automatically open ports on the router.
+* There is **no DMZ / "exposed host" / "default server"** pointing to the device.
+* If your router provides **public IPv6 addresses**, its IPv6 firewall blocks unsolicited incoming connections.
+
+**Quick test:** disconnect your phone from Wi-Fi and use mobile data to open `http://<your public IP address>:8501`. The panel must **not** load. Your public IP address is shown by any "what is my IP" website.
+
+If it does not load, that is a useful check, but it does not replace the router checklist. Some Internet providers use CGNAT for all customers, some only for certain customers, and some can change whether a connection uses CGNAT. Therefore, a failed test does not by itself prove that your router is correctly configured.
 
 ### Optional: firewall on the device (LAN mode)
-To let only your own network reach the panel, even if something changes in the router, add a UFW rule. Run this **on the switchboard device** (PC or Orange Pi), replacing `192.168.1.0/24` with your own network (`ip route` shows it):
+
+You can use UFW to restrict access to the panel to your local network, even if the router configuration changes. Run these commands **on the switchboard device** (PC or Orange Pi), replacing `192.168.1.0/24` with your own LAN subnet, which you can find using `ip route`.
+
+First, check the existing firewall rules with `sudo ufw status`. If you manage the device over SSH, make sure SSH access is allowed before enabling UFW.
 
 ```bash
-sudo ufw allow from 192.168.1.0/24 to any port 22 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 8501 proto tcp
 sudo ufw deny 8501/tcp
 sudo ufw enable
 ```
 
-* The first line keeps your SSH access: **without it, enabling UFW can lock you out of an SSH session.**
-* The order matters: UFW applies the first rule that matches, so the "allow from your network" rule must come before the `deny`.
-* If you use Tailscale, also run `sudo ufw allow in on tailscale0 to any port 8501 proto tcp` **before** the `deny` line, or the VPN devices will be blocked too.
+* The first rule allows devices on your LAN to access the panel; the second blocks other incoming connections to port 8501.
+* If you use Tailscale, add `sudo ufw allow in on tailscale0 to any port 8501 proto tcp` before the deny rule if you also want VPN devices to access the panel.
+* If you connect over SSH, make sure the relevant SSH port is allowed before enabling UFW, or you could lose access to the device.
 
 ### Optional: a password inside your network
-The panel has no login of its own. If you want a password even on your LAN, put a reverse proxy with *Basic Authentication* (for example Caddy or nginx) in front of it and start the panel with `--local`, so the proxy is the only way in. The browser asks for the user and password once and remembers them while the browser stays open. Keep in mind that Basic Authentication over plain HTTP sends the password without encryption, so it only keeps casual visitors out: for real protection use an SSH tunnel or a VPN.
+
+The panel has no built-in login. If you want to protect it with a password, you can put a reverse proxy with **Basic Authentication** (for example, Caddy or nginx) in front of it and run the panel with `--local`, so it only accepts local connections and the proxy provides access to other devices.
+
+Basic Authentication prompts the browser for a username and password, which the browser may retain for the current session. **Important:** over plain HTTP, Basic Authentication does not encrypt credentials in transit. For protection against interception, use HTTPS or access the panel through an SSH tunnel or a properly configured VPN.
 
 ---
 
