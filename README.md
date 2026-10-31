@@ -138,7 +138,10 @@ This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire,
 
 ### 🎧 Complex Bluetooth Scenarios
 1.  **Headsets and Speakers Connected Simultaneously:** If you have Bluetooth headphones or speakers connected to the same Bluetooth adapter as the paired phone, the script extracts the phone's specific MAC address and forces the HFP profile **only on the phone**, leaving your other Bluetooth audio devices alone. *(Note: depending on your BT chip bandwidth, handling A2DP music and HFP bidirectional audio simultaneously may cause slight audio drops. Simultaneous operation of additional Bluetooth headphones or speakers during phone calls has not been tested).*
-2.  **Multiple Phones:** The current AI-Bluetooth-Phone-Assistant version does not distinguish between multiple mobile phones paired simultaneously. This is a limitation of the current implementation, not an inherent Bluetooth or Linux limitation. **Only one mobile phone should be paired at a time** to avoid conflicts and ensure reliable call handling. The code may be extended in the future to support multiple phones independently (see [Section 6: Switching Phones / Unpairing Old Devices](#6-switching-phones-unpairing-old-devices-crucial-for-ofono) below for instructions on how to unpair old phones when switching devices).
+2.  **Multiple Phones:** The current AI-Bluetooth-Phone-Assistant version does not distinguish between multiple mobile phones paired simultaneously. This is a limitation of the current implementation, not an inherent Bluetooth or Linux limitation. **Only one mobile phone should be paired at a time** to avoid conflicts and ensure reliable call handling. The code may be extended in the future to support multiple phones independently (see [Section 6: Switching Phones / Unpairing Old Devices](#switching-phones) below for instructions on how to unpair old phones when switching devices).
+
+<a id="switching-phones"></a>
+### 6. Switching Phones / Unpairing Old Devices (Crucial for oFono!)
 
 ---
 
