@@ -95,7 +95,7 @@ It asks for a password and some identity data. Then:
 ### Option A — Android Studio wizard
 1. **Build → Generate Signed App Bundle / APK…** → choose **APK** → *Next*.
 2. Select your keystore file, alias and passwords (or create a new keystore here instead of using `keytool`) → *Next*.
-3. Choose the **release** build variant, tick both signature versions (**V1 and V2**) → *Create*.
+3. Choose the **release** build variant → *Create*. (Recent Android Studio versions do not ask for signature versions: Gradle picks the right ones automatically. The app needs Android 7.0 or newer, so it is signed with the modern APK signature scheme.)
 4. The APK is created in `app/release/` (Android Studio shows a *locate* link).
 
 ### Option B — Command line
@@ -103,7 +103,8 @@ It asks for a password and some identity data. Then:
 ./gradlew assembleRelease
 # unsigned result: app/build/outputs/apk/release/app-release-unsigned.apk
 
-# apksigner and zipalign are in <Android SDK>/build-tools/<version>/
+# apksigner and zipalign are in <Android SDK>/build-tools/<version>/ and are usually NOT in your PATH:
+# call them with the full path, for example ~/Android/Sdk/build-tools/36.0.0/apksigner
 zipalign -v -p 4 app/build/outputs/apk/release/app-release-unsigned.apk app-release-aligned.apk
 apksigner sign --ks /path/to/my-release-key.jks --out AI-Switchboard.apk app-release-aligned.apk
 apksigner verify --print-certs AI-Switchboard.apk
@@ -126,6 +127,7 @@ apksigner verify --print-certs AI-Switchboard.apk
 |---|---|---|
 | App version | `app/build.gradle.kts` → `versionName`, `versionCode` | Raise `versionCode` by 1 for every new build you want to install over a previous one. |
 | Application id | `app/build.gradle.kts` → `applicationId` (`com.aiphone.switchboard`) | If you publish your own modified version, use your own id so it does not clash with the original. |
+| Embedded Tor version | `app/build.gradle.kts` → `tor-android` (currently `0.4.9.6`) | Keep it on the 0.4.9 series or newer. Since 28 October 2026 the Tor network rejects Tor 0.4.8 and older, so a build with an older `tor-android` cannot connect. Releases `0.4.9.8` and newer need `compileSdk = 37` (and a recent Android Gradle Plugin); with `compileSdk = 36` the newest usable release is `0.4.9.6`. This only affects how the app is built: the app still runs on Android 7.0 or newer. |
 | Notifications port | `AppConfig.kt` → `NOTIFY_PORT` (default `8502`) | Must match the **`tor_notify_port`** setting of the switchboard (default `8502`). |
 | Keep Tor connected after each check | `AppConfig.kt` → `RELEASE_TOR_AFTER_POLL` | `true` (default) saves battery; `false` is faster but uses more. |
 | Check intervals and timings | `AppConfig.kt` | Balanced-mode choices (`BALANCED_INTERVAL_CHOICES_MINUTES`), the long-request length of Instant mode, retry delays and the default day/night hours. |
@@ -139,12 +141,15 @@ apksigner verify --print-certs AI-Switchboard.apk
 | Problem | Solution |
 |---|---|
 | *Unsupported compileSdk 36* / Gradle sync error about the plugin | Update the Android Gradle Plugin (Android Studio's *AGP Upgrade Assistant*), and install *Android SDK Platform 36*. |
+| *Dependency requires compileSdk 37 or higher* (minCompileSdk) after raising `tor-android` | Releases `0.4.9.8` and newer of `tor-android` need `compileSdk = 37`. Either go back to `0.4.9.6`, or raise `compileSdk` to 37, install *Android SDK Platform 37* and update the Android Gradle Plugin. |
+| Kotlin compiler error mentioning `FirIncompatibleClassExpressionChecker` | Update the Kotlin Gradle plugin (`org.jetbrains.kotlin.android`, in the project-level `build.gradle.kts`) to `2.1.20` or newer. |
 | *SDK location not found* | Open the folder in Android Studio once (it creates `local.properties`), or create it yourself with `sdk.dir=/path/to/Android/Sdk`. |
 | *Could not resolve* dependency errors | Check your Internet connection or proxy and sync again. |
 | *Unresolved reference: R.drawable.ic_stat_notify* (or other `R.` resources) | The `res/` folder is incomplete: restore it from the repository. |
 | *The keystore was tampered with, or password incorrect* | Wrong keystore or key password. |
 | *INSTALL_FAILED_UPDATE_INCOMPATIBLE* / "App not installed" over an existing install | The installed app was signed with a different key. Uninstall it first. |
 | The app installs but the old icon stays | Uninstall the previous version; the launcher caches icons. |
+| The app closes, or stays at about 30% on *Connecting through Tor…* | The embedded Tor is too old. In `app/build.gradle.kts` use `info.guardianproject:tor-android` `0.4.9.6` (the project's setting) or newer, sync Gradle and rebuild. Tor 0.4.8 and older are no longer accepted by the Tor network (since 28 October 2026). |
 | *Connecting through Tor…* never finishes | The first connection can take 1–3 minutes; if it seems stuck, press **Refresh** (↻) or **Retry**, which restart Tor from scratch. Check that the switchboard's *Remote access (Tor)* panel is **Active** and that your network does not block Tor. |
 
 ---

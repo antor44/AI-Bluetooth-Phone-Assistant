@@ -16,6 +16,7 @@ import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
@@ -85,7 +86,7 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (mainView.visibility == View.VISIBLE && webView.canGoBack()) webView.goBack() else finish()
+                if (mainView.isVisible && webView.canGoBack()) webView.goBack() else finish()
             }
         })
 
@@ -170,9 +171,9 @@ class MainActivity : AppCompatActivity() {
         val p = currentPairing ?: return
         val tor = (application as App).tor
         val pageIsShowing = connectJob?.isActive != true &&
-            webView.visibility == View.VISIBLE &&
+            webView.isVisible &&
             !tor.released &&
-            retryButton.visibility != View.VISIBLE
+            !retryButton.isVisible
         if (pageIsShowing) {
             statusText.text = getString(R.string.connected)
             webView.reload()
@@ -243,18 +244,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadThroughProxy(host: String, port: Int, p: Pairing) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            // VERIFY: "socks5://" so that Chromium sends the .onion hostname to Tor (remote DNS).
+            val cfg = ProxyConfig.Builder().addProxyRule("socks5://$host:$port").build()
+            ProxyController.getInstance().setProxyOverride(cfg, ContextCompat.getMainExecutor(this)) {
+                statusText.text = getString(R.string.connected)
+                progress.visibility = View.GONE
+                retryButton.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                webView.loadUrl(p.url)
+            }
+        } else {
             showError(getString(R.string.webview_unsupported))
-            return
-        }
-        // VERIFY: "socks5://" so that Chromium sends the .onion hostname to Tor (remote DNS).
-        val cfg = ProxyConfig.Builder().addProxyRule("socks5://$host:$port").build()
-        ProxyController.getInstance().setProxyOverride(cfg, ContextCompat.getMainExecutor(this)) {
-            statusText.text = getString(R.string.connected)
-            progress.visibility = View.GONE
-            retryButton.visibility = View.GONE
-            webView.visibility = View.VISIBLE
-            webView.loadUrl(p.url)
         }
     }
 

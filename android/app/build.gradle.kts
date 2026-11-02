@@ -11,8 +11,8 @@ android {
         applicationId = "com.aiphone.switchboard"   // change to your own id before publishing
         minSdk = 24                                  // tor-android requires API 24+
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.1.2"
+        versionCode = 5
+        versionName = "1.1.3"
     }
 
     buildTypes {
@@ -44,7 +44,9 @@ dependencies {
     // Periodic background poll for notifications (power-saving mode, ~every 15 min)
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
-    // Embedded Tor (Guardian Project) + its control library
-    implementation("info.guardianproject:tor-android:0.4.8.17.2")
+    // Embedded Tor (Guardian Project) + its control library.
+    // The Tor network only accepts Tor 0.4.9 or newer: do not go back to a 0.4.8.x build.
+    // Releases 0.4.9.8 and newer need compileSdk 37; with compileSdk 36 the newest usable one is 0.4.9.6.
+    implementation("info.guardianproject:tor-android:0.4.9.6")
     implementation("info.guardianproject:jtorctl:0.4.5.7")
 }

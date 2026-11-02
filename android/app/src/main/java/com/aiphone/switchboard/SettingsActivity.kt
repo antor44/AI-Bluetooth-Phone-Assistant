@@ -15,6 +15,7 @@ import android.widget.RadioGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.isVisible
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -151,9 +152,9 @@ class SettingsActivity : AppCompatActivity() {
         switchNotify.isChecked = prefs.enabled
         switchSchedule.isChecked = prefs.scheduleEnabled
 
-        cardMode.visibility = if (prefs.scheduleEnabled) View.GONE else View.VISIBLE
-        scheduleContainer.visibility = if (prefs.scheduleEnabled) View.VISIBLE else View.GONE
-        cardInterval.visibility = if (prefs.balancedIsConfigured()) View.VISIBLE else View.GONE
+        cardMode.isVisible = !prefs.scheduleEnabled
+        scheduleContainer.isVisible = prefs.scheduleEnabled
+        cardInterval.isVisible = prefs.balancedIsConfigured()
 
         radioGroupMode.check(
             when (prefs.mode) {

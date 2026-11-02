@@ -336,6 +336,8 @@ The installer always installs the MP3 encoder `lameenc` for call recordings (if 
 
 The switchboard runs its own private Tor instance, so the system-wide `tor` service installed by `--with-tor` is not needed. To disable it: `sudo systemctl disable --now tor`.
 
+> **Tor version:** since 28 October 2026 the Tor network no longer accepts Tor 0.4.8 or older. The `tor` program used by the switchboard must be **0.4.9 or newer** (check with `tor --version`). Ubuntu 24.04 (and Armbian based on it) receives a 0.4.9 build through its normal updates (`sudo apt update && sudo apt upgrade`). Other distributions may still ship an older one; in that case install Tor from the Tor Project's own package repository (<https://support.torproject.org/apt/tor-deb-repo/>).
+
 After the installer finishes, **reboot your machine once** (`sudo reboot`) so user groups, D-Bus permissions, and Bluetooth kernel rules take effect.
 
 ### Updating an Existing Installation
@@ -362,7 +364,7 @@ sudo apt install --install-recommends ofono bluez bluez-tools pipewire pipewire-
 ```
 *(On Armbian SBCs, also install `sudo apt install armbian-firmware-full` so external USB Bluetooth adapters load their required firmware).*
 
-*(Optional, only for Remote Access over Tor:)* `sudo apt install tor openssl`
+*(Optional, only for Remote Access over Tor:)* `sudo apt install tor openssl` — Tor must be version 0.4.9 or newer (see the *Tor version* note above).
 
 #### 2. Crucial Permissions Step
 ```bash
@@ -624,7 +626,7 @@ tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
 ##### Option B — Built-in Tor (private onion service, no third parties)
 The switchboard can publish its Web GUI as a **private Tor onion service protected by an access key** (Tor "client authorization"): without the key nobody can even see that the service exists. It needs no account, no open ports and no router configuration, and it works behind CGNAT. The trade-off is speed: pages load slower than on a VPN, and a connection can occasionally fail and need a retry.
 
-1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl`. The switchboard uses its own private Tor instance, so you can disable the system-wide service with `sudo systemctl disable --now tor`.
+1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl` (Tor must be 0.4.9 or newer: check with `tor --version`). The switchboard uses its own private Tor instance, so you can disable the system-wide service with `sudo systemctl disable --now tor`.
 2. Open the Web GUI and find the **Remote access (Tor)** panel. Press **▶️ Enable remote access** and wait until the status says **🟢 Active** (the first start can take a minute or two).
 3. The onion address is shown with a **copy button**. Press **🔑 Show pairing code** to see the access key (also with a copy button), the full pairing link that joins both, and a QR code. **Keep them secret**: whoever has them can reach your panel.
 4. Connect a device:
@@ -799,7 +801,7 @@ A small, free Android app that is the easiest way to reach your switchboard from
 [**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
 
 ### Verify the download (optional)
-The official APK (`android/AI-Switchboard.apk`, version 1.1.2) has this SHA-256: `da2779d5d6421336a1ef2e75288ba29ac39efdf9349669bb1f4cb361efc3ff35`. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs`.
+The official APK (`android/AI-Switchboard.apk`, version 1.1.3) has this SHA-256: `dd3559d301a4b9b2625e880dd8a49f4e923dda739da768cd57946cfdc4735939`. Use version **1.1.3 or newer**: older versions carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs` (`apksigner` is in the `build-tools/<version>/` folder of the Android SDK, usually not in your PATH: call it with its full path).
 
 ### Why it is worth installing
 * 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
@@ -839,6 +841,7 @@ Scanning the QR code is optional and uses Google's *code scanner*, a component o
 |---|---|
 | "App not installed" / the file will not open | Allow *Install unknown apps* for the app you used to open the APK. Android 7–8 has a single "Unknown sources" switch in Security settings. |
 | Play Protect warns about an unknown developer | Expected for apps outside Google Play: *More details → Install anyway*. You can compare the file's SHA-256 with the one published in the release. |
+| The app closes, or stays at about 30% on *Connecting through Tor…* | Your app is version 1.1.2 or older, which carries Tor 0.4.8. The Tor network stopped accepting it on 28 October 2026. Install version 1.1.3 or newer (same signing certificate, so it installs over the old one). If it still happens, check that the Tor of the switchboard is 0.4.9 or newer (`tor --version`). |
 | Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. If it seems stuck, press **Refresh** (↻) or **Retry**: both cancel the attempt and restart Tor from scratch. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
 | *Cannot reach the switchboard* | The switchboard is off, offline, or remote access is disabled. |
 | *The WebView … does not support the required proxy feature* | Update **Android System WebView** (and Chrome) in Google Play, or on devices without Google Play update the WebView component by the vendor's means. |
