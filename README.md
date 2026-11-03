@@ -801,7 +801,13 @@ A small, free Android app that is the easiest way to reach your switchboard from
 [**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
 
 ### Verify the download (optional)
-The official APK (`android/AI-Switchboard.apk`, version 1.1.3) has this SHA-256: `dd3559d301a4b9b2625e880dd8a49f4e923dda739da768cd57946cfdc4735939`. Use version **1.1.3 or newer**: older versions carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026. It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate. Compare with `sha256sum` and `apksigner verify --print-certs` (`apksigner` is in the `build-tools/<version>/` folder of the Android SDK, usually not in your PATH: call it with its full path).
+The official APK (`android/AI-Switchboard.apk`, version 1.1.3) has this SHA-256: `dd3559d301a4b9b2625e880dd8a49f4e923dda739da768cd57946cfdc4735939`
+
+> ⚠️ Use version **1.1.3 or newer**: older versions carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026.
+
+It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate.
+
+> 🛠️ Compare with `sha256sum` and `apksigner verify --print-certs` (`apksigner` is in the `build-tools/<version>/` folder of the Android SDK, usually not in your PATH: call it with its full path).
 
 ### Why it is worth installing
 * 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
