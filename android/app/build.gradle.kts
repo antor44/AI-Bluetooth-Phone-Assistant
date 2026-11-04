@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,14 +7,18 @@ plugins {
 
 android {
     namespace = "com.aiphone.switchboard"
-    compileSdk = 36
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
 
     defaultConfig {
         applicationId = "com.aiphone.switchboard"   // change to your own id before publishing
         minSdk = 24                                  // tor-android requires API 24+
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.1.3"
+        versionCode = 6
+        versionName = "1.1.4"
     }
 
     buildTypes {
@@ -24,8 +30,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -46,7 +55,7 @@ dependencies {
 
     // Embedded Tor (Guardian Project) + its control library.
     // The Tor network only accepts Tor 0.4.9 or newer: do not go back to a 0.4.8.x build.
-    // Releases 0.4.9.8 and newer need compileSdk 37; with compileSdk 36 the newest usable one is 0.4.9.6.
-    implementation("info.guardianproject:tor-android:0.4.9.6")
+    // Versions 0.4.9.8 and newer of this library require compileSdk 37 (0.4.9.14 needs 37.1 or later).
+    implementation("info.guardianproject:tor-android:0.4.9.14")
     implementation("info.guardianproject:jtorctl:0.4.5.7")
 }
