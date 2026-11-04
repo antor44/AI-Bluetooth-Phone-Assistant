@@ -1,6 +1,6 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 2.9a](https://img.shields.io/badge/Version-2.9a-brightgreen.svg)
+![Version: 2.9.1](https://img.shields.io/badge/Version-2.9.1-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
@@ -77,7 +77,7 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
   <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see SBC Audio Note below), so to monitor call audio locally it is recommended to use a USB sound card or USB speakers.</b>
 </div>
 <br>
-Author: Antonio R. | Version: 2.9a | License: GPL 3.0
+Author: Antonio R. | Version: 2.9.1 | License: GPL 3.0
 
 ---
 
@@ -336,7 +336,7 @@ The installer always installs the MP3 encoder `lameenc` for call recordings (if 
 
 The switchboard runs its own private Tor instance, so the system-wide `tor` service installed by `--with-tor` is not needed. To disable it: `sudo systemctl disable --now tor`.
 
-> **Tor version:** since 28 October 2026 the Tor network no longer accepts Tor 0.4.8 or older. The `tor` program used by the switchboard must be **0.4.9 or newer** (check with `tor --version`). Ubuntu 24.04 (and Armbian based on it) receives a 0.4.9 build through its normal updates (`sudo apt update && sudo apt upgrade`). Other distributions may still ship an older one; in that case install Tor from the Tor Project's own package repository (<https://support.torproject.org/apt/tor-deb-repo/>).
+> **Tor version:** since 28 October 2026 the Tor network no longer accepts Tor 0.4.8 or older. The `tor` program used by the switchboard must be **0.4.9 or newer** (check with `tor --version`). Ubuntu 24.04 (and Armbian based on it) receives a 0.4.9 build through its normal updates (`sudo apt update && sudo apt upgrade`). Keep it updated: the Tor Project has been publishing security fixes every few weeks. Other distributions may still ship an older one; in that case install Tor from the Tor Project's own package repository (<https://support.torproject.org/apt/tor-deb-repo/>).
 
 After the installer finishes, **reboot your machine once** (`sudo reboot`) so user groups, D-Bus permissions, and Bluetooth kernel rules take effect.
 
@@ -801,9 +801,9 @@ A small, free Android app that is the easiest way to reach your switchboard from
 [**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
 
 ### Verify the download (optional)
-The official APK (`android/AI-Switchboard.apk`, version 1.1.3) has this SHA-256: `dd3559d301a4b9b2625e880dd8a49f4e923dda739da768cd57946cfdc4735939`
+The official APK (`android/AI-Switchboard.apk`, version 1.1.4) has this SHA-256: `452ff113f053dd5cc1ffa21b501c1e44d052b1e8b858dd7128e95e853b516d96`
 
-> ⚠️ Use version **1.1.3 or newer**: older versions carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026.
+> ⚠️ Use version **1.1.4 or newer**: version 1.1.2 and earlier carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026, and version 1.1.3 carries a Tor that lacks later security fixes.
 
 It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate.
 
@@ -833,8 +833,6 @@ It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `
 5. In the app, **scan the QR code**, or paste the pairing text. The GUI shows the onion address and the access key separately: paste the onion address in the first box and the key in the second, or paste the full pairing link in the first box only.
 6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes; if it seems stuck, press **Refresh**). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
 
-> **⚠️ Play Protect may call version 1.1.3 "harmful".** On some phones Google Play Protect shows a stronger warning than the usual "unknown developer" one, without giving any reason. The app is open source (all the code is in this repository), VirusTotal reports 0 detections for versions 1.1.2 and 1.1.3, and you can check the file's SHA-256 and the signing certificate above. The author has appealed the classification to Google, so this may change in the future. Until then the app can still be installed: tap *More details → Install anyway*. Install it only if you trust this source.
-
 ### Using the app
 * **↻ Refresh:** reloads the page. If the page is not showing, or the connection is stuck, it cancels the attempt and restarts the Tor connection from scratch.
 * **⚙️ Settings:** notifications, how often to check, the day/night schedule, the *Allow background activity* button, *About* and *Unpair*.
@@ -848,8 +846,8 @@ Scanning the QR code is optional and uses Google's *code scanner*, a component o
 | Problem | What to do |
 |---|---|
 | "App not installed" / the file will not open | Allow *Install unknown apps* for the app you used to open the APK. Android 7–8 has a single "Unknown sources" switch in Security settings. |
-| Play Protect warns about an unknown developer, or says the app is "harmful" | Expected for apps outside Google Play. Version 1.1.3 may get the stronger "harmful" warning without any reason given (a classification appealed to Google; it may change). You can still install it: *More details → Install anyway*. Compare the file's SHA-256 and signing certificate with the ones published above. |
-| The app closes, or stays at about 30% on *Connecting through Tor…* | Your app is version 1.1.2 or older, which carries Tor 0.4.8. The Tor network stopped accepting it on 28 October 2026. Install version 1.1.3 or newer (same signing certificate, so it installs over the old one). If it still happens, check that the Tor of the switchboard is 0.4.9 or newer (`tor --version`). |
+| Play Protect warns about an unknown developer | Expected for apps outside Google Play: *More details → Install anyway*. You can compare the file's SHA-256 with the one published in the release. |
+| The app closes, or stays at about 30% on *Connecting through Tor…* | Your app is version 1.1.2 or older, which carries Tor 0.4.8. The Tor network stopped accepting it on 28 October 2026. Install version 1.1.4 or newer (same signing certificate, so it installs over the old one). If it still happens, check that the Tor of the switchboard is 0.4.9 or newer (`tor --version`). |
 | Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. If it seems stuck, press **Refresh** (↻) or **Retry**: both cancel the attempt and restart Tor from scratch. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
 | *Cannot reach the switchboard* | The switchboard is off, offline, or remote access is disabled. |
 | *The WebView … does not support the required proxy feature* | Update **Android System WebView** (and Chrome) in Google Play, or on devices without Google Play update the WebView component by the vendor's means. |
