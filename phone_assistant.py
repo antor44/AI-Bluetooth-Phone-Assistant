@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 2.9
+Version: 3.0
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -34,6 +34,15 @@ import asyncio
 import base64
 import re
 import fnmatch
+import unicodedata
+import difflib
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        import audioop  # C-speed PCM helpers. Removed in Python 3.13: the pure-Python fallbacks below are used then
+    except ImportError:
+        audioop = None
 import sqlite3
 import time
 import wave
@@ -149,6 +158,11 @@ def get_default_sink() -> str:
 
 
 MODEL_LIVE = "gemini-3.8-live"
+MODEL_TRANSCRIBE_LIVE = "gemini-3.5-transcribe-live"   # Online real-time transcription of the caller (optional mode)
+SPAM_SCORE_THRESHOLD = 65           # Risk score from which a call is tagged as SPAM
+# Texts saved in the call log that the Web GUI also recognizes (gui.py keeps a copy of both constants: keep them in sync).
+BLOCKED_SUMMARY_PREFIX = "Blocked by rule"                          # Summary of a call rejected by a Blacklist rule
+UNANSWERED_CALL_MARKER = "Call ended by caller before answering."   # Transcript of a call the caller ended before it was answered
 # Fallback prebuilt voices, used only when the language file does not define "voice_names".
 DEFAULT_VOICE_FEMALE = "Aoede"
 DEFAULT_VOICE_MALE = "Charon"
@@ -157,18 +171,46 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "2.9"
+APP_VERSION = "3.0"
 DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
 PLAYBACK_BYTES_PER_SECOND = 24000 * 2   # Gemini Live output: 24 kHz, 16-bit, mono PCM
 HANGUP_AUDIO_TAIL_SECONDS = 1.2         # Extra time after the estimated end of playback (PipeWire + Bluetooth SCO latency)
-DEFAULT_VAD_SILENCE_DURATION_MS = 700    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
+DEFAULT_CALLER_GAIN = 1.5                 # Default caller microphone gain (x)
+DEFAULT_NOISE_GATE_BASE = 55             # Default base noise gate (RMS)
+DEFAULT_VAD_PREFIX_PADDING_MS = 450      # Default VAD prefix padding (ms)
+DEFAULT_VAD_SILENCE_DURATION_MS = 600    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
 ASSISTANT_TURN_GAP_SECONDS = 4.0         # Output chunks closer than this belong to the same assistant turn (farewell detection)
+HOLD_ACCEPT_WINDOW_SECONDS = 25.0        # An assistant "I'll wait" phrase only starts a hold if the caller asked to wait this recently
+HOLD_RESUME_EXCHANGES = 2                # Caller turns dismissed during a hold but answered by the assistant that end the hold
+HOLD_RESUME_REPLY_SECONDS = 15.0         # Max delay between a dismissed caller turn and the assistant reply that counts as evidence
+HOLD_RESUME_WINDOW_SECONDS = 60.0        # The HOLD_RESUME_EXCHANGES exchanges must happen within this time
+HOLD_RESUME_MIN_WORDS = 5                # A reply shorter than this is not considered a real answer
+# Languages written in the Latin script: a transcription made mostly of other scripts is a recognition error there
+LATIN_SCRIPT_LANGS = {"es", "en", "fr", "it", "pt", "de", "ca", "gl", "eu", "nl", "sv", "da", "no", "nb", "fi", "pl", "cs", "ro"}
+ALT_ATTACH_WINDOW_S = 10.0               # An alternative transcription and a Gemini line this close in time belong together
+ALT_NEAR_S = 2.0                         # …and when they are this close they are paired even if the words differ a lot
+ALT_MIN_RATIO = 0.30                     # Minimum text similarity to pair them when they are not that close
+ALT_ORPHAN_AFTER_S = 4.0                 # An alternative text with no Gemini line after this long is written on its own line
+ONLINE_LABEL = "Gemini 3.5 Transcribe Live"
+FAREWELL_VETO_SECONDS = 20.0             # After the text model says the caller has not closed the call, new goodbyes / hangup requests are ignored this long
+SELF_INTERRUPT_WINDOW_SECONDS = 1.5      # An interruption this soon after a text instruction we sent ourselves is not a caller barge-in
+HOLD_RENEW_WINDOW_SECONDS = 60.0         # The assistant's waiting phrases only renew a hold within this time of a real wait request
+SEMANTIC_VOTE_TIMEOUT = 8.0              # Seconds to wait for the text-model opinion; without an answer there is simply no vote
+SEMANTIC_MIN_INTERVAL = 10.0             # Minimum seconds between two semantic checks of the same kind
+SEMANTIC_MAX_PER_CALL = 12               # Safety limit of semantic checks per call (cost)
+DB_WRITE_MIN_INTERVAL = 0.5              # Live transcript writes to SQLite are merged: at most one write per interval
+WHISPER_QUEUE_MAX = 8                    # Pending Whisper jobs per call; beyond this the oldest work is not worth waiting for
 HANGUP_STREAM_QUIET_SECONDS = 1.0       # No new audio from the model for this long before cutting the call
 HANGUP_MAX_WAIT_SECONDS = 20.0          # Safety limit: never wait longer than this for the audio to finish
 
 # Bluetooth reconnection watchdog (see BluetoothWatchdog).
+DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
+BT_SLOW_CYCLE_SECONDS = 20.0             # A watchdog cycle slower than this is reported in the console (a blocked D-Bus call)
+OFONO_HANDSFREE_INTERFACE = "org.ofono.Handsfree"
+BATTERY_LEVEL_STEPS = 5                  # oFono / HFP report the phone battery as 0..5
+BATTERY_UNKNOWN = -1                     # Published when the phone does not report its battery
 BT_HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"  # Hands-Free Audio Gateway profile (the phone side)
 BT_WATCHDOG_INTERVAL_SECONDS = 10.0
 BT_RECONNECT_BACKOFF_MIN_SECONDS = 10.0
@@ -202,7 +244,7 @@ def get_home_numbering(lang_code: str = "") -> Dict[str, Any]:
     if not active_lang:
         conn = None
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             row = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
             active_lang = row[0] if row and row[0] else DEFAULT_LANGUAGE
         except Exception:
@@ -446,7 +488,7 @@ def match_contact_rule(caller_number: str, numbering: Optional[Dict[str, Any]] =
     if not caller_candidates:
         return None
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     try:
         try:
             rows = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts").fetchall()
@@ -614,7 +656,7 @@ def apply_language_defaults(lang_code: str) -> None:
                     spam_data = json.load(sf)
             defaults = gui_data.get("defaults", {})
             if defaults:
-                conn = sqlite3.connect(DB_PATH)
+                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                 for key, val in defaults.items():
                     db_key = f"{lang_code}_{key}"
                     str_val = json.dumps(val, ensure_ascii=False) if isinstance(val, (list, dict)) else str(val)
@@ -638,12 +680,15 @@ def apply_language_defaults(lang_code: str) -> None:
 
 def ensure_database_exists() -> None:
     """Ensures that the SQLite database, tables, and v2.0 schema migrations are applied."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+    conn.execute("PRAGMA journal_mode=WAL")   # Readers (Web GUI) no longer block the daemon writers (heartbeat, traces)
+    conn.execute("PRAGMA synchronous=NORMAL")
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS calls 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, date TEXT, duration INT, 
                   spam_score INT, transcript TEXT, audio_path TEXT, client_audio_path TEXT, 
-                  tag TEXT, client_name TEXT, company TEXT, summary TEXT DEFAULT '')''')
+                  tag TEXT, client_name TEXT, company TEXT, summary TEXT DEFAULT '',
+                  base_tag TEXT, base_client_name TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS contacts 
                  (number TEXT PRIMARY KEY, type TEXT, prompt_rules TEXT,
                   tag TEXT DEFAULT '', note TEXT DEFAULT '',
@@ -657,9 +702,14 @@ def ensure_database_exists() -> None:
                   reason TEXT, updated_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS settings 
                  (key TEXT PRIMARY KEY, value TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS decision_log 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER, ts TEXT, kind TEXT,
+                  gemini_signal TEXT, text_signal TEXT, result TEXT, detail TEXT)''')
 
     for alter_sql in [
         "ALTER TABLE calls ADD COLUMN summary TEXT DEFAULT ''",
+        "ALTER TABLE calls ADD COLUMN base_tag TEXT",
+        "ALTER TABLE calls ADD COLUMN base_client_name TEXT",
         "ALTER TABLE contacts ADD COLUMN tag TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN mem_mode TEXT DEFAULT ''",
@@ -673,6 +723,7 @@ def ensure_database_exists() -> None:
 
     c.execute("INSERT OR IGNORE INTO settings VALUES ('wait_seconds', '5')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('auto_block_spam', 'false')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_block_threshold', '70')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_cache_days', '7')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_model', 'medium')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_quant', '')")
@@ -690,11 +741,11 @@ def ensure_database_exists() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_state', 'running')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_heartbeat', '0')")
 
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('caller_gain', '1.5')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('noise_gate_base', '50')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('caller_gain', ?)", (str(DEFAULT_CALLER_GAIN),))
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('noise_gate_base', ?)", (str(DEFAULT_NOISE_GATE_BASE),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_start_sensitivity', 'LOW')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_end_sensitivity', 'HIGH')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', '500')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', ?)", (str(DEFAULT_VAD_PREFIX_PADDING_MS),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', ?)", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     # One-time migration: the new default replaces the value stored by previous versions (INSERT OR IGNORE never overwrites it)
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
@@ -720,7 +771,7 @@ def ensure_database_exists() -> None:
     conn.close()
 
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
         current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
         res_asst = conn.execute("SELECT value FROM settings WHERE key=?", (f"{current_lang}_assistant_name",)).fetchone()
@@ -926,7 +977,7 @@ def get_config(key: str, default_value: str) -> str:
     """Retrieves a configuration value from the SQLite settings table, handling localized keys."""
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
         current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
@@ -956,7 +1007,7 @@ def set_runtime_setting(key: str, value: Any) -> None:
     """Writes a runtime value (status, counters) to the shared SQLite settings table."""
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
         conn.commit()
     except Exception:
@@ -976,6 +1027,361 @@ def increment_runtime_counter(key: str) -> int:
     return current + 1
 
 
+# =============================================================================
+# RUNTIME OPTIONS AND DEBUG TRACE
+# =============================================================================
+DEBUG_DIR = os.path.join(BASE_DIR, "debug")
+
+
+def knob(name: str, default: str) -> str:
+    """Runtime option: environment variable SWITCHBOARD_<NAME> first, then the settings table, then the default.
+    Handy to A/B test behaviours from the shell without touching the Web GUI."""
+    env = os.environ.get("SWITCHBOARD_" + name.upper())
+    if env is not None and env.strip() != "":
+        return env.strip()
+    return get_config(name, default)
+
+
+def knob_bool(name: str, default: bool) -> bool:
+    return knob(name, "true" if default else "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def knob_int(name: str, default: int) -> int:
+    try:
+        return int(float(knob(name, str(default))))
+    except ValueError:
+        return default
+
+
+class CallDebugLog:
+    """Per-call trace in JSON lines (one event per line) saved in <BASE_DIR>/debug/.
+
+    OFF by default (for advanced users and support). Turn it on with SWITCHBOARD_DEBUG=1, the --debug option or the 'debug_mode' setting = true.
+    It writes one .jsonl file per call and, when the playback process reports errors, a *_pw-play.log file next to it.
+    It holds what Gemini really sent (raw transcriptions before any cleaning), why each caller turn was kept or
+    dropped, every change of a state flag (with the code line that made it) and the Whisper results.
+    It contains call content and phone numbers: keep the folder out of version control and out of bug reports.
+    Read it with:  python phone_assistant.py --show-debug debug/call_xxx.jsonl"""
+
+    def __init__(self, call_tag: str):
+        self.enabled = False
+        self.path = ""
+        self._fh = None
+        self._lock = threading.Lock()
+        self._t0 = time.time()
+        env_debug = os.environ.get("SWITCHBOARD_DEBUG", "").strip().lower()
+        wanted = (env_debug in ("1", "true", "yes", "on")) if env_debug else knob_bool("debug_mode", False)
+        if not wanted:
+            return
+        try:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            safe_tag = re.sub(r"[^0-9A-Za-z+_-]", "_", str(call_tag))[:24] or "unknown"
+            self.path = os.path.join(DEBUG_DIR, f"call_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_tag}.jsonl")
+            self._fh = open(self.path, "a", encoding="utf-8", buffering=1)
+            self.enabled = True
+            print(f"{_C_MUTED}[{get_timestamp()}] [Debug] Trace: {self.path}{_R}")
+        except Exception as e:
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Debug] Could not open the trace file: {e}{_R}")
+
+    def log(self, event: str, **data: Any) -> None:
+        if not self.enabled or self._fh is None:
+            return
+        rec: Dict[str, Any] = {"t": round(time.time() - self._t0, 3), "clock": get_timestamp(), "ev": event}
+        rec.update(data)
+        try:
+            line = json.dumps(rec, ensure_ascii=False, default=str)
+            with self._lock:
+                self._fh.write(line + "\n")
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        with self._lock:
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except Exception:
+                    pass
+                self._fh = None
+        self.enabled = False
+
+
+class _TracedFlag:
+    """Data descriptor for a boolean state flag: every change is written to the debug trace together with the
+    function and line that made it. Costs nothing when debugging is off (the trace object is then inert)."""
+
+    def __set_name__(self, owner: Any, name: str) -> None:
+        self.name = name
+        self.attr = "_tf_" + name
+
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+        if obj is None:
+            return self
+        return obj.__dict__.get(self.attr, False)
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        old = obj.__dict__.get(self.attr, None)
+        obj.__dict__[self.attr] = value
+        if old != value:
+            obj.__dict__[self.attr + "_since"] = time.time()
+        if old is not None and old != value:
+            dbg = obj.__dict__.get("dbg")
+            if dbg is not None and dbg.enabled:
+                frame = sys._getframe(1)
+                dbg.log("state", flag=self.name, old=old, new=value, at=f"{frame.f_code.co_name}:{frame.f_lineno}", snap=obj._state_snapshot())
+            if dbg is not None:
+                print(f"{_C_MUTED}[{get_timestamp()}] [state] {self.name}: {old} -> {value}  ({sys._getframe(1).f_code.co_name}:{sys._getframe(1).f_lineno}){_R}", flush=True)
+
+
+def _dbg_short(value: Any, limit: int = 120) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def print_debug_timeline(path: str, only: Optional[str] = None) -> None:
+    """Prints a debug trace as a readable timeline plus a count of events (--show-debug)."""
+    counts: Counter = Counter()
+    try:
+        fh = open(path, encoding="utf-8")
+    except OSError as e:
+        print(f"Cannot open {path}: {e}")
+        return
+    with fh:
+        for raw in fh:
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            t = rec.pop("t", 0.0)
+            clock = rec.pop("clock", "")
+            ev = rec.pop("ev", "?")
+            counts[ev] += 1
+            if only and only not in ev:
+                continue
+            detail = " ".join(f"{k}={_dbg_short(v)}" for k, v in rec.items())
+            print(f"{t:8.2f}s {clock} {ev:<18} {detail}")
+    print("\n--- Events in this trace ---")
+    for ev, n in counts.most_common():
+        print(f"{n:6d}  {ev}")
+
+
+def summarize_bt_audio(objects: Any) -> Dict[str, Any]:
+    """Picks the Bluetooth facts out of a pw-dump (codec, profile, sample rate) to learn whether the call runs in
+    wide-band (mSBC) or narrow-band (CVSD) audio. Narrow-band audio degrades every transcription."""
+    found: Dict[str, Any] = {}
+    chunks: List[str] = []
+    for obj in objects if isinstance(objects, list) else []:
+        if not isinstance(obj, dict):
+            continue
+        info = obj.get("info") or {}
+        props = info.get("props") or {}
+        blob = " ".join(str(v) for v in props.values()).lower()
+        if "bluez" not in blob and "bluetooth" not in blob and "ofono" not in blob:
+            continue
+        facts = {k: v for k, v in props.items() if any(w in k.lower() for w in ("codec", "profile", "sco", "hfp", "audio.rate", "audio.format", "audio.channels"))}
+        for item in (info.get("params") or {}).get("Profile", []) or []:
+            if isinstance(item, dict) and item.get("name"):
+                facts["param.Profile"] = item.get("name")
+        if facts:
+            found[str(props.get("node.name") or props.get("device.name") or obj.get("id"))] = facts
+            chunks.append(json.dumps(facts, default=str).lower())
+    joined = " ".join(chunks)
+    codec = "unknown"
+    if "msbc" in joined:
+        codec = "mSBC (wide band, 16 kHz)"
+    elif "cvsd" in joined:
+        codec = "CVSD (narrow band, 8 kHz)"
+    elif "lc3" in joined:
+        codec = "LC3"
+    return {"codec_guess": codec, "objects": found}
+
+
+_WHISPER_PROMPT_SUPPORT: Optional[bool] = None
+
+
+def whisper_supports_prompt() -> bool:
+    """True when this whisper-cli build accepts --prompt (checked once, from its own help text)."""
+    global _WHISPER_PROMPT_SUPPORT
+    if _WHISPER_PROMPT_SUPPORT is None:
+        try:
+            out = subprocess.run([WHISPER_BIN, "-h"], capture_output=True, text=True, timeout=5)
+            _WHISPER_PROMPT_SUPPORT = "--prompt" in (out.stdout + out.stderr)
+        except Exception:
+            _WHISPER_PROMPT_SUPPORT = False
+    return _WHISPER_PROMPT_SUPPORT
+
+
+class OnlineTranscriber:
+    """Online real-time transcription of the CALLER with gemini-3.5-transcribe-live, over a Live session of its own.
+
+    It is a second, independent reading of the same voice (a third opinion next to Gemini's own transcription and
+    Whisper): it gets a language hint and a custom vocabulary (the assistant's and the owner's names), which the main
+    conversation model does not. Only the speech is streamed (the noise gate decides), and the end of each utterance
+    is signalled with audio_stream_end so the final text comes back quickly. The service allows 10 minutes per
+    session, so the session is renewed before that. Failures never affect the call: the transcriber just stops."""
+
+    BLOCK_BYTES = 3200      # 100 ms of 16 kHz 16-bit mono, the chunk size recommended by the documentation
+    MAX_FAILURES = 4
+
+    def __init__(self, owner: Any):
+        self.owner = owner
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=400)
+        self.task: Optional[asyncio.Task] = None
+        self._rx: Optional[asyncio.Task] = None
+        self.stopped = False
+        self.audio_sent_s = 0.0
+        self.finals = 0
+        self.out_chars = 0
+        self.dropped = 0
+        self.sessions = 0
+        self.last_voice_time = 0.0
+        self.last_interim = ""
+        self._buf = bytearray()
+        self.backoff_s = 2.0
+        self.rotate_s = float(knob_int("online_rotate_seconds", 540))
+        self.end_silence_s = knob_int("online_end_silence_ms", 700) / 1000.0
+        self.language_codes = self._language_codes()
+        self.vocabulary = self._vocabulary()
+
+    def _language_codes(self) -> List[str]:
+        configured = knob("online_languages", "").strip()
+        if configured.lower() == "auto":
+            return []
+        if configured:
+            return [c.strip() for c in configured.split(",") if c.strip()]
+        return [self.owner.current_lang] if self.owner.current_lang else []
+
+    def _vocabulary(self) -> List[str]:
+        """Distinct names and terms that help recognition (not everyday words). Up to 100 are used."""
+        terms: List[str] = [self.owner.assistant_name, self.owner.boss_name]
+        terms += [t.strip() for t in re.split(r"[,\n]", knob("online_vocabulary", "")) if t.strip()]
+        seen: set = set()
+        out: List[str] = []
+        for t in terms:
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                out.append(t)
+        return out[:100]
+
+    def start(self) -> None:
+        self.task = asyncio.create_task(self.run())
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+    def feed(self, pcm: bytes, voice: bool) -> None:
+        """Called for every microphone chunk. Silence is passed as a gap marker: it is not streamed, it only closes utterances."""
+        try:
+            self.queue.put_nowait((pcm if voice else None, len(pcm) / 32000.0))
+        except asyncio.QueueFull:
+            self.dropped += 1
+
+    def usage(self) -> Dict[str, Any]:
+        return {"audio_sent_s": round(self.audio_sent_s, 1), "finals": self.finals, "sessions": self.sessions, "dropped_chunks": self.dropped}
+
+    def _build_config(self, codes: List[str]) -> Any:
+        try:
+            tx = types.AudioTranscriptionConfig(language_codes=codes, custom_vocabulary=self.vocabulary or None)
+        except Exception:
+            tx = types.AudioTranscriptionConfig()      # SDK too old for language hints / vocabulary
+        return types.LiveConnectConfig(response_modalities=["TEXT"], input_audio_transcription=tx)
+
+    async def run(self) -> None:
+        owner = self.owner
+        codes = list(self.language_codes)
+        failures = 0
+        while not self.stopped and owner.running:
+            started = time.time()
+            try:
+                async with owner.client_live.aio.live.connect(model=MODEL_TRANSCRIBE_LIVE, config=self._build_config(codes)) as session:
+                    self.sessions += 1
+                    owner.dbg.log("online_connect", model=MODEL_TRANSCRIBE_LIVE, language_codes=codes, vocabulary=self.vocabulary, session=self.sessions)
+                    print(f"{_C_MUTED}[{get_timestamp()}] [Online] Transcription session {self.sessions} open (language: {codes or 'auto'}){_R}", flush=True)
+                    self._rx = asyncio.create_task(self._receive(session))
+                    try:
+                        await self._pump(session, started + self.rotate_s)
+                    finally:
+                        self._rx.cancel()
+                        try:
+                            await self._rx
+                        except BaseException:
+                            pass
+                if time.time() - started > 5.0:
+                    failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failures += 1
+                owner.dbg.log("online_error", error=repr(e), failures=failures, language_codes=codes)
+                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Online] Transcription session failed ({failures}/{self.MAX_FAILURES}): {e}{_R}", flush=True)
+                if codes and failures == 1:
+                    codes = []                             # the language hint may be the problem: retry with automatic detection
+                    owner.dbg.log("online_language_fallback", to="auto")
+                if failures >= self.MAX_FAILURES:
+                    owner.dbg.log("online_unavailable")
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Online] Giving up on online transcription for this call. The call itself is not affected.{_R}", flush=True)
+                    return
+                await asyncio.sleep(min(8.0, self.backoff_s ** failures))
+
+    async def _pump(self, session: Any, deadline: float) -> None:
+        gap_s = 0.0
+        voice_open = False
+        while not self.stopped and self.owner.running and time.time() < deadline:
+            if self._rx is not None and self._rx.done():
+                self._rx.result()                          # raises the receiver's error, which makes run() reconnect
+                raise RuntimeError("transcription receiver ended")
+            try:
+                pcm, chunk_s = await asyncio.wait_for(self.queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if pcm is not None:
+                self._buf.extend(pcm)
+                voice_open = True
+                gap_s = 0.0
+                self.last_voice_time = time.time()
+                while len(self._buf) >= self.BLOCK_BYTES:
+                    block = bytes(self._buf[: self.BLOCK_BYTES])
+                    del self._buf[: self.BLOCK_BYTES]
+                    await session.send_realtime_input(audio=types.Blob(data=block, mime_type="audio/pcm;rate=16000"))
+                    self.audio_sent_s += self.BLOCK_BYTES / 32000.0
+            else:
+                gap_s += chunk_s
+                if voice_open and gap_s >= self.end_silence_s:
+                    if self._buf:
+                        tail = bytes(self._buf)
+                        self._buf.clear()
+                        await session.send_realtime_input(audio=types.Blob(data=tail, mime_type="audio/pcm;rate=16000"))
+                        self.audio_sent_s += len(tail) / 32000.0
+                    await session.send_realtime_input(audio_stream_end=True)
+                    voice_open = False
+
+    async def _receive(self, session: Any) -> None:
+        while not self.stopped:
+            got = False
+            async for response in session.receive():
+                got = True
+                sc = getattr(response, "server_content", None)
+                if not sc:
+                    continue
+                interim = getattr(sc, "interim_input_transcription", None)
+                if interim is not None and getattr(interim, "text", None):
+                    self.last_interim = interim.text
+                final = getattr(sc, "input_transcription", None)
+                if final is not None and getattr(final, "text", None):
+                    self.owner._on_online_final(final.text, self.last_voice_time)
+            if not got:
+                await asyncio.sleep(0.2)
+
+
+def normalize_end_of_call_labels(transcript: str, label: str) -> str:
+    """The end-of-call correction asks the text model for '[Live]: <text> | [Final ASR]: <corrected>'. Shows the Gemini
+    text plainly and names the engine that produced the alternative text."""
+    cleaned = re.sub(r"(\[\d{2}:\d{2}:\d{2}\]:)\s*\[Live\]:\s*", r"\1 ", transcript)
+    return cleaned.replace("[Final ASR]", f"[{label}]")
+
+
 class BluetoothWatchdog:
     """Keeps the Bluetooth link with the paired phone alive without restarting the switchboard.
 
@@ -992,6 +1398,7 @@ class BluetoothWatchdog:
         self.next_attempt_time: Dict[str, float] = {}
         self.modem_missing_cycles: Dict[str, int] = {}
         self.published_state: Tuple[str, str] = ("", "")
+        self.handsfree_keys_logged = False
 
     @staticmethod
     def _mac_token(object_path: str) -> str:
@@ -1010,8 +1417,43 @@ class BluetoothWatchdog:
         """Stores the last event as 'code|HH:MM:SS|detail'; the Web GUI translates the code."""
         set_runtime_setting("bt_last_event", f"{code}|{get_timestamp()}|{detail}")
 
+    @staticmethod
+    def battery_level_to_percent(level: Any) -> int:
+        """Converts the HFP battery level (0..5) to a percentage in steps of 20; anything else is 'unknown'."""
+        try:
+            value = int(level)
+        except (TypeError, ValueError):
+            return BATTERY_UNKNOWN
+        if 0 <= value <= BATTERY_LEVEL_STEPS:
+            return value * (100 // BATTERY_LEVEL_STEPS)
+        return BATTERY_UNKNOWN
+
+    def _read_battery_percent(self, bus: Any, modem_path: str, bluez_interfaces: Any) -> int:
+        """Phone battery: exact percentage from BlueZ (Battery1) when the phone gives it, otherwise the HFP level from oFono."""
+        battery1 = (bluez_interfaces or {}).get("org.bluez.Battery1")
+        if battery1 is not None and "Percentage" in battery1:
+            try:
+                return max(0, min(100, int(battery1["Percentage"])))
+            except (TypeError, ValueError):
+                pass
+        if not modem_path:
+            return BATTERY_UNKNOWN
+        try:
+            handsfree = dbus.Interface(bus.get_object("org.ofono", modem_path), OFONO_HANDSFREE_INTERFACE)
+            properties = handsfree.GetProperties()
+        except Exception:
+            return BATTERY_UNKNOWN
+        if not self.handsfree_keys_logged:
+            self.handsfree_keys_logged = True
+            print(f"{_C_MUTED}[{get_timestamp()}] [Bluetooth] oFono Handsfree properties: {', '.join(str(k) for k in properties.keys())}{_R}")
+        for key, value in properties.items():
+            if "battery" in str(key).lower():
+                return self.battery_level_to_percent(value)
+        return BATTERY_UNKNOWN
+
     def _publish_state(self, state: str, device_name: str) -> None:
         if (state, device_name) != self.published_state:
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_CONN}[Bluetooth] State: {self.published_state[0] or 'none'} -> {state} ({device_name}){_R}")
             self.published_state = (state, device_name)
             set_runtime_setting("bt_state", state)
             set_runtime_setting("bt_device_name", device_name)
@@ -1027,16 +1469,16 @@ class BluetoothWatchdog:
                 except Exception as e:
                     print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Bluetooth] Could not power on adapter {path}: {e}{_R}")
 
-    def _ofono_modem_tokens(self, bus: Any) -> set:
-        """Returns the device tokens of the oFono modems, powering on and putting online any that are not."""
-        tokens = set()
+    def _ofono_modem_tokens(self, bus: Any) -> Dict[str, str]:
+        """Returns {device token: oFono modem path} of the oFono modems, powering on and putting online any that are not."""
+        tokens: Dict[str, str] = {}
         try:
             manager = dbus.Interface(bus.get_object("org.ofono", "/"), "org.ofono.Manager")
             modems = manager.GetModems()
         except Exception:
             return tokens
         for modem_path, modem_props in modems:
-            tokens.add(self._mac_token(str(modem_path)))
+            tokens[self._mac_token(str(modem_path))] = str(modem_path)
             try:
                 modem = dbus.Interface(bus.get_object("org.ofono", modem_path), "org.ofono.Modem")
                 if not modem_props.get("Powered", False):
@@ -1143,17 +1585,27 @@ class BluetoothWatchdog:
 
         modem_tokens = self._ofono_modem_tokens(bus)
         connected_name = ""
+        ready_name = ""
         first_name = ""
+        battery = BATTERY_UNKNOWN
         for device_path, props in phones:
             name = str(props.get("Alias") or props.get("Name") or device_path)
             first_name = first_name or name
-            if self._check_phone(bus, device_path, props, modem_tokens) and not connected_name:
-                connected_name = name
+            if self._check_phone(bus, device_path, props, modem_tokens):
+                connected_name = connected_name or name
+                modem_path = modem_tokens.get(self._mac_token(device_path), "")
+                if modem_path and not ready_name:
+                    ready_name = name
+                    battery = self._read_battery_percent(bus, modem_path, objects.get(dbus.ObjectPath(device_path)) or objects.get(device_path))
 
-        if connected_name:
-            self._publish_state("connected", connected_name)
+        # The call profile (oFono modem) is what carries the calls: BlueZ saying "connected" is not enough.
+        if ready_name:
+            self._publish_state("connected", ready_name)
+        elif connected_name:
+            self._publish_state("profile_not_ready", connected_name)
         else:
             self._publish_state("disconnected", first_name)
+        set_runtime_setting("bt_battery", str(battery if ready_name else BATTERY_UNKNOWN))
 
 
 async def bluetooth_watchdog_loop() -> None:
@@ -1167,8 +1619,14 @@ async def bluetooth_watchdog_loop() -> None:
             state = get_config("daemon_state", "running")
             call_active = ACTIVE_ASSISTANT is not None and getattr(ACTIVE_ASSISTANT, "running", False)
             if state != "stopped" and not call_active:
+                cycle_started = time.time()
                 await loop.run_in_executor(None, watchdog.check_once)
                 last_error = ""
+                cycle_seconds = time.time() - cycle_started
+                if cycle_seconds > BT_SLOW_CYCLE_SECONDS:
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Watchdog cycle took {cycle_seconds:.0f}s (a D-Bus call was slow).{_R}")
+            # The heartbeat stops by itself if a D-Bus call blocks the cycle above; the Web GUI then shows the state as unknown.
+            set_runtime_setting("bt_heartbeat", str(time.time()))
         except Exception as e:
             if str(e) != last_error:
                 last_error = str(e)
@@ -1229,8 +1687,35 @@ def calculate_rms(data_pcm: bytes) -> float:
     count = len(data_pcm) // 2
     if count == 0:
         return 0.0
+    data_pcm = data_pcm[: count * 2]
+    if audioop is not None:
+        try:
+            return float(audioop.rms(data_pcm, 2))
+        except Exception:
+            pass
     shorts = struct.unpack(f"<{count}h", data_pcm)
     return math.sqrt(sum(s * s for s in shorts) / count)
+
+
+def monitor_volume_gain(volume_pct: int) -> float:
+    """Amplitude factor for a monitor volume in percent. The assistant's player is set with pactl, whose percentage follows the
+    perceptual (cubic) scale of PulseAudio / PipeWire; the caller's software volume uses the same curve so both sound alike."""
+    return max(0.0, min(1.0, volume_pct / 100.0)) ** 3
+
+
+def apply_gain(data_pcm: bytes, gain: float) -> bytes:
+    """Multiplies 16-bit little-endian PCM by gain, clipping instead of wrapping around."""
+    count = len(data_pcm) // 2
+    if count == 0 or gain == 1.0:
+        return data_pcm
+    data_pcm = data_pcm[: count * 2]
+    if audioop is not None:
+        try:
+            return audioop.mul(data_pcm, 2, gain)
+        except Exception:
+            pass
+    samples = struct.unpack(f"<{count}h", data_pcm)
+    return struct.pack(f"<{count}h", *[max(min(int(v * gain), 32767), -32768) for v in samples])
 
 
 def upsample_16k_to_24k(data_16k: bytes) -> bytes:
@@ -1264,20 +1749,65 @@ def clean_whisper_output(stdout_str: str) -> str:
     return " ".join(cleaned)
 
 
-def matches_any_phrase(text: str, phrases: list) -> bool:
-    """True if any phrase appears in text: multi-word phrases as substrings, single words on word boundaries."""
+FUZZY_MIN_LEN = 6      # Only words of this length or more may match a close (not identical) spelling
+FUZZY_RATIO = 0.86     # Minimum similarity of that close spelling
+
+
+def fold_text(text: str) -> str:
+    """What keyword matching compares: lower case, no accents, no punctuation, single spaces."""
     t = text.replace("\u2019", "'").replace("\u2018", "'").lower()
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c))
+    t = re.sub(r"[^\w\s']", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _fuzzy_token_eq(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if len(a) < FUZZY_MIN_LEN or len(b) < FUZZY_MIN_LEN or a[0] != b[0] or abs(len(a) - len(b)) > 2:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= FUZZY_RATIO
+
+
+def matches_any_phrase(text: str, phrases: list, fuzzy: bool = False) -> bool:
+    """True if any phrase appears in text: multi-word phrases as substrings, single words on word boundaries.
+
+    Case, accents and punctuation are ignored (a recognition error such as 'adios' for 'adiós' must not matter).
+    With fuzzy=True a word of FUZZY_MIN_LEN or more letters also matches a close spelling. That is meant for what the
+    CALLER says (recognition errors are common there); never use it on the assistant's own text."""
+    t = fold_text(text)
+    if not t:
+        return False
+    tokens = None
     for phrase in phrases:
-        phrase_l = phrase.replace("\u2019", "'").lower().strip()
-        if not phrase_l:
+        p = fold_text(phrase)
+        if not p:
             continue
-        if " " in phrase_l:
-            if phrase_l in t:
+        if " " in p:
+            if p in t:
                 return True
-        else:
-            if re.search(r"(?<![a-záéíóúñüàèìòùâêîôûäëïöüãõ])" + re.escape(phrase_l) + r"(?![a-záéíóúñüàèìòùâêîôûäëïöüãõ])", t):
-                return True
+        elif re.search(r"(?<!\w)" + re.escape(p) + r"(?!\w)", t):
+            return True
+        if fuzzy:
+            ptoks = p.split()
+            if not any(len(w) >= FUZZY_MIN_LEN for w in ptoks):
+                continue
+            if tokens is None:
+                tokens = t.split()
+            n = len(ptoks)
+            for i in range(len(tokens) - n + 1):
+                if all(_fuzzy_token_eq(tokens[i + j], ptoks[j]) for j in range(n)):
+                    return True
     return False
+
+
+def non_latin_letter_ratio(text: str) -> float:
+    """Share (0..1) of the letters in text that are not Latin-script letters (0.0 when there are no letters)."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    non_latin = sum(1 for c in letters if "LATIN" not in unicodedata.name(c, ""))
+    return non_latin / len(letters)
 
 
 def strip_quoted_text(text: str) -> str:
@@ -1286,7 +1816,7 @@ def strip_quoted_text(text: str) -> str:
     return re.sub(r"(?<!\w)['\u2018][^'\u2019]{1,60}?['\u2019](?!\w)", " ", t)
 
 
-def find_farewell(text: str, farewell_words: list, veto_words: list, meta_words: list = ()) -> bool:
+def find_farewell(text: str, farewell_words: list, veto_words: list, meta_words: list = (), fuzzy: bool = False) -> bool:
     """True when the text holds a real farewell: a farewell word that is neither quoted, nor in a sentence that
     talks about words/commands/examples (meta words, whole sentence), nor in a clause with a negation or
     conditional (veto words, same clause only). Without veto and meta words it is a plain farewell match.
@@ -1298,13 +1828,13 @@ def find_farewell(text: str, farewell_words: list, veto_words: list, meta_words:
         return False
     text = strip_quoted_text(text)
     if not veto_words and not meta_words:
-        return matches_any_phrase(text, farewell_words)
+        return matches_any_phrase(text, farewell_words, fuzzy)
     for sentence in re.split(r"[.!?¿¡…\n]+", text):
         if not sentence.strip() or (meta_words and matches_any_phrase(sentence, meta_words)):
             continue
         for clause in re.split(r"[,;:]+", sentence):
             clause = clause.strip()
-            if clause and matches_any_phrase(clause, farewell_words) and not matches_any_phrase(clause, veto_words):
+            if clause and matches_any_phrase(clause, farewell_words, fuzzy) and not matches_any_phrase(clause, veto_words):
                 return True
     return False
 
@@ -1331,7 +1861,7 @@ def clean_transcript_for_memory(raw_transcript: str) -> str:
     blocks = [b.strip() for b in raw_transcript.split("\n\n") if b.strip()]
     dialogue_lines = []
     for block in blocks:
-        if any(marker in block for marker in ["[SYSTEM]", "[Active Hold]", "❌", "⏳", "⏸", "[Noise Filtered]"]):
+        if any(marker in block for marker in ["[SYSTEM]", "[Active Hold]", "❌", "⏳", "⏸", "[Noise Filtered]", "🔇", "🌐"]):
             if not block.startswith("📝"):
                 continue
         dialogue_lines.append(block)
@@ -1401,11 +1931,21 @@ class CallPolicyEngine:
 
 class PhoneAssistant:
     """Main class that handles a single active Bluetooth phone call via Gemini 3.8 Live."""
+
+    # State flags whose every change is recorded in the debug trace (see _TracedFlag)
+    on_hold = _TracedFlag()
+    hanging_up = _TracedFlag()
+    hangup_triggered = _TracedFlag()
+    farewell_pending = _TracedFlag()
+    priority_call = _TracedFlag()
+    waiting_definitive_cut = _TracedFlag()
+
     def __init__(self, dbus_path: str, caller_number: str):
         self.dbus_path = dbus_path
         self.caller_number = caller_number
         self.running = False
         self._post_processed = False
+        self.dbg = CallDebugLog(caller_number)
 
         self.boss_name = get_config("boss_name", "Boss")
         self.owner_type = get_config("owner_type", "private")
@@ -1459,6 +1999,77 @@ class PhoneAssistant:
         self.farewell_drained_since = 0.0
         self._asst_turn_text = ""
         self._asst_turn_last_time = 0.0
+
+        # Hold safeguards (see _hold_acceptance_allowed and _register_hold_exchange)
+        self._last_wait_request_time = 0.0
+        self._hold_pending_caller_time = 0.0
+        self._hold_resume_count = 0
+        self._hold_resume_first_time = 0.0
+        self._hold_gate_last_note = 0.0
+
+        # Runtime options (environment variable SWITCHBOARD_<NAME> overrides the settings table; see knob())
+        self.fuzzy_keywords = knob_bool("fuzzy_keywords", True)                          # Caller-side keyword matching tolerates recognition errors
+        self.whisper_signals = knob_bool("whisper_signals", True)                        # Whisper text also feeds hold / farewell / priority detection
+        self.flush_on_interrupt = knob_bool("flush_on_interrupt", True)                  # Drop queued model audio when the Live API reports an interruption
+        self.explicit_transcription_config = knob_bool("explicit_transcription_config", False)  # Ask the Live API for input/output transcription explicitly (off: the v2.9 session configuration)
+        self.send_speech_language_code = knob_bool("send_speech_language_code", True)    # Send speech_language_code from the language file
+        self.mic_gate_hangover_chunks = knob_int("mic_gate_hangover_chunks", 8)          # ~16 ms each: keeps the noise gate open after speech
+        self.whisper_threads = max(1, knob_int("whisper_threads", min(8, os.cpu_count() or 4)))
+
+        # Agreement between the two "brains" for irreversible / costly decisions
+        self.semantic_votes = knob_bool("semantic_votes", True)
+        self.whisper_prompt = knob("whisper_prompt", "")
+        self._hangup_tool_seen = False          # the model asked to hang up (tool): an intent, not a decision
+        self._closing_vote: Optional[bool] = None
+        self._pending_hangup_calls: List[Tuple[str, str]] = []   # (id, name) of hangup tool calls the model is still waiting an answer for
+        self._live_session: Any = None                           # Live API session of this call, used to answer a cancelled hangup
+        self._caller_spoke_since_intent = False   # a caller turn arrived after the goodbye / hangup request
+        self._intent_text = ""                    # what the assistant had said when the goodbye / hangup was requested
+        self._intent_time = 0.0                   # when the goodbye / hangup was requested
+        self._asst_turn_start_time = 0.0
+        self._farewell_veto_time = 0.0
+        self._self_interrupt_until = 0.0
+        self._last_caller_farewell_time = 0.0
+        self._last_caller_text_time = 0.0
+        self._last_interrupted_time = 0.0
+        self._semantic_last: Dict[str, float] = {}
+        self._semantic_count = 0
+        self._bg_tasks: set = set()
+        self.online: Optional[OnlineTranscriber] = None
+        self._alt_lines: List[Dict[str, Any]] = []     # recent Gemini caller lines that alternative texts can be attached to
+        self._alt_pending: List[Dict[str, Any]] = []   # alternative texts still waiting for their Gemini line
+        self._alt_agree = 0                             # alternative texts identical to Gemini's
+        self._alt_total = 0
+        self.spam_block_threshold = knob_int("spam_block_threshold", 70)
+
+        # Microphone path
+        self._mic_carry = b""
+        self._gate_hangover_left = 0
+        self._mic_stats = self._new_mic_stats(time.time())
+        self._playback_proc = None
+        self._pb_in_bytes = 0          # model audio received
+        self._pb_written_bytes = 0     # model audio written to the player
+        self._pb_write_fail = 0
+        self._pb_spawns = 0
+        self._pb_last_error = ""
+        self._pb_last_stats = 0.0
+        self._pb_stderr = None
+
+        # Debounced transcript persistence
+        self._db_last_write = 0.0
+        self._db_dirty = False
+
+        # Whisper (one worker per call, created lazily inside the event loop)
+        self._whisper_queue = None
+        self._whisper_worker_task = None
+        self._whisper_missing_logged = False
+
+        # Priority rules are parsed once per call instead of once per caller turn
+        try:
+            _rules = json.loads(get_config("memory_rules", "[]"))
+            self._memory_rules = _rules if isinstance(_rules, list) else []
+        except Exception:
+            self._memory_rules = []
         try:
             self.farewell_grace_seconds = float(get_config("farewell_grace_seconds", "2.0"))
         except ValueError:
@@ -1496,6 +2107,8 @@ class PhoneAssistant:
         self._routing_diag_logged = False
         self._removed_loop_links = set()
         self._monitor_volume_applied = {}
+        self._monitor_gain = monitor_volume_gain(monitor_volume_percent())   # Monitor volume applied in software to the caller's samples (the caller's player stays at 100%)
+        self._direct_links_removed: set = set()
         self.call_start_time = time.time()
 
         self.first_mic_time = 0.0
@@ -1515,20 +2128,20 @@ class PhoneAssistant:
         self.greeting_audio_received = False
 
         try:
-            self.caller_gain = float(get_config("caller_gain", "1.5"))
+            self.caller_gain = float(get_config("caller_gain", str(DEFAULT_CALLER_GAIN)))
         except ValueError:
-            self.caller_gain = 1.5
+            self.caller_gain = DEFAULT_CALLER_GAIN
         try:
-            self.noise_gate_base = int(get_config("noise_gate_base", "50"))
+            self.noise_gate_base = int(get_config("noise_gate_base", str(DEFAULT_NOISE_GATE_BASE)))
         except ValueError:
-            self.noise_gate_base = 50
+            self.noise_gate_base = DEFAULT_NOISE_GATE_BASE
 
         self.vad_start_sens = get_config("vad_start_sensitivity", "LOW")
         self.vad_end_sens = get_config("vad_end_sensitivity", "HIGH")
         try:
-            self.vad_prefix_padding_ms = int(get_config("vad_prefix_padding_ms", "500"))
+            self.vad_prefix_padding_ms = int(get_config("vad_prefix_padding_ms", str(DEFAULT_VAD_PREFIX_PADDING_MS)))
         except ValueError:
-            self.vad_prefix_padding_ms = 500
+            self.vad_prefix_padding_ms = DEFAULT_VAD_PREFIX_PADDING_MS
         try:
             self.vad_silence_duration_ms = int(get_config("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)))
         except ValueError:
@@ -1621,7 +2234,7 @@ class PhoneAssistant:
         in_progress_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
         spam_lbl = self.labels_data.get("spam", "SPAM")
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         rows = []
         try:
             placeholders = ",".join(["?"] * len(self.caller_candidates)) if self.caller_candidates else "'__none__'"
@@ -1752,7 +2365,7 @@ class PhoneAssistant:
             cache_days = 7
 
         if cache_days > 0:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             cached = conn.execute(
                 "SELECT is_spam, risk_score, reason, updated_at FROM spam_cache WHERE number=?",
                 (cache_key,)
@@ -1764,8 +2377,9 @@ class PhoneAssistant:
                     dt_upd = datetime.datetime.strptime(upd_at, "%Y-%m-%d %H:%M:%S")
                     if (datetime.datetime.now() - dt_upd).days < cache_days:
                         self.network_spam_score = int(r_score or 0)
-                        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[SpamCheck] Cache hit for {cache_key}: SPAM={bool(is_sp)} (Score: {self.network_spam_score}) — {reason}{_R}")
-                        return bool(is_sp)
+                        verdict = self.spam_verdict(bool(is_sp), int(r_score) if r_score else None, self.spam_block_threshold)
+                        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[SpamCheck] Cache hit for {cache_key}: SPAM={verdict} (Score: {self.network_spam_score}, cut-off: {self.spam_block_threshold}) — {reason}{_R}")
+                        return verdict
                 except Exception:
                     pass
 
@@ -1854,13 +2468,18 @@ class PhoneAssistant:
                     except (json.JSONDecodeError, TypeError):
                         data = {"is_spam": False, "risk_score": 0}
 
-                    score = int(data.get("risk_score", 0))
+                    raw_score = data.get("risk_score")
+                    score = int(raw_score or 0)
                     reason = str(data.get("reason", ""))
                     if score > highest_score:
                         highest_score = score
                         best_reason = reason
 
-                    if data.get("is_spam") or score > 70:
+                    flagged = self.spam_verdict(bool(data.get("is_spam")), score if raw_score is not None else None, self.spam_block_threshold)
+                    if bool(data.get("is_spam")) != flagged and raw_score is not None:
+                        self.log_decision("spam", gemini=f"AI says is_spam={bool(data.get('is_spam'))}", text=f"score {score} vs cut-off {self.spam_block_threshold}",
+                                          result="blocked" if flagged else "not blocked", detail=reason[:120])
+                    if flagged:
                         self.network_spam_score = score
                         print(f"{_C_WARN}[{get_timestamp()}] [SpamCheck] LLM Flagged as SPAM (Score: {score}): {reason}{_R}")
                         self._save_spam_cache(cache_key, True, score, reason)
@@ -1874,9 +2493,17 @@ class PhoneAssistant:
         self._save_spam_cache(cache_key, False, highest_score, best_reason)
         return False
 
+    @staticmethod
+    def spam_verdict(ai_says_spam: bool, score: Optional[int], threshold: int) -> bool:
+        """Whether a call counts as SPAM for hanging up: the AI's risk score against the configured cut-off.
+        Only when the AI gave no score does its plain yes/no decide."""
+        if score is None:
+            return bool(ai_says_spam)
+        return score >= threshold
+
     def _save_spam_cache(self, number_key: str, is_spam: bool, risk_score: int, reason: str) -> None:
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute(
                 "INSERT OR REPLACE INTO spam_cache (number, is_spam, risk_score, reason, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (number_key, 1 if is_spam else 0, risk_score, reason, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -1962,7 +2589,7 @@ class PhoneAssistant:
             if mode in ["both", "caller"]:
                 if self.caller_pacat is None or self.caller_pacat.poll() is not None:
                     sink = get_default_sink()
-                    cmd = ["pacat", "--format=s16le", "--rate=16000", "--channels=1", "--raw", f"--volume={monitor_volume_percent() * 65536 // 100}"]
+                    cmd = ["pacat", "--format=s16le", "--rate=16000", "--channels=1", "--raw", "--volume=65536"]
                     cmd.append(f"--device={sink}" if sink else "--device=auto_null")
                     self.caller_pacat = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
             else:
@@ -1971,7 +2598,8 @@ class PhoneAssistant:
                     self.caller_pacat = None
 
             volume_pct = monitor_volume_percent()
-            for player in (self.asst_pacat, self.caller_pacat):
+            self._monitor_gain = monitor_volume_gain(volume_pct)
+            for player in (self.asst_pacat,):
                 if player and player.poll() is None and self._monitor_volume_applied.get(player.pid) != volume_pct:
                     if await self._apply_player_volume(player.pid, volume_pct):
                         self._monitor_volume_applied[player.pid] = volume_pct
@@ -2010,11 +2638,18 @@ class PhoneAssistant:
                                 self._removed_loop_links.add(link_id)
                                 print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Routing] Removed echo loop link {src_name} -> {dst_name}{_R}")
                             continue
-                        if "bluez_input" in src_name and mode not in ["both", "caller"]:
+                        caller_player_alive = bool(self.caller_pacat and self.caller_pacat.poll() is None)
+                        if "bluez_input" in src_name and (mode not in ["both", "caller"] or caller_player_alive):
                             sink = get_default_sink()
-                            # Never touch links to the persistent auto_null sink (clock source on SBCs with disabled onboard audio)
+                            # Never touch links to the persistent auto_null sink (clock source on SBCs with disabled onboard audio).
+                            # A direct link from the phone to the speakers ignores the monitor volume and doubles the caller's voice (echo):
+                            # when the caller is monitored, the monitoring player is the only path to the speakers.
                             if "auto_null" not in dst_name and (("alsa_output" in dst_name) or (sink and sink in dst_name)):
                                 await asyncio.create_subprocess_exec("pw-link", "-d", link_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                if mode in ["both", "caller"] and (src_name, dst_name) not in self._direct_links_removed:
+                                    self._direct_links_removed.add((src_name, dst_name))
+                                    self.dbg.log("direct_caller_link_removed", source=src_name, destination=dst_name)
+                                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Routing] Removed direct link {src_name} -> {dst_name} (it bypassed the monitor volume).{_R}")
             except Exception:
                 pass
 
@@ -2056,6 +2691,67 @@ class PhoneAssistant:
             player.monitor_writer = writer
         writer.write(data)
 
+    def log_decision(self, kind: str, gemini: str = "", text: str = "", result: str = "", detail: str = "") -> None:
+        """Decision log: what each signal said and what was decided. It goes to the console, the debug trace and the
+        decision_log table, so the disagreements between Gemini and the text rules can be counted afterwards."""
+        ts = get_timestamp()
+        self.dbg.log("decision", kind=kind, gemini=gemini, text=text, result=result, detail=detail,
+                     state=self._state_snapshot() if self.dbg.enabled else None)
+        print(f"\n{_C_WARN}[{ts}] [DECISION] {kind}: Gemini={gemini or '-'} | text={text or '-'} -> {result}{(' (' + detail + ')') if detail else ''}{_R}", flush=True)
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            conn.execute("INSERT INTO decision_log (call_id, ts, kind, gemini_signal, text_signal, result, detail) VALUES (?,?,?,?,?,?,?)",
+                         (getattr(self, "call_id", None), ts, kind, gemini, text, result, detail))
+            conn.commit()
+        except Exception as e:
+            self.dbg.log("db_error", where="decision_log", error=repr(e))
+        finally:
+            if conn:
+                conn.close()
+
+    def _show_filtered_turn(self, raw_text: str, reason: str) -> None:
+        """What was heard but not used (noise, TV, echo, words removed by the cleaning) is always shown on the console
+        and, when 'show_filtered_in_transcript' is on (default), written to the transcript with a distinct marker."""
+        ts = get_timestamp()
+        print(f"\n{_C_MUTED}[{ts}] 🔇 FILTERED ({reason}): {raw_text}{_R}", flush=True)
+        if knob_bool("show_filtered_in_transcript", True):
+            self.accumulated_transcript += f"\n\n🔇 [{ts}]: [FILTERED: {reason}]: {raw_text}"
+            self.last_speaker = None
+            self.update_transcription_db()
+
+    @staticmethod
+    def _new_mic_stats(now: float) -> Dict[str, Any]:
+        return {"t": now, "n": 0, "gated": 0, "echo": 0, "greeting": 0, "hangover": 0, "odd": 0, "rms_sum": 0.0, "rms_max": 0.0}
+
+    def _state_snapshot(self) -> Dict[str, Any]:
+        """Compact picture of the call state, attached to the decisions written in the debug trace."""
+        try:
+            return {
+                "hold": self.on_hold, "hanging_up": self.hanging_up, "farewell_pending": self.farewell_pending,
+                "priority": self.priority_call, "hangup_source": getattr(self, "hangup_source", ""),
+                "wait_limit": getattr(self, "category_wait_seconds", None),
+                "since_user_s": round(time.time() - self.last_user_spoke_time, 1),
+                "playing": self.currently_playing, "audio_q": self.audio_out_queue.qsize(),
+            }
+        except Exception:
+            return {}
+
+    def _check_priority_keywords(self, text: str, source: str = "gemini") -> None:
+        """Extended attention mode when a caller sentence contains a keyword of a memory rule."""
+        low = text.lower()
+        for rule in self._memory_rules:
+            if not isinstance(rule, dict):
+                continue
+            keywords = [str(k).lower() for k in rule.get("keywords", []) if str(k).strip()]
+            if any(kw in low for kw in keywords):
+                if not self.priority_call:
+                    self.category_wait_seconds = float(rule.get("wait_seconds", 120))
+                    self.dbg.log("priority", source=source, category=rule.get("category"), text=text)
+                    self.log_system_message(f"Priority keyword detected. Activating extended attention mode ({int(self.category_wait_seconds)}s).", "⚠")
+                    self.priority_call = True
+                break
+
     def log_system_message(self, message_text: str, emoji_prefix: str = "⚠") -> None:
         ts = get_timestamp()
         clean_msg = (
@@ -2067,10 +2763,16 @@ class PhoneAssistant:
 
         print(f"\n{_C_WARN}[{ts}] {console_tag}: {clean_msg}{_R}")
         self.accumulated_transcript += f"\n\n{emoji_prefix} [{ts}]: [SYSTEM]: {clean_msg}"
+        # The next assistant chunk must open its own line instead of being glued to this system line
+        self.last_speaker = None
+        self.dbg.log("sys", text=clean_msg)
         self.update_transcription_db()
 
-    def create_call_record_db(self, initial_tag: Optional[str] = None, initial_transcript: Optional[str] = None, audio_path_val: Optional[str] = None) -> None:
-        conn = sqlite3.connect(DB_PATH)
+    def create_call_record_db(self, initial_tag: Optional[str] = None, initial_transcript: Optional[str] = None, audio_path_val: Optional[str] = None,
+                              base_tag: Optional[str] = None, base_client_name: Optional[str] = None) -> None:
+        """Creates the call row. base_tag / base_client_name are the label and name the call keeps when no contact rule
+        overrides them; they stay NULL while the call is in progress and are filled when it ends."""
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         c = conn.cursor()
         initial = initial_transcript if initial_transcript is not None else f"⚠ [{get_timestamp()}]: [SYSTEM]: Call Connected."
         self.accumulated_transcript = initial
@@ -2078,20 +2780,41 @@ class PhoneAssistant:
         rec_path = self.recording_path if audio_path_val is None else audio_path_val
 
         c.execute(
-            "INSERT INTO calls (number, date, duration, spam_score, transcript, audio_path, client_audio_path, tag, summary) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')",
-            (self.caller_number, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 0, initial, rec_path, "", tag_to_use)
+            "INSERT INTO calls (number, date, duration, spam_score, transcript, audio_path, client_audio_path, tag, summary, base_tag, base_client_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
+            (self.caller_number, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0, 0, initial, rec_path, "", tag_to_use, base_tag, base_client_name)
         )
         self.call_id = c.lastrowid
         conn.commit()
         conn.close()
 
-    def update_transcription_db(self) -> None:
-        if self.call_id:
-            conn = sqlite3.connect(DB_PATH)
+    def update_transcription_db(self, force: bool = False) -> None:
+        """Persists the live transcript. Writes are merged (at most one per DB_WRITE_MIN_INTERVAL): the transcript
+        used to be written to SQLite once per streamed chunk. The receive loop flushes the pending write."""
+        if not self.call_id:
+            return
+        if not force and time.monotonic() - self._db_last_write < DB_WRITE_MIN_INTERVAL:
+            self._db_dirty = True
+            return
+        self._write_transcript_now()
+
+    def _write_transcript_now(self) -> None:
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute("UPDATE calls SET transcript=? WHERE id=?", (self.accumulated_transcript, self.call_id))
             conn.commit()
-            conn.close()
+            self._db_last_write = time.monotonic()
+            self._db_dirty = False
+        except Exception as e:
+            self.dbg.log("db_error", error=repr(e))
+        finally:
+            if conn:
+                conn.close()
+
+    def flush_transcription_db(self) -> None:
+        if self._db_dirty and self.call_id:
+            self._write_transcript_now()
 
     def save_to_db(self, name: str, message: str) -> None:
         if self.call_id:
@@ -2104,10 +2827,10 @@ class PhoneAssistant:
 
             visual_message = f"\n\n📝 [{exact_time}]: [SYSTEM]: *** {final_msg} ***"
             self.accumulated_transcript += visual_message
-            self.update_transcription_db()
+            self.update_transcription_db(force=True)
 
             try:
-                conn = sqlite3.connect(DB_PATH)
+                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                 conn.execute(
                     "INSERT INTO messages (call_id, number, date, time, caller_name, message_text, is_read) VALUES (?, ?, ?, ?, ?, ?, 0)",
                     (self.call_id, self.caller_number, exact_date, exact_time, str(name or "").strip(), str(message or "").strip())
@@ -2135,6 +2858,13 @@ class PhoneAssistant:
         except Exception:
             pass
 
+    def _notify_mic_loss(self, reason: str) -> None:
+        """The caller's audio stream stopped. This is not necessarily the user taking the call on the handset: the Bluetooth
+        audio link may also have dropped. Say so, and record what PipeWire and the call know at this moment."""
+        self.log_system_message("Caller audio stream lost (the call was routed to the handset or the Bluetooth audio link dropped). AI paused...", "⏸")
+        self.dbg.log("mic_lost", reason=reason, mic_node_active=self.mic_node_active, target=self.pw_record_target, state=self._state_snapshot() if self.dbg.enabled else None)
+        self._spawn(self._probe_bluetooth_audio())
+
     async def send_mic_audio(self, session) -> None:
         print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_AUDIO}[Mic] Active on node: {self.pw_record_target} (Gain: {self.caller_gain}x, Base Gate: {self.noise_gate_base}){_R}")
         cmd = ["pw-record", f"--target={self.pw_record_target}", "-P", '{"node.dont-reconnect": true}', "--format=s16", "--rate=16000", "--channels=1", "-"]
@@ -2153,7 +2883,7 @@ class PhoneAssistant:
             out, _ = await check_proc.communicate()
             if base_target not in out.decode("utf-8", errors="ignore"):
                 if not takeover_notified:
-                    self.log_system_message("Audio routed to handset (Takeover). AI paused...", "⏸")
+                    self._notify_mic_loss("node_missing")
                     takeover_notified = True
                 await asyncio.sleep(1.0)
                 continue
@@ -2162,7 +2892,7 @@ class PhoneAssistant:
                 proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
             except Exception:
                 if not takeover_notified:
-                    self.log_system_message("Audio routed to handset (Takeover). AI paused...", "⏸")
+                    self._notify_mic_loss("spawn_failed")
                     takeover_notified = True
                 await asyncio.sleep(1.0)
                 continue
@@ -2170,6 +2900,8 @@ class PhoneAssistant:
             background_energy = 25.0
             consecutive_empty = 0
             valid_chunks = 0
+            self._mic_carry = b""
+            self._gate_hangover_left = 0
 
             try:
                 while self.running:
@@ -2189,6 +2921,17 @@ class PhoneAssistant:
                         continue
 
                     consecutive_empty = 0
+                    if self._mic_carry:
+                        data = self._mic_carry + data
+                        self._mic_carry = b""
+                    if len(data) & 1:
+                        # The read ended in the middle of a 16-bit sample: keep the odd byte for the next read. Without
+                        # this every following sample is misaligned and the audio turns into noise.
+                        self._mic_carry = data[-1:]
+                        data = data[:-1]
+                        self._mic_stats["odd"] += 1
+                        if not data:
+                            continue
                     valid_chunks += 1
                     self.mic_node_active = True
                     now = time.time()
@@ -2204,6 +2947,7 @@ class PhoneAssistant:
                             "hold_return_prompt",
                             "[SYSTEM: Bluetooth audio has been restored to the switchboard. Remain silent and attentive until the caller speaks to you.]"
                         )
+                        self._note_self_interrupt()
                         await session.send_realtime_input(text=return_prompt)
 
                     raw_rms = calculate_rms(data)
@@ -2213,13 +2957,7 @@ class PhoneAssistant:
                     adaptive_gate = max(self.noise_gate_base, min(65, int(self.noise_gate_base + (background_energy * 0.35))))
                     noise_gate = min(80, adaptive_gate + 15) if self.on_hold else adaptive_gate
 
-                    count = len(data) // 2
-                    if count > 0 and self.caller_gain != 1.0:
-                        samples = struct.unpack(f"<{count}h", data)
-                        samples = [max(min(int(s * self.caller_gain), 32767), -32768) for s in samples]
-                        amplified_data = struct.pack(f"<{count}h", *samples)
-                    else:
-                        amplified_data = data
+                    amplified_data = apply_gain(data, self.caller_gain)
 
                     if not self.caller_recording_buffer:
                         self.first_mic_time = now
@@ -2235,21 +2973,48 @@ class PhoneAssistant:
                     self.last_mic_data_time = now
                     self.caller_recording_buffer.append(amplified_data)
 
-                    self._monitor_write(self.caller_pacat, amplified_data)
+                    self._monitor_write(self.caller_pacat, apply_gain(amplified_data, self._monitor_gain))
 
                     if self.greeting_in_progress:
                         if (now - self.greeting_started_time > 8.0) or (self.greeting_audio_received and not self.currently_playing and self.audio_out_queue.empty()):
                             self.greeting_in_progress = False
 
                     is_silence = (raw_rms < noise_gate)
+                    used_hangover = False
+                    if is_silence:
+                        # Hangover: the gate stays open for a few chunks after speech so the soft ends of words are not chopped
+                        if self._gate_hangover_left > 0:
+                            self._gate_hangover_left -= 1
+                            is_silence = False
+                            used_hangover = True
+                    else:
+                        self._gate_hangover_left = self.mic_gate_hangover_chunks
                     is_echo = (self.software_echo_suppression and self.currently_playing)
                     is_protected_greeting = (self.protect_initial_greeting and self.greeting_in_progress)
+
+                    if self.dbg.enabled:
+                        st = self._mic_stats
+                        st["n"] += 1
+                        st["rms_sum"] += raw_rms
+                        st["rms_max"] = max(st["rms_max"], raw_rms)
+                        st["gated"] += 1 if is_silence else 0
+                        st["hangover"] += 1 if used_hangover else 0
+                        st["echo"] += 1 if is_echo else 0
+                        st["greeting"] += 1 if is_protected_greeting else 0
+                        if now - st["t"] >= 5.0:
+                            self.dbg.log("mic_stats", chunks=st["n"], gated=st["gated"], hangover=st["hangover"], echo_muted=st["echo"],
+                                         greeting_muted=st["greeting"], odd_reads=st["odd"], rms_avg=round(st["rms_sum"] / max(1, st["n"]), 1),
+                                         rms_max=round(st["rms_max"], 1), gate=noise_gate, gain=self.caller_gain, hold=self.on_hold)
+                            self._mic_stats = self._new_mic_stats(now)
 
                     if is_silence or is_echo or is_protected_greeting:
                         out_pcm = b"\x00" * len(amplified_data)
                     else:
                         out_pcm = amplified_data
                         self.user_turn_audio.append(amplified_data)
+
+                    if self.online is not None:
+                        self.online.feed(amplified_data, not (is_silence or is_echo or is_protected_greeting))
 
                     await session.send_realtime_input(audio=types.Blob(data=out_pcm, mime_type="audio/pcm;rate=16000"))
 
@@ -2264,10 +3029,371 @@ class PhoneAssistant:
                     pass
 
             if self.running and not takeover_notified and not self.mic_node_active:
-                self.log_system_message("Audio routed to handset (Takeover). AI paused...", "⏸")
+                self._notify_mic_loss("stream_ended")
                 takeover_notified = True
 
             await asyncio.sleep(1.0)
+
+    def _spawn(self, coro: Any) -> None:
+        """Runs a coroutine in the background, keeping a reference so it is not garbage-collected half-way."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _release_hangup_calls(self, reason: str) -> None:
+        """The hangup was cancelled or ignored: the model is still waiting for the answer to its tool call, and without it
+        the model stays silent. Answer the call(s) with 'not hung up' and tell it, as text, to keep attending the caller."""
+        calls, self._pending_hangup_calls = self._pending_hangup_calls, []
+        if not calls or self._live_session is None:
+            return
+        self._spawn(self._answer_cancelled_hangup(self._live_session, calls, reason))
+
+    async def _answer_cancelled_hangup(self, session: Any, calls: List[Tuple[str, str]], reason: str) -> None:
+        message = self.prompts_data.get("hangup_cancelled", "")
+        try:
+            await session.send_tool_response(function_responses=[
+                types.FunctionResponse(id=call_id, name=name, response={"ok": False, "hung_up": False, "note": message}) for call_id, name in calls])
+            self.dbg.log("hangup_answer", action="tool_response", reason=reason, calls=len(calls))
+        except Exception as e:
+            self.dbg.log("hangup_answer", action="tool_response_failed", reason=reason, error=str(e))
+        if message:
+            try:
+                self._note_self_interrupt()
+                await session.send_realtime_input(text=message)
+                self.dbg.log("hangup_answer", action="text_sent", reason=reason)
+            except Exception as e:
+                self.dbg.log("hangup_answer", action="text_failed", reason=reason, error=str(e))
+
+    def _request_hangup_from_tool(self) -> None:
+        """The model asked to hang up. That is its INTENT, and the goodbye in its own words comes from the same decision,
+        so neither is a second opinion. What decides is the caller's side: a real goodbye, or silence once the farewell
+        has been played, with no caller turn in between and no 'not finished' verdict of the text model. Everything
+        goes through the same waiting logic as a goodbye heard in the assistant's text."""
+        self._hangup_tool_seen = True
+        if time.time() - self._farewell_veto_time < FAREWELL_VETO_SECONDS:
+            self.log_decision("hangup", gemini="tool", text="the text model said the caller has not closed the call", result="ignored")
+            self._release_hangup_calls("ignored")
+            return
+        if self.farewell_pending:
+            self.log_decision("hangup", gemini="tool", text="goodbye already pending", result="pending", detail="waiting for the caller's reaction")
+            return
+        self.farewell_pending = True
+        self.farewell_drained_since = 0.0
+        self._closing_vote = None
+        self._caller_spoke_since_intent = False
+        self._intent_text = self._asst_turn_text
+        self._intent_time = time.time()
+        self.log_decision("hangup", gemini="tool", text="no caller reaction yet", result="pending", detail="waiting for the farewell audio and the caller's reaction")
+        print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] {self.assistant_name} asked to hang up (tool). Waiting for the audio to finish and the caller's reaction...{_R}")
+        self._spawn(self._semantic_resolve_closing())
+
+    def _note_self_interrupt(self) -> None:
+        """Call right before sending an instruction as text to the model: it makes the model stop what it was saying,
+        which the server reports as an interruption that did not come from the caller."""
+        self._self_interrupt_until = time.time() + SELF_INTERRUPT_WINDOW_SECONDS
+
+    def _itx_is_suspect_echo(self, text: str) -> bool:
+        """True when a caller transcription most likely is the assistant's own voice coming back through the line.
+        The caller really talking over the assistant makes the Live API report an interruption first; long text
+        heard while the assistant speaks without one, or text that repeats what she just said, is suspect. Suspect
+        text is still shown, but it never starts or ends a hold, nor confirms a farewell."""
+        now = time.time()
+        if not (self.currently_playing or now < self.playback_end_time + 0.7):
+            return False
+        if now - self._last_interrupted_time < 4.0:
+            return False
+        tokens = fold_text(text).split()
+        if len(tokens) >= 8:
+            return True
+        if len(tokens) >= 3:
+            heard = set(fold_text(" ".join([self._asst_turn_text] + [p[2] for p in self.recent_asst_phrases])).split())
+            unique = set(tokens)
+            return sum(1 for w in unique if w in heard) / len(unique) >= 0.7
+        return False
+
+    def _recent_dialogue(self, max_chars: int = 900) -> str:
+        """The last lines of the call as CALLER / ASSISTANT text, for the semantic checks."""
+        names = {"🗣": "CALLER", "📞": "ASSISTANT", "🔇": "CALLER (filtered as noise)"}
+        lines = []
+        for block in self.accumulated_transcript.split("\n\n"):
+            m = re.match(r"^(🗣|📞|🔇)\s*\[[^\]]*\]:\s*(.*)$", block.strip(), re.S)
+            if m:
+                lines.append(f"{names[m.group(1)]}: {m.group(2).strip()}")
+        return "\n".join(lines[-10:])[-max_chars:]
+
+    def _semantic_budget(self, kind: str) -> bool:
+        now = time.time()
+        if self._semantic_count >= SEMANTIC_MAX_PER_CALL or now - self._semantic_last.get(kind, 0.0) < SEMANTIC_MIN_INTERVAL:
+            return False
+        self._semantic_last[kind] = now
+        self._semantic_count += 1
+        return True
+
+    async def _semantic_vote(self, kind: str) -> Optional[bool]:
+        """Second opinion from the text model on what the last lines of the call mean. True / False, or None when it
+        is unsure or unavailable: a missing answer is never a vote."""
+        if not self.semantic_votes:
+            return None
+        context = self._recent_dialogue()
+        if not context:
+            return None
+        schema = {"type": "object", "properties": {"answer": {"type": "string", "enum": ["yes", "no", "unsure"]}, "reason": {"type": "string"}}, "required": ["answer"]}
+        header = self.prompts_data.get("semantic_header", "")
+        question = self.prompts_data.get("semantic_questions", {}).get(kind, "")
+        if not header or not question:
+            return None
+        prompt = header.format(context=context) + question
+        started = time.time()
+        try:
+            config = types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=schema, temperature=0.0,
+                                                 thinking_config=types.ThinkingConfig(thinking_budget=0))
+            response = None
+            for attempt in (1, 2):
+                remaining = SEMANTIC_VOTE_TIMEOUT - (time.time() - started)
+                if remaining <= 0.5:
+                    raise asyncio.TimeoutError()
+                try:
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(self.client_text.models.generate_content, model=self.model_text, contents=prompt, config=config),
+                        timeout=remaining)
+                    break
+                except asyncio.TimeoutError:
+                    raise
+                except Exception as transient:
+                    if attempt == 2:
+                        raise
+                    self.dbg.log("semantic_vote_retry", kind=kind, error=repr(transient))
+                    await asyncio.sleep(0.6)
+            data = json.loads(clean_json_text(extract_response_text(response, default="{}")))
+            answer = str(data.get("answer", "")).lower()
+            self.dbg.log("semantic_vote", kind=kind, answer=answer, reason=data.get("reason"), ms=int((time.time() - started) * 1000), context=context)
+            print(f"{_C_MUTED}[{get_timestamp()}] [Semantic] {kind}: {answer} ({data.get('reason', '')}){_R}", flush=True)
+            return True if answer == "yes" else (False if answer == "no" else None)
+        except Exception as e:
+            self.dbg.log("semantic_vote_error", kind=kind, error=repr(e), ms=int((time.time() - started) * 1000))
+            print(f"{_C_MUTED}[{get_timestamp()}] [Semantic] {kind}: no answer ({type(e).__name__}: {e}){_R}", flush=True)
+            return None
+
+    async def _semantic_resolve_blocked_hold(self) -> None:
+        """The assistant said a waiting phrase but no wait-request keyword was heard from the caller: ask the text model."""
+        if not self._semantic_budget("hold_request"):
+            return
+        if await self._semantic_vote("hold_request") and not self.on_hold and not self.hanging_up:
+            self.on_hold = True
+            self.current_wait_start = self.last_user_spoke_time = time.time()
+            self._last_wait_request_time = time.time()
+            self.last_speaker = None
+            self.log_decision("hold", gemini="assistant said a waiting phrase", text="no keyword, text model: the caller asked to wait", result="activated", detail="semantic vote")
+            self.log_system_message(f"Hold activated (semantic check). Silencing inactivity (Limit {int(self.category_wait_seconds)}s).", "⏳")
+
+    async def _semantic_resolve_closing(self) -> None:
+        """Runs while the farewell is being played: asks the text model whether the caller really closed the call."""
+        vote = await self._semantic_vote("caller_closing")
+        if self.farewell_pending:
+            self._closing_vote = vote
+
+    async def _semantic_resolve_resume(self) -> None:
+        """A caller turn was dismissed during a hold: ask the text model whether it was addressed to the assistant."""
+        if not self.on_hold or not self._semantic_budget("addressed_to_assistant"):
+            return
+        if await self._semantic_vote("addressed_to_assistant") and self.on_hold and not self.hanging_up:
+            self.on_hold = False
+            if self.current_wait_start > 0:
+                self.accumulated_wait_time += (time.time() - self.current_wait_start)
+            self.current_wait_start = 0.0
+            self.log_decision("hold", gemini="-", text="dismissed turns, text model: addressed to the assistant", result="ended", detail="semantic vote")
+            self.log_system_message("Return from hold detected (semantic check). Resuming conversation...", "⏳")
+
+    async def _probe_bluetooth_audio(self) -> None:
+        """Logs, once per call, what PipeWire reports about the Bluetooth audio link (codec / profile)."""
+        summary: Dict[str, Any]
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
+            summary = summarize_bt_audio(json.loads(out.decode("utf-8", errors="ignore") or "[]"))
+        except FileNotFoundError:
+            summary = {"codec_guess": "unknown", "error": "pw-dump not found"}
+        except Exception as e:
+            summary = {"codec_guess": "unknown", "error": repr(e)}
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self.dbg.log("bt_audio", **summary)
+        print(f"{_C_MUTED}[{get_timestamp()}] [Audio] Bluetooth link: {summary['codec_guess']}{(' | ' + summary['error']) if summary.get('error') else ''}{_R}", flush=True)
+
+    @staticmethod
+    def _texts_agree(a: str, b: str) -> bool:
+        fa, fb = fold_text(a), fold_text(b)
+        return bool(fa) and (fa == fb or difflib.SequenceMatcher(None, fa, fb).ratio() >= 0.97)
+
+    def _register_caller_line(self, ts: str, text: str) -> None:
+        """Remembers a caller line just written to the transcript, so an alternative transcription can be attached to it."""
+        self._alt_lines.append({"t": time.time(), "marker": f"🗣 [{ts}]: {text}", "text": text, "labels": set()})
+        del self._alt_lines[:-12]
+        self._attach_pending_alternatives()
+
+    @staticmethod
+    def _alt_pairing(line_text: str, alt_text: str, dt: float) -> Tuple[float, bool]:
+        ratio = difflib.SequenceMatcher(None, fold_text(line_text), fold_text(alt_text)).ratio()
+        return ratio, (ratio >= ALT_MIN_RATIO or dt <= ALT_NEAR_S)
+
+    def _attach_alternative(self, line: Dict[str, Any], label: str, text: str) -> bool:
+        """Writes ' | [label]: text' right after the Gemini line in the transcript (nothing is added when both agree)."""
+        if label in line["labels"]:
+            return False
+        idx = self.accumulated_transcript.rfind(line["marker"])
+        if idx < 0:
+            return False
+        line["labels"].add(label)
+        self._alt_total += 1
+        if self._texts_agree(line["text"], text):
+            self._alt_agree += 1
+            self.dbg.log("alt_agrees", label=label, text=text)
+            return True
+        addition = f" | [{label}]: {text}"
+        end = idx + len(line["marker"])
+        self.accumulated_transcript = self.accumulated_transcript[:end] + addition + self.accumulated_transcript[end:]
+        line["marker"] += addition
+        self.dbg.log("alt_attached", label=label, gemini=line["text"], alternative=text)
+        self.update_transcription_db()
+        return True
+
+    def add_alternative(self, label: str, text: str, ts: str = "", vocab_only: bool = False) -> None:
+        """An alternative transcription (online, Whisper) of what the caller said: it goes right next to Gemini's line,
+        or waits a few seconds for that line if it has not been written yet."""
+        now = time.time()
+        best: Optional[Tuple[float, Dict[str, Any]]] = None
+        for line in self._alt_lines:
+            dt = now - line["t"]
+            if dt > ALT_ATTACH_WINDOW_S or label in line["labels"]:
+                continue
+            ratio, ok = self._alt_pairing(line["text"], text, dt)
+            if ok and (best is None or (ratio, line["t"]) > (best[0], best[1]["t"])):
+                best = (ratio, line)
+        if best is not None and self._attach_alternative(best[1], label, text):
+            return
+        self._alt_pending.append({"t": now, "label": label, "text": text, "ts": ts or get_timestamp(), "vocab_only": vocab_only})
+
+    def _attach_pending_alternatives(self) -> None:
+        if not self._alt_pending or not self._alt_lines:
+            return
+        now = time.time()
+        line = self._alt_lines[-1]
+        remaining = []
+        for p in self._alt_pending:
+            attached = False
+            if now - p["t"] <= ALT_ATTACH_WINDOW_S and p["label"] not in line["labels"]:
+                _, ok = self._alt_pairing(line["text"], p["text"], now - p["t"])
+                attached = ok and self._attach_alternative(line, p["label"], p["text"])
+            if not attached:
+                remaining.append(p)
+        self._alt_pending = remaining
+
+    def _flush_pending_alternatives(self, force: bool = False) -> None:
+        """Alternative texts that found no Gemini line: written on their own line (or filtered when they look invented)."""
+        if not self._alt_pending:
+            return
+        now = time.time()
+        keep = []
+        for p in self._alt_pending:
+            if not force and now - p["t"] < ALT_ORPHAN_AFTER_S:
+                keep.append(p)
+            elif p["vocab_only"]:
+                self._show_filtered_turn(p["text"], f"{p['label']}: only a name from the vocabulary, Gemini heard nothing (possible invention)")
+            else:
+                self.accumulated_transcript += f"\n\n🌐 [{p['ts']}]: [{p['label']}]: {p['text']}"
+                self.last_speaker = None
+                self.update_transcription_db()
+        self._alt_pending = keep
+
+    def _on_online_final(self, text: str, heard_at: float) -> None:
+        """A final text from the online transcriber: shown next to Gemini's line, stored, and used as one more opinion."""
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text or self._post_processed:
+            return
+        ts = get_timestamp()
+        valid = (self.is_valid_text(text) and not self._has_foreign_language_noise(text)
+                 and not self._has_excessive_repetition(text) and not self._is_transcription_noise(text))
+        suspect = self._itx_is_suspect_echo(text)
+        if suspect and heard_at and self._asst_turn_start_time and heard_at < self._asst_turn_start_time - 0.2:
+            suspect = False   # the caller finished speaking before the assistant started this answer: it is a late text, not an echo
+        tokens = fold_text(text).split()
+        vocab_tokens = {w for term in (self.online.vocabulary if self.online else []) for w in fold_text(term).split()}
+        # A vocabulary bias can make the model "hear" a name in noise: a text that is only a name, with no Gemini line near it, is not trusted
+        vocab_only = bool(tokens) and len(tokens) <= 2 and all(t in vocab_tokens for t in tokens)
+        if self.online is not None:
+            self.online.finals += 1
+            self.online.out_chars += len(text)
+        self.dbg.log("online_final", ts=ts, text=text, valid=valid, suspect=suspect, vocab_only=vocab_only,
+                     delay_s=round(time.time() - heard_at, 2) if heard_at else None)
+        if not valid:
+            self._show_filtered_turn(text, "online transcription filtered")
+            return
+        color = "\033[36m" if SUPPORTS_COLOR else ""
+        print(f"\n{color}· [{ONLINE_LABEL}/{ts}]: {text}{_R}", flush=True)
+        self.add_alternative(ONLINE_LABEL, text, ts, vocab_only)
+        if not vocab_only:
+            self._apply_whisper_signals(text, "", heard_at, suspect, ONLINE_LABEL)
+
+    def _log_playback_stats(self) -> None:
+        """Every 5 s: how much model audio arrived and how much reached the player (only with the debug trace on)."""
+        now = time.time()
+        if not self.dbg.enabled or now - self._pb_last_stats < 5.0:
+            return
+        self._pb_last_stats = now
+        proc = self._playback_proc
+        self.dbg.log("playback_stats", received_bytes=self._pb_in_bytes, written_bytes=self._pb_written_bytes, write_failures=self._pb_write_fail,
+                     last_error=self._pb_last_error, spawns=self._pb_spawns, player_alive=(proc is not None and proc.poll() is None),
+                     player_returncode=(None if proc is None else proc.poll()), queue=self.audio_out_queue.qsize(), playing=self.currently_playing,
+                     mic_node_active=getattr(self, "mic_node_active", None), target=self.pw_playback_target)
+
+    def _playback_summary(self) -> None:
+        """Console line at the end of the call: did the model audio reach the player?"""
+        seconds = self._pb_written_bytes / PLAYBACK_BYTES_PER_SECOND
+        line = (f"[Playback] model audio received {self._pb_in_bytes} B, written to the player {self._pb_written_bytes} B (~{seconds:.1f} s), "
+                f"write failures {self._pb_write_fail}, player starts {self._pb_spawns}")
+        if self._pb_in_bytes > 0 and self._pb_written_bytes == 0:
+            print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}{line}. NOTHING reached the player ({self._pb_last_error or 'no error recorded'}){_R}", flush=True)
+        elif self._pb_in_bytes == 0:
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}{line}. The model sent no audio{_R}", flush=True)
+        else:
+            print(f"{_C_MUTED}[{get_timestamp()}] {line}{_R}", flush=True)
+        self.dbg.log("playback_summary", received_bytes=self._pb_in_bytes, written_bytes=self._pb_written_bytes, write_failures=self._pb_write_fail,
+                     last_error=self._pb_last_error, spawns=self._pb_spawns)
+
+    def _on_model_interrupted(self) -> None:
+        """The Live API discarded the generation because the caller started speaking. The audio it had already sent
+        is still queued here (the model streams faster than real time): it must be dropped and the player stopped,
+        otherwise the assistant keeps talking over the caller and that voice comes back through the microphone,
+        where it is transcribed as if the caller had said it."""
+        dropped = 0
+        self_inflicted = time.time() < self._self_interrupt_until
+        if not self_inflicted:
+            self._last_interrupted_time = time.time()
+        if self.flush_on_interrupt and not self_inflicted:
+            try:
+                while True:
+                    self.audio_out_queue.get_nowait()
+                    self.audio_out_queue.task_done()
+                    dropped += 1
+            except queue.Empty:
+                pass
+            proc = self._playback_proc
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()  # The playback thread notices the dead player and starts a new one with the next audio
+                except Exception:
+                    pass
+            self.playback_end_time = time.time()
+            self._asst_chunk_buffer = ""
+            self._asst_turn_text = ""
+            self._asst_turn_last_time = 0.0
+        self.dbg.log("interrupted", flushed=self.flush_on_interrupt and not self_inflicted, self_inflicted=self_inflicted, dropped_chunks=dropped, state=self._state_snapshot())
+        who = "by an instruction sent to the model (audio kept)" if self_inflicted else f"by the caller (queued audio dropped: {dropped})"
+        print(f"\n{_C_MUTED}[{get_timestamp()}] [Live] Generation interrupted {who}{_R}", flush=True)
 
     def is_playback_drained(self) -> bool:
         """True when the model's audio has really finished playing. The audio queue is empty long before that:
@@ -2310,20 +3436,31 @@ class PhoneAssistant:
 
                     if proc is None or proc.poll() is not None:
                         if proc:
+                            self.dbg.log("playback_proc_died", returncode=proc.poll(), spawns=self._pb_spawns)
                             try:
                                 proc.kill()
                                 proc.wait()
                             except Exception:
                                 pass
-                        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+                        if self._pb_stderr is None and self.dbg.enabled:
+                            try:
+                                self._pb_stderr = open(self.dbg.path.replace(".jsonl", "_pw-play.log"), "ab")
+                            except Exception:
+                                self._pb_stderr = None
+                        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self._pb_stderr or subprocess.DEVNULL, env=env)
+                        self._playback_proc = proc
+                        self._pb_spawns += 1
+                        self.dbg.log("playback_proc_started", pid=proc.pid, target=self.pw_playback_target, spawns=self._pb_spawns)
 
                     try:
                         proc.stdin.write(chunk)
                         proc.stdin.flush()
+                        self._pb_written_bytes += len(chunk)
                         self.last_chunk_audio_time = time.time()
                         self.playback_end_time = max(self.playback_end_time, self.last_chunk_audio_time) + len(chunk) / PLAYBACK_BYTES_PER_SECOND
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._pb_write_fail += 1
+                        self._pb_last_error = repr(e)
 
                     self.audio_out_queue.task_done()
                 except queue.Empty:
@@ -2398,11 +3535,45 @@ class PhoneAssistant:
             return True
         return t in set(self.words_data.get("transcription_noise", []))
 
-    async def heal_transcription_whisper(self, audio_bytes_list: list, gemini_txt: str, turn_ts: str = "") -> None:
+    async def heal_transcription_whisper(self, audio_bytes_list: list, gemini_txt: str, turn_ts: str = "", suspect: bool = False) -> None:
+        """Queues the caller audio of one transcription segment for Whisper. One worker runs the jobs one after
+        another: launching a whisper-cli per segment in parallel saturates the CPU and delays the whole call."""
+        if self._whisper_queue is None:
+            self._whisper_queue = asyncio.Queue(maxsize=WHISPER_QUEUE_MAX)
+        if self._whisper_worker_task is None or self._whisper_worker_task.done():
+            self._whisper_worker_task = asyncio.create_task(self._whisper_worker())
+        try:
+            self._whisper_queue.put_nowait((audio_bytes_list, gemini_txt, turn_ts, time.time(), suspect))
+            self.dbg.log("whisper_queued", ts=turn_ts, gemini=gemini_txt, qsize=self._whisper_queue.qsize(),
+                         audio_s=round(sum(len(c) for c in audio_bytes_list) / 32000.0, 2))
+        except asyncio.QueueFull:
+            self.dbg.log("whisper_dropped", ts=turn_ts, reason="queue_full")
+
+    async def _whisper_worker(self) -> None:
+        while True:
+            job = await self._whisper_queue.get()
+            try:
+                await self._whisper_process(*job)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.dbg.log("whisper_error", error=repr(e))
+            finally:
+                self._whisper_queue.task_done()
+
+    async def _whisper_process(self, audio_bytes_list: list, gemini_txt: str, turn_ts: str, queued_at: float, suspect: bool = False) -> None:
+        if self._post_processed:
+            return
         model_path = os.path.join(BASE_DIR, "models", f"ggml-{self.whisper_full_model}.bin")
         if not WHISPER_BIN or not os.path.exists(WHISPER_BIN) or not os.path.exists(model_path):
+            if not self._whisper_missing_logged:
+                self._whisper_missing_logged = True
+                print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Whisper] Real-time mode is on but cannot run. "
+                      f"whisper-cli: {WHISPER_BIN or 'NOT FOUND'} | model: {model_path} ({'found' if os.path.exists(model_path) else 'NOT FOUND'}){_R}")
+                self.dbg.log("whisper_unavailable", bin=WHISPER_BIN or None, model=model_path, model_exists=os.path.exists(model_path))
             return
         tmp_wav = f"/tmp/whisper_turn_{str(uuid.uuid4())[:8]}.wav"
+        started = time.time()
         try:
             with wave.open(tmp_wav, "wb") as wf:
                 wf.setnchannels(1)
@@ -2411,34 +3582,92 @@ class PhoneAssistant:
                 for chunk in audio_bytes_list:
                     wf.writeframes(chunk)
             lang_arg = self.current_lang.split("-")[0]
-            proc = await asyncio.create_subprocess_exec(
-                WHISPER_BIN, "-l", lang_arg, "-t", "4", "-m", model_path, "-f", tmp_wav,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-            )
+            cmd = [WHISPER_BIN, "-l", lang_arg, "-t", str(self.whisper_threads), "-m", model_path, "-f", tmp_wav]
+            if self.whisper_prompt and await asyncio.to_thread(whisper_supports_prompt):
+                cmd += ["--prompt", self.whisper_prompt]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             stdout, _ = await proc.communicate()
+            run_ms = int((time.time() - started) * 1000)
+            if self._post_processed:
+                return
             if not stdout:
+                self.dbg.log("whisper_empty", ts=turn_ts, run_ms=run_ms, returncode=proc.returncode)
                 return
             whisper_txt = clean_whisper_output(stdout.decode("utf-8", errors="ignore"))
             wv = not (not whisper_txt.strip() or self._has_foreign_language_noise(whisper_txt) or self._has_excessive_repetition(whisper_txt) or self._is_transcription_noise(whisper_txt))
             gv = not (not gemini_txt.strip() or self._has_foreign_language_noise(gemini_txt) or self._has_excessive_repetition(gemini_txt) or self._is_transcription_noise(gemini_txt))
 
-            combined = (
-                f"{gemini_txt} | [Whisper]: {whisper_txt}" if gv and wv
-                else ("[Noise Filtered]" if not gv and not wv else f"[Noise Filtered] | [Whisper]: {whisper_txt}" if wv else f"{gemini_txt} | [Whisper]: [Noise Filtered]")
-            )
+            w_label = f"Whisper.cpp {self.whisper_full_model}"
+            self._alt_total += 1
+            if gv and wv and self._texts_agree(gemini_txt, whisper_txt):
+                self._alt_agree += 1
+                combined = gemini_txt
+            else:
+                combined = (
+                    f"{gemini_txt} | [{w_label}]: {whisper_txt}" if gv and wv
+                    else ("[Noise Filtered]" if not gv and not wv else f"[Noise Filtered] | [{w_label}]: {whisper_txt}" if wv else f"{gemini_txt} | [{w_label}]: [Noise Filtered]")
+                )
             pat = f"🗣 [{turn_ts}]: {gemini_txt}"
             if pat in self.accumulated_transcript:
                 self.accumulated_transcript = self.accumulated_transcript.replace(pat, f"🗣 [{turn_ts}]: {combined}")
 
             _C_WHISPER = "\033[33m" if SUPPORTS_COLOR else ""
             whisper_display = whisper_txt if wv else "[Noise Filtered]"
-            print(f"\n{_C_WHISPER}· [Whisper/{turn_ts}]: {whisper_display}{_R}", flush=True)
+            print(f"\n{_C_WHISPER}· [{w_label}/{turn_ts}]: {whisper_display}{_R}", flush=True)
             self.update_transcription_db()
-        except Exception:
-            pass
+
+            if self.dbg.enabled:
+                norm = lambda t: re.sub(r"[^\w\s]", "", t.lower()).strip()
+                self.dbg.log("whisper_result", ts=turn_ts, whisper=whisper_txt, gemini=gemini_txt, whisper_ok=wv, gemini_ok=gv,
+                             similarity=round(difflib.SequenceMatcher(None, norm(gemini_txt), norm(whisper_txt)).ratio(), 2),
+                             run_ms=run_ms, wait_ms=int((started - queued_at) * 1000),
+                             audio_s=round(sum(len(c) for c in audio_bytes_list) / 32000.0, 2))
+            if wv:
+                self._apply_whisper_signals(whisper_txt, gemini_txt, queued_at, suspect)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.dbg.log("whisper_error", error=repr(e))
         finally:
             if os.path.exists(tmp_wav):
                 os.remove(tmp_wav)
+
+    def _apply_whisper_signals(self, whisper_txt: str, gemini_txt: str, queued_at: float, suspect: bool = False, source: str = "Whisper") -> None:
+        """Whisper is an independent second reading of the same caller audio. Its text feeds the same detectors as
+        Gemini's transcription, so a word misheard by one of them can still be caught by the other. Results of
+        segments heard before the last change of a state are ignored (they describe the past)."""
+        if not self.whisper_signals or self.hanging_up or self._post_processed:
+            return
+        if suspect:
+            self.dbg.log("whisper_signal_skipped", reason="possible echo of the assistant", source=source, whisper=whisper_txt)
+            return
+        now = time.time()
+        hold_since = self.__dict__.get("_tf_on_hold_since", 0.0)
+        hold_phrase = self._matches_any_phrase(self._without_ignore_hold_words(whisper_txt), self._caller_hold_phrases(), fuzzy=True)
+
+        if self._is_wait_request(whisper_txt):
+            self._last_wait_request_time = max(self._last_wait_request_time, queued_at)
+
+        if queued_at > hold_since:
+            if not self.on_hold and hold_phrase:
+                self.log_decision("hold", gemini=f"heard: {gemini_txt}" if gemini_txt else "-", text=f"{source}: {whisper_txt}", result="activated", detail=f"{source} keyword")
+                self.on_hold = True
+                self.current_wait_start = self.last_user_spoke_time = now
+                self.last_speaker = None
+                self.log_system_message(f"Hold activated by caller (heard by {source}). Silencing inactivity (Limit {int(self.category_wait_seconds)}s).", "⏳")
+            elif self.on_hold and not hold_phrase and self._check_wait_return(whisper_txt):
+                self.log_decision("hold", gemini=f"heard: {gemini_txt}" if gemini_txt else "-", text=f"{source}: {whisper_txt}", result="ended", detail=f"{source} return keyword")
+                self.log_system_message(f"Return from hold detected (heard by {source}). Resuming conversation...", "⏳")
+                self.on_hold = False
+                if self.current_wait_start > 0:
+                    self.accumulated_wait_time += (now - self.current_wait_start)
+                self.current_wait_start = 0.0
+
+        self._check_priority_keywords(whisper_txt, source.lower())
+
+        if self.farewell_pending and queued_at > self.__dict__.get("_tf_farewell_pending_since", 0.0) and self._is_farewell(whisper_txt, fuzzy=True):
+            self.log_decision("hangup", gemini=f"heard: {gemini_txt}" if gemini_txt else "-", text=f"{source}: {whisper_txt}", result="caller goodbye", detail=source)
+            self._commit_farewell_hangup(f"the caller also said goodbye (heard by {source})")
 
     def _strip_streamed_angle_tags(self, text: str) -> str:
         """Strips <...> tags from streamed output chunks even when a tag is split across two or more chunks."""
@@ -2475,6 +3704,8 @@ class PhoneAssistant:
 
     def is_valid_text(self, text: str) -> bool:
         if re.search(r"[\u4e00-\u9fff\uac00-\ud7a3\u3040-\u30ff\u1100-\u11ff]", text):
+            return False
+        if self.current_lang.split("-")[0].lower() in LATIN_SCRIPT_LANGS and non_latin_letter_ratio(text) > 0.5:
             return False
         cleaned = text.strip().lower()
         if len(cleaned) <= 1 and cleaned not in ("y", "o", "a", "s", "i", "sí", "si", "no"):
@@ -2531,34 +3762,135 @@ class PhoneAssistant:
                 "summary": "", "response_text": ""
             }
 
-    def _matches_any_phrase(self, text: str, phrases: list) -> bool:
-        return matches_any_phrase(text, phrases)
+    def _matches_any_phrase(self, text: str, phrases: list, fuzzy: bool = False) -> bool:
+        return matches_any_phrase(text, phrases, fuzzy and self.fuzzy_keywords)
 
-    def _is_farewell(self, text: str) -> bool:
-        """True when the text holds a real farewell (farewell word neither denied nor merely mentioned)."""
-        return find_farewell(text, self.words_data.get("cut_words", []), self.words_data.get("goodbye_veto_words", []), self.words_data.get("goodbye_meta_words", []))
+    def _is_farewell(self, text: str, fuzzy: bool = False) -> bool:
+        """True when the text holds a real farewell (farewell word neither denied nor merely mentioned).
+        fuzzy=True tolerates recognition errors and is only for caller speech."""
+        return find_farewell(text, self.words_data.get("cut_words", []), self.words_data.get("goodbye_veto_words", []), self.words_data.get("goodbye_meta_words", []), fuzzy and self.fuzzy_keywords)
 
     def _cancel_pending_farewell(self, reason: str) -> None:
+        self.dbg.log("farewell", action="cancel", reason=reason, state=self._state_snapshot())
+        self.log_decision("hangup", gemini="assistant text had a goodbye", text=reason, result="cancelled")
         self.farewell_pending = False
         self.farewell_drained_since = 0.0
+        self._hangup_tool_seen = False
+        self._closing_vote = None
+        self._caller_spoke_since_intent = False
         self._asst_chunk_buffer = ""
         print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[SYSTEM]: Pending farewell cancelled ({reason}).{_R}")
+        self._release_hangup_calls(reason)
 
     def _commit_farewell_hangup(self, reason: str) -> None:
+        self.dbg.log("farewell", action="commit", reason=reason, state=self._state_snapshot())
+        self.log_decision("hangup", gemini="hangup tool seen" if self._hangup_tool_seen else "no hangup tool call",
+                          text="goodbye in the text" if not self._hangup_tool_seen else "goodbye intent", result="hangup", detail=reason)
         self.farewell_pending = False
         self.farewell_drained_since = 0.0
         self.hanging_up = self.hangup_triggered = True
         self.hangup_triggered_time = time.time()
-        self.hangup_source = "cut_words"
+        self.hangup_source = "tool" if self._hangup_tool_seen else "cut_words"
+        self._hangup_tool_seen = False
+        self._pending_hangup_calls = []
+        self._closing_vote = None
+        self._caller_spoke_since_intent = False
         self.hangup_reason = "completed"
         print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Farewell confirmed ({reason}). Initiating clean call cut...{_R}")
 
     def _check_wait_return(self, text: str) -> bool:
         triggers = list(self.words_data.get("return_triggers", []))
         triggers.extend([self.assistant_name.lower(), self.boss_name.lower()])
-        return self._matches_any_phrase(text, triggers)
+        return self._matches_any_phrase(text, triggers, fuzzy=True)
+
+    def _without_ignore_hold_words(self, text: str) -> str:
+        safe = text.lower()
+        for iw in self.words_data.get("ignore_hold_words", []):
+            safe = safe.replace(iw.lower(), "")
+        return safe
+
+    def _is_farewell_ack(self, text: str) -> bool:
+        """True when a caller turn is only an acknowledgement that goes with closing a call ('vale, gracias', 'no, nada
+        más', 'igualmente'): after the assistant's goodbye it does not mean the caller wants to go on. Anything else
+        ('espera, espera', '¿oye?', a question, a new request) does. Languages without farewell_ack_words keep the
+        old rule: a turn of farewell_cancel_min_words words or more means the caller goes on."""
+        phrases = self.words_data.get("farewell_ack_words")
+        if not phrases:
+            return len(text.split()) < self.farewell_cancel_min_words
+        remainder = " " + fold_text(text) + " "
+        for phrase in sorted((fold_text(p) for p in phrases if fold_text(p)), key=len, reverse=True):
+            remainder = remainder.replace(" " + phrase + " ", " ")
+            remainder = remainder.replace(" " + phrase + " ", " ")
+        return not remainder.strip()
+
+    def _caller_hold_phrases(self) -> list:
+        """What the CALLER says to ask for a wait. wait_request_words holds clear requests only ('un momento', 'espere un
+        momento', 'no cuelgue'...): the bare word 'espera' is left out on purpose, because callers also say it as a noun
+        ('el modo de espera', 'estoy a la espera') and that opened false holds. Languages without the list keep hold_words."""
+        return self.words_data.get("wait_request_words") or self.words_data.get("hold_words", [])
+
+    def _is_wait_request(self, text: str) -> bool:
+        """True when the caller clearly asks (or tells) the assistant to wait."""
+        return self._matches_any_phrase(self._without_ignore_hold_words(text), self._caller_hold_phrases(), fuzzy=True)
+
+    def _hold_acceptance_allowed(self, window: float = HOLD_ACCEPT_WINDOW_SECONDS) -> bool:
+        """The assistant's own "I'll wait" phrase only starts a hold when the caller has just asked to wait.
+        Without it, phrases such as "for a moment" or "I remain waiting for the details" opened false holds.
+        Languages without a wait_request_words list keep the previous behaviour."""
+        if not self.words_data.get("wait_request_words"):
+            return True
+        return self._last_wait_request_time > 0.0 and (time.time() - self._last_wait_request_time) <= window
+
+    def _note_hold_phrase_without_request(self) -> None:
+        now = time.time()
+        if now - self._hold_gate_last_note > 4.0:
+            self._hold_gate_last_note = now
+            self.log_decision("hold", gemini="assistant said a waiting phrase", text="the caller did not ask to wait", result="not activated")
+            self._spawn(self._semantic_resolve_blocked_hold())
+
+    def _hold_note_dismissed_caller_turn(self, text: str) -> None:
+        """A caller turn was dismissed during a hold (no return keyword). Remember it: if the assistant then answers it
+        with a real reply, the conversation has in fact resumed. A new wait request is not such a turn."""
+        if self._is_wait_request(text):
+            return
+        self._hold_pending_caller_time = time.time()
+
+    def _register_hold_exchange(self) -> None:
+        """Second opinion to leave a hold. The return keywords are a closed list, so a caller who comes back without
+        using one stayed 'on hold' while the conversation went on. When the assistant gives a real, non-hold reply to
+        HOLD_RESUME_EXCHANGES consecutive dismissed caller turns, the hold is considered over."""
+        if not self.on_hold:
+            self._hold_pending_caller_time = 0.0
+            self._hold_resume_count = 0
+            return
+        if self._hold_pending_caller_time <= 0.0:
+            return
+        now = time.time()
+        if now - self._hold_pending_caller_time > HOLD_RESUME_REPLY_SECONDS:
+            self._hold_pending_caller_time = 0.0
+            return
+        turn = self._asst_turn_text
+        if len(turn.split()) < HOLD_RESUME_MIN_WORDS:
+            return
+        if self._matches_any_phrase(self._without_ignore_hold_words(turn), self.words_data.get("hold_words", [])):
+            return
+        self._hold_pending_caller_time = 0.0
+        if self._hold_resume_count == 0 or now - self._hold_resume_first_time > HOLD_RESUME_WINDOW_SECONDS:
+            self._hold_resume_count = 1
+            self._hold_resume_first_time = now
+        else:
+            self._hold_resume_count += 1
+        if self._hold_resume_count >= HOLD_RESUME_EXCHANGES:
+            self._hold_resume_count = 0
+            self.log_system_message("Return from hold inferred: the assistant answered consecutive caller turns. Resuming conversation...", "⏳")
+            self.log_decision("hold", gemini="assistant answered the caller", text="no return keyword", result="ended", detail="behaviour evidence")
+            self.on_hold = False
+            if self.current_wait_start > 0:
+                self.accumulated_wait_time += (time.time() - self.current_wait_start)
+            self.current_wait_start = 0.0
 
     async def receive_audio_and_tools(self, session) -> None:
+        self._live_session = session
         threading.Thread(target=self.sync_playback_loop, daemon=True).start()
 
         self.last_user_spoke_time = time.time()
@@ -2588,6 +3920,8 @@ class PhoneAssistant:
             self.greeting_started_time = time.time()
             self.greeting_audio_received = False
 
+        self._note_self_interrupt()
+
         await session.send_realtime_input(text=greeting)
         print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Connected. Conversation started.{_R}")
 
@@ -2597,10 +3931,20 @@ class PhoneAssistant:
                     if self.farewell_drained_since <= 0.0:
                         self.farewell_drained_since = time.time()
                     elif time.time() - self.farewell_drained_since >= self.farewell_grace_seconds:
-                        if self._is_farewell(self._asst_turn_text):
-                            self._commit_farewell_hangup("no caller reply after the farewell")
-                        else:
+                        farewell_in_turn = self._is_farewell(self._asst_turn_text)
+                        farewell_remembered = self._caller_spoke_since_intent and self._is_farewell(self._intent_text)
+                        newer_turn = self._asst_turn_start_time > self._intent_time + 1.0   # a NEW assistant turn, not the goodbye's own
+                        if not (self._hangup_tool_seen or farewell_in_turn or farewell_remembered):
                             self._cancel_pending_farewell("the farewell no longer stands in the full turn")
+                        elif not farewell_in_turn and (newer_turn or "?" in self._asst_turn_text):
+                            # The last thing the assistant said is a question or an answer, not a goodbye: it expects the caller
+                            self._cancel_pending_farewell("the conversation went on after the goodbye request")
+                        elif self._closing_vote is False:
+                            # Silence is not a goodbye when the caller only mentioned / tested a goodbye or still has a request.
+                            self._farewell_veto_time = time.time()
+                            self._cancel_pending_farewell("the text model says the caller has not closed the conversation")
+                        else:
+                            self._commit_farewell_hangup("no caller reply after the farewell")
                 else:
                     self.farewell_drained_since = 0.0
 
@@ -2632,18 +3976,21 @@ class PhoneAssistant:
                         self.hanging_up = self.forced_goodbye_active = self.hangup_triggered = True
                         self.hangup_reason = "completed"
                         self.log_system_message("Grace period exhausted. Forcing hangup...", "❌")
+                        self._note_self_interrupt()
                         await session.send_realtime_input(text=self.prompts_data.get("silence_grace_end", ""))
 
                 elif self.on_hold and total_hold_time > 900.0 and not self.waiting_definitive_cut:
                     self.waiting_definitive_cut = True
                     self.cut_warning_time = time.time()
                     self.log_system_message("Maximum accumulated hold time (15 mins) exceeded. Starting 15s grace warning...", "⚠")
+                    self._note_self_interrupt()
                     await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
 
                 elif time_without_user > silence_threshold and not self.hello_question_sent and not self.waiting_definitive_cut:
                     self.log_system_message(f"{int(silence_threshold)}s without response. Asking if someone is there...", "⏳")
                     self.hello_question_sent = True
                     self.last_user_spoke_time = time.time()
+                    self._note_self_interrupt()
                     await session.send_realtime_input(text=self.prompts_data.get("hello_question", ""))
 
                 elif self.hello_question_sent and not self.waiting_definitive_cut and time_without_user > 15.0:
@@ -2651,8 +3998,12 @@ class PhoneAssistant:
                     self.cut_warning_time = time.time()
                     self.last_user_spoke_time = time.time()
                     self.log_system_message("Continued silence. Starting 15s grace period...", "⏳")
+                    self._note_self_interrupt()
                     await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
 
+            self.flush_transcription_db()
+            self._flush_pending_alternatives()
+            self._log_playback_stats()
             try:
                 msg = await asyncio.wait_for(session._receive(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -2664,13 +4015,11 @@ class PhoneAssistant:
                 function_responses = []
                 for fc in msg.tool_call.function_calls:
                     decision = self.policy_engine.evaluate({"name": fc.name, "args": dict(fc.args)}, self.last_call_json, self.words_data.get("cut_words", []))
+                    self.dbg.log("tool_call", name=fc.name, args=dict(fc.args), decision=decision.status, reason=getattr(decision, "reason", ""), state=self._state_snapshot())
                     if decision.status == "allow":
                         if fc.name == "hangup":
-                            self.hanging_up = self.hangup_triggered = True
-                            self.hangup_triggered_time = time.time()
-                            self.hangup_reason = "completed"
-                            self.hangup_source = "tool"
-                            print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] {self.assistant_name} requested hangup via tool. Waiting for audio to finish...{_R}")
+                            self._pending_hangup_calls.append((fc.id, fc.name))
+                            self._request_hangup_from_tool()
                         elif fc.name == "save_message":
                             self.save_to_db(fc.args.get("caller_name"), fc.args.get("message_text"))
                             function_responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response={"ok": True}))
@@ -2680,31 +4029,91 @@ class PhoneAssistant:
                 if function_responses:
                     await session.send_tool_response(function_responses=function_responses)
 
+            if getattr(msg, "go_away", None):
+                self.dbg.log("go_away", info=str(msg.go_away))
+
             sc = getattr(msg, "server_content", None)
             if sc:
+                if getattr(sc, "interrupted", False):
+                    self._on_model_interrupted()
+                for _event_flag in ("turn_complete", "generation_complete"):
+                    if getattr(sc, _event_flag, False):
+                        self.dbg.log(_event_flag)
                 itx = getattr(sc, "input_transcription", None)
                 if itx and itx.text and self.hanging_up and getattr(self, "hangup_triggered", False):
                     itx = None
 
                 if itx and getattr(itx, "text", None):
+                    raw_itx_text = itx.text
                     cleaned_caller_txt = self._strip_assistant_echo_from_input(itx.text)
+                    echo_changed = (cleaned_caller_txt != raw_itx_text)
                     cleaned_caller_txt = re.sub(r"<[^<>\n]{1,40}>", "", cleaned_caller_txt or "")
                     cleaned_caller_txt = self._strip_foreign_words(cleaned_caller_txt)
-                    if not cleaned_caller_txt or not self.is_valid_text(cleaned_caller_txt) or self._is_transcription_noise(cleaned_caller_txt):
+                    drop_reason = ""
+                    if not cleaned_caller_txt:
+                        drop_reason = "empty_after_cleaning"
+                    elif not self.is_valid_text(cleaned_caller_txt):
+                        drop_reason = "invalid_text"
+                    elif self._is_transcription_noise(cleaned_caller_txt):
+                        drop_reason = "transcription_noise"
+                    if self.dbg.enabled:
+                        self.dbg.log("in_tx", raw=raw_itx_text, clean=cleaned_caller_txt, echo_stripped=echo_changed, dropped=drop_reason or None, state=self._state_snapshot())
+                    if drop_reason:
+                        self._show_filtered_turn(raw_itx_text, drop_reason)
                         itx = None
                     else:
+                        if re.sub(r"\W+", "", raw_itx_text) != re.sub(r"\W+", "", cleaned_caller_txt):
+                            self._show_filtered_turn(raw_itx_text, "original text before cleaning")
                         itx.text = cleaned_caller_txt
 
                 if itx and getattr(itx, "text", None):
                     self.last_user_spoke_time = time.time()
                     self.hello_question_sent = self.cutoff_sent = False
                     self._in_angle_tag = False
+                    suspect_echo = self._itx_is_suspect_echo(itx.text)
+                    if suspect_echo:
+                        self.dbg.log("in_tx_suspect_echo", text=itx.text, state=self._state_snapshot())
+                        print(f"{_C_MUTED}[{get_timestamp()}] [echo?] Heard while the assistant was speaking and it looks like her own voice: not used for decisions.{_R}", flush=True)
+                    else:
+                        now_c = time.time()
+                        self._last_caller_text_time = now_c
+                        if self._is_wait_request(itx.text):
+                            self._last_wait_request_time = now_c
+                        caller_goodbye = self._is_farewell(itx.text, fuzzy=True)
+                        if caller_goodbye:
+                            self._last_caller_farewell_time = now_c
 
-                    if self.farewell_pending:
-                        if self._is_farewell(itx.text):
+                    # The caller's line goes first, so the state messages it causes (hold, goodbye, priority) come after it
+                    entering_hold = self.on_hold
+                    dismiss_turn = entering_hold and (suspect_echo or not self._check_wait_return(itx.text))
+                    if not dismiss_turn:
+                        ts = get_timestamp()
+                        prefix = "> " if entering_hold else ""
+                        print(f"\n\n{_C_MUTED}{prefix}[{ts}]{_R} {_C_AUDIO}{ICON_USER_STR}{itx.text}{_R}")
+                        self.accumulated_transcript += f"\n\n🗣 [{ts}]: {itx.text}"
+                        self.last_speaker = None
+                        self._register_caller_line(ts, itx.text)
+                        self.update_transcription_db()
+
+                        if self.final_transcription_mode == "realtime" and len(self.user_turn_audio) > 0:
+                            cloned_audio = list(self.user_turn_audio)
+                            self.user_turn_audio.clear()
+                            asyncio.create_task(self.heal_transcription_whisper(cloned_audio, itx.text, ts, suspect_echo))
+                        else:
+                            self.user_turn_audio.clear()
+
+                        self._check_priority_keywords(itx.text, "gemini")
+
+                    if self.farewell_pending and not suspect_echo:
+                        if self._is_farewell(itx.text, fuzzy=True):
                             self._commit_farewell_hangup("caller also said goodbye")
-                        elif len(itx.text.split()) >= self.farewell_cancel_min_words:
-                            self._cancel_pending_farewell("caller kept talking")
+                        elif not self._is_farewell_ack(itx.text):
+                            self._cancel_pending_farewell(f"the caller did not close the conversation: '{itx.text}'")
+                        else:
+                            # Only an acknowledgement ('vale', 'no, nada'): the goodbye stands, but the silence time starts again
+                            self._caller_spoke_since_intent = True
+                            self._intent_text = self._asst_turn_text or self._intent_text
+                            self.farewell_drained_since = 0.0
                     self._asst_turn_text = ""
 
                     if self.waiting_definitive_cut:
@@ -2713,17 +4122,18 @@ class PhoneAssistant:
 
                     just_activated_hold = False
 
-                    if not self.hanging_up and not self.on_hold:
+                    if not self.hanging_up and not self.on_hold and not suspect_echo:
                         user_safe_text = itx.text.lower()
                         for iw in self.words_data.get("ignore_hold_words", []):
                             user_safe_text = user_safe_text.replace(iw.lower(), "")
 
-                        if self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
+                        if self._matches_any_phrase(user_safe_text, self._caller_hold_phrases(), fuzzy=True):
                             self.on_hold = True
                             just_activated_hold = True
                             self.current_wait_start = self.last_user_spoke_time = time.time()
                             self.last_speaker = None
                             self.log_system_message(f"Hold activated by caller. Silencing inactivity (Limit {int(self.category_wait_seconds)}s).", "⏳")
+                            self.log_decision("hold", gemini="-", text=itx.text, result="activated", detail="caller keyword")
 
                     if self.on_hold:
                         if not just_activated_hold:
@@ -2731,7 +4141,7 @@ class PhoneAssistant:
                             for iw in self.words_data.get("ignore_hold_words", []):
                                 user_safe_text = user_safe_text.replace(iw.lower(), "")
 
-                            if self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
+                            if self._matches_any_phrase(user_safe_text, self._caller_hold_phrases(), fuzzy=True):
                                 now = time.time()
                                 self.last_user_spoke_time = now
                                 if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
@@ -2741,46 +4151,28 @@ class PhoneAssistant:
                                         "⏳"
                                     )
 
-                            if not self._check_wait_return(itx.text):
+                            if dismiss_turn:
                                 ts = get_timestamp()
-                                self.log_system_message(f"Active Hold Ignored background noise / TV '{itx.text}'", "⏸")
+                                self._show_filtered_turn(itx.text, "on hold: possible echo of the assistant" if suspect_echo else "on hold: no return keyword")
+                                self._hold_note_dismissed_caller_turn(itx.text)
+                                if not suspect_echo:
+                                    self._spawn(self._semantic_resolve_resume())
+                                self.dbg.log("hold_dismissed_turn", text=itx.text)
                                 if self.final_transcription_mode == "realtime" and len(self.user_turn_audio) > 0:
                                     cloned_audio = list(self.user_turn_audio)
                                     self.user_turn_audio.clear()
-                                    asyncio.create_task(self.heal_transcription_whisper(cloned_audio, itx.text, ts))
+                                    asyncio.create_task(self.heal_transcription_whisper(cloned_audio, itx.text, ts, suspect_echo))
                                 else:
                                     self.user_turn_audio.clear()
                                 itx = None
-                            elif not self._matches_any_phrase(user_safe_text, self.words_data.get("hold_words", [])):
+                            elif not self._matches_any_phrase(user_safe_text, self._caller_hold_phrases(), fuzzy=True):
                                 self.log_system_message("Return from hold detected. Resuming conversation...", "⏳")
+                                self.log_decision("hold", gemini="-", text=itx.text, result="ended", detail="return keyword")
                                 self.on_hold = False
                                 if self.current_wait_start > 0:
                                     self.accumulated_wait_time += (time.time() - self.current_wait_start)
                                 self.current_wait_start = 0.0
 
-                    if itx:
-                        ts = get_timestamp()
-                        prefix = "> " if self.on_hold else ""
-                        print(f"\n\n{_C_MUTED}{prefix}[{ts}]{_R} {_C_AUDIO}{ICON_USER_STR}{itx.text}{_R}")
-                        self.accumulated_transcript += f"\n\n🗣 [{ts}]: {itx.text}"
-                        self.last_speaker = None
-                        self.update_transcription_db()
-
-                        if self.final_transcription_mode == "realtime" and len(self.user_turn_audio) > 0:
-                            cloned_audio = list(self.user_turn_audio)
-                            self.user_turn_audio.clear()
-                            asyncio.create_task(self.heal_transcription_whisper(cloned_audio, itx.text, ts))
-                        else:
-                            self.user_turn_audio.clear()
-
-                        user_low_text = itx.text.lower()
-                        for rule in json.loads(get_config("memory_rules", "[]")):
-                            if any(kw in user_low_text for kw in rule.get("keywords", [])):
-                                if not self.priority_call:
-                                    self.category_wait_seconds = float(rule.get("wait_seconds", 120))
-                                    self.log_system_message(f"Priority keyword detected. Activating extended attention mode ({int(self.category_wait_seconds)}s).", "⚠")
-                                    self.priority_call = True
-                                break
 
                 model_turn = getattr(sc, "model_turn", None)
                 if model_turn:
@@ -2795,6 +4187,7 @@ class PhoneAssistant:
                                     self.recording_buffer_wav.extend(b"\x00" * (target_byte_idx - current_len))
                                 self.recording_buffer_wav.extend(inline_data.data)
                                 self.audio_out_queue.put(inline_data.data)
+                                self._pb_in_bytes += len(inline_data.data)
                                 self._monitor_write(self.asst_pacat, inline_data.data)
                                 self.last_chunk_audio_time = time.time()
                                 self.cutoff_sent = False
@@ -2804,6 +4197,7 @@ class PhoneAssistant:
                 otx = getattr(sc, "output_transcription", None)
                 if otx and getattr(otx, "text", None):
                     self.user_turn_audio.clear()
+                    self.dbg.log("out_tx", raw=otx.text)
                     tag_stripped = self._strip_streamed_angle_tags(otx.text)
                     clean_otx = clean_ai_text(tag_stripped) if tag_stripped else ""
                     if clean_otx and self._is_assistant_placeholder(clean_otx):
@@ -2815,6 +4209,7 @@ class PhoneAssistant:
                         self.recent_asst_phrases = [p for p in self.recent_asst_phrases if now - p[1] < 18.0]
                         if len(clean_norm.split()) >= 3:
                             if any(clean_norm == p[0] and (now - p[1] < 4.0) for p in self.recent_asst_phrases):
+                                self.dbg.log("out_tx_duplicate", text=clean_otx)
                                 continue
                             self.recent_asst_phrases.append((clean_norm, now, clean_otx))
 
@@ -2845,7 +4240,8 @@ class PhoneAssistant:
                         for iw in self.words_data.get("ignore_hold_words", []):
                             safe_eval_text = safe_eval_text.replace(iw.lower(), "")
 
-                        if self.on_hold and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", [])):
+                        if (self.on_hold and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", []))
+                                and self._hold_acceptance_allowed(HOLD_RENEW_WINDOW_SECONDS)):
                             now = time.time()
                             self.last_user_spoke_time = now
                             if now - getattr(self, "last_renewal_printed_time", 0) > 1.5:
@@ -2856,22 +4252,31 @@ class PhoneAssistant:
                                 )
 
                         now_turn = time.time()
-                        if now_turn - self._asst_turn_last_time < ASSISTANT_TURN_GAP_SECONDS:
+                        if now_turn - self._asst_turn_last_time < ASSISTANT_TURN_GAP_SECONDS and self._asst_turn_text:
                             self._asst_turn_text += " " + clean_otx
                         else:
                             self._asst_turn_text = clean_otx
+                            self._asst_turn_start_time = now_turn
                         self._asst_turn_last_time = now_turn
+                        self._register_hold_exchange()
 
                         # The farewell is judged on the whole assistant turn (not only the latest chunk): the clause that
                         # holds the farewell word can still grow into an explanation or a denial in later chunks.
                         farewell_now = self._is_farewell(self._asst_turn_text)
-                        if farewell_now and not self.hangup_triggered and not self.farewell_pending and not self.waiting_definitive_cut and not self.hello_question_sent:
+                        if (farewell_now and not self.hangup_triggered and not self.farewell_pending and not self.waiting_definitive_cut
+                                and not self.hello_question_sent and time.time() - self._farewell_veto_time >= FAREWELL_VETO_SECONDS):
                             self.farewell_pending = True
                             self.farewell_drained_since = 0.0
+                            self._closing_vote = None
+                            self._caller_spoke_since_intent = False
+                            self._intent_text = self._asst_turn_text
+                            self._intent_time = time.time()
+                            self._spawn(self._semantic_resolve_closing())
                             print(f"\n\n{_C_WARN}[{get_timestamp()}] {ICON_INFO}[HANGUP] Goodbye detected in assistant text. Waiting for the audio to finish and the caller's reply...{_R}")
                         elif self.farewell_pending and not self.hanging_up:
-                            if not farewell_now:
-                                self._cancel_pending_farewell("farewell word is part of an explanation or was denied")
+                            if not farewell_now and (not self._hangup_tool_seen or self._caller_spoke_since_intent):
+                                self._cancel_pending_farewell("farewell word is part of an explanation or was denied" if not self._hangup_tool_seen
+                                                              else "the assistant went on with the conversation after the caller reacted")
                             elif self._matches_any_phrase(eval_text, self.words_data.get("cancel_goodbye_phrases", [])) and not self._is_farewell(eval_text):
                                 self._cancel_pending_farewell("assistant asked if there is anything else")
 
@@ -2886,12 +4291,19 @@ class PhoneAssistant:
                                 self._asst_chunk_buffer = ""
                                 print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[SYSTEM]: Cancel-goodbye phrase detected without goodbye word. Cancelling hangup...{_R}")
 
-                        if not self.hanging_up and not self.on_hold and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", [])):
+                        assistant_hold_phrase = (not self.hanging_up and not self.on_hold
+                                                 and self._matches_any_phrase(safe_eval_text, self.words_data.get("hold_words", [])))
+                        if assistant_hold_phrase and not self._hold_acceptance_allowed():
+                            self._note_hold_phrase_without_request()
+                            assistant_hold_phrase = False
+                        if assistant_hold_phrase:
                             self.on_hold = True
                             self.current_wait_start = self.last_user_spoke_time = time.time()
                             self.last_speaker = None
+                            self.log_decision("hold", gemini="assistant accepted a wait", text="the caller asked to wait", result="activated", detail="assistant phrase after a caller request")
                             if self.category_wait_seconds < 60.0:
                                 self.log_system_message(f"{self.assistant_name} accepted short hold ({int(self.category_wait_seconds)}s). Sending time limit warning...", "⏳")
+                                self._note_self_interrupt()
                                 await session.send_realtime_input(text=self.prompts_data.get("hold_reminder", "").format(wait_seconds=int(self.category_wait_seconds)))
                             else:
                                 self.log_system_message(f"{self.assistant_name} accepted hold. Silencing inactivity (Limit {int(self.category_wait_seconds)}s).", "⏳")
@@ -2961,11 +4373,12 @@ class PhoneAssistant:
             contact_match = match_contact_rule(self.caller_number, self.spam_data)
             final_tag = (contact_match or {}).get("tag", "").strip() or self.labels_data.get("general", "GENERAL")
             client_n = (contact_match or {}).get("note", "").strip()
-            unanswered_trans = f"❌ [{get_timestamp()}]: [SYSTEM]: Call ended by caller before answering."
-            conn = sqlite3.connect(DB_PATH)
+            unanswered_base_tag = self.labels_data.get("general", "GENERAL")
+            unanswered_trans = f"❌ [{get_timestamp()}]: [SYSTEM]: {UNANSWERED_CALL_MARKER}"
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute(
-                "UPDATE calls SET duration=0, tag=?, client_name=?, transcript=?, audio_path='', client_audio_path='', summary='' WHERE id=?",
-                (final_tag, client_n, unanswered_trans, self.call_id)
+                "UPDATE calls SET duration=0, tag=?, client_name=?, base_tag=?, base_client_name='', transcript=?, audio_path='', client_audio_path='', summary='' WHERE id=?",
+                (final_tag, client_n, unanswered_base_tag, unanswered_trans, self.call_id)
             )
             conn.commit()
             conn.close()
@@ -3049,32 +4462,37 @@ class PhoneAssistant:
                     os.remove(tmp_whisper_wav)
             if raw_whisper:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Aligning with {self.model_text}...{_R}")
-                final_trans = await self.correct_transcript_with_whisper(raw_whisper)
+                final_trans = normalize_end_of_call_labels(await self.correct_transcript_with_whisper(raw_whisper),
+                                                           f"Whisper.cpp {self.whisper_full_model} (end of call)")
         elif self.final_transcription_mode == "gemini_final" and os.path.exists(self.client_recording_path):
             if "gemma" in self.model_text.lower():
                 print(f"{_C_WARN}[Post-Processing] Gemma models do not support native audio parsing. Falling back to gemini-3-flash-preview...{_R}")
-                final_trans = await self.correct_transcript_with_gemini_audio(self.client_recording_path, model_override="gemini-3-flash-preview")
+                final_trans = normalize_end_of_call_labels(
+                    await self.correct_transcript_with_gemini_audio(self.client_recording_path, model_override="gemini-3-flash-preview"),
+                    "gemini-3-flash-preview (end of call)")
             else:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running {self.model_text} Audio alignment...{_R}")
-                final_trans = await self.correct_transcript_with_gemini_audio(self.client_recording_path)
+                final_trans = normalize_end_of_call_labels(await self.correct_transcript_with_gemini_audio(self.client_recording_path),
+                                                           f"{self.model_text} (end of call)")
 
         contact_match = match_contact_rule(self.caller_number, self.spam_data)
         custom_contact_tag = (contact_match or {}).get("tag", "").strip()
 
-        if custom_contact_tag:
-            final_tag = custom_contact_tag
-        elif caller_type == "spam" or max_spam_score >= 65 or self.last_call_json.get("private_data_requested", False):
-            final_tag = self.labels_data.get("spam", "SPAM")
+        # Label chosen by the analysis of the call. It is saved as base_tag: the label the call goes back to when a
+        # contact rule with a custom tag is removed or its tag is cleared in the Web GUI.
+        if caller_type == "spam" or max_spam_score >= SPAM_SCORE_THRESHOLD or self.last_call_json.get("private_data_requested", False):
+            analysis_tag = self.labels_data.get("spam", "SPAM")
         elif self.priority_call:
-            final_tag = self.labels_data.get("priority", "PRIORITY")
+            analysis_tag = self.labels_data.get("priority", "PRIORITY")
         elif caller_type == "friend_family":
-            final_tag = self.labels_data.get("personal", "PERSONAL")
+            analysis_tag = self.labels_data.get("personal", "PERSONAL")
         elif caller_type == "work":
-            final_tag = self.labels_data.get("work", "WORK")
+            analysis_tag = self.labels_data.get("work", "WORK")
         elif caller_type == "commercial":
-            final_tag = self.labels_data.get("spam", "SPAM")
+            analysis_tag = self.labels_data.get("spam", "SPAM")
         else:
-            final_tag = self.labels_data.get("general", "GENERAL")
+            analysis_tag = self.labels_data.get("general", "GENERAL")
+        final_tag = custom_contact_tag or analysis_tag
 
         client_n = self.last_call_json.get("caller_name", "")
         comp_n = self.last_call_json.get("company", "")
@@ -3082,6 +4500,7 @@ class PhoneAssistant:
             client_n = ""
         if comp_n.lower() in ["unknown", "null", "none"]:
             comp_n = ""
+        analysis_client_name = client_n   # Name heard by the AI; the contact note only fills in when there is none
         if not client_n and (contact_match or {}).get("note"):
             client_n = contact_match["note"]
 
@@ -3089,10 +4508,10 @@ class PhoneAssistant:
         client_rec_val = self.client_recording_path if os.path.exists(self.client_recording_path) else ""
         rec_val = self.recording_path if os.path.exists(self.recording_path) else ""
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         conn.execute(
-            "UPDATE calls SET duration=?, tag=?, client_name=?, company=?, transcript=?, spam_score=?, audio_path=?, client_audio_path=?, summary=? WHERE id=?",
-            (duration_sec, final_tag, client_n, comp_n, final_trans, max_spam_score, rec_val, client_rec_val, call_summary, self.call_id)
+            "UPDATE calls SET duration=?, tag=?, client_name=?, base_tag=?, base_client_name=?, company=?, transcript=?, spam_score=?, audio_path=?, client_audio_path=?, summary=? WHERE id=?",
+            (duration_sec, final_tag, client_n, analysis_tag, analysis_client_name, comp_n, final_trans, max_spam_score, rec_val, client_rec_val, call_summary, self.call_id)
         )
         conn.commit()
         conn.close()
@@ -3111,10 +4530,11 @@ class PhoneAssistant:
         if contact_match and contact_match["type"] == "blacklist":
             blocked_tag = contact_match["tag"] or self.labels_data.get("blocked", "🚫 BLACKLISTED")
             blocked_msg = f"❌ [{get_timestamp()}]: [SYSTEM]: Call automatically rejected by Blacklist rule ({contact_match['pattern']})."
-            self.create_call_record_db(initial_tag=blocked_tag, initial_transcript=blocked_msg, audio_path_val="")
+            self.create_call_record_db(initial_tag=blocked_tag, initial_transcript=blocked_msg, audio_path_val="",
+                                       base_tag=self.labels_data.get("general", "GENERAL"), base_client_name="")
             if contact_match.get("note"):
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute("UPDATE calls SET client_name=?, summary=? WHERE id=?", (contact_match["note"], f"Blocked by rule {contact_match['pattern']}", self.call_id))
+                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                conn.execute("UPDATE calls SET client_name=?, summary=? WHERE id=?", (contact_match["note"], f"{BLOCKED_SUMMARY_PREFIX} {contact_match['pattern']}", self.call_id))
                 conn.commit()
                 conn.close()
             self._post_processed = True
@@ -3204,6 +4624,8 @@ class PhoneAssistant:
         )
         # Optional explicit speech language (BCP-47) from the language file; empty disables it.
         speech_lang_code = str(self.assistant_data.get("speech_language_code", "")).strip()
+        if not self.send_speech_language_code:
+            speech_lang_code = ""
         speech_config = None
         if speech_lang_code:
             try:
@@ -3218,6 +4640,8 @@ class PhoneAssistant:
             system_instruction=types.Content(parts=[types.Part(text=instruction)]),
             tools=tools_list,
             speech_config=speech_config,
+            input_audio_transcription=types.AudioTranscriptionConfig() if self.explicit_transcription_config else None,
+            output_audio_transcription=types.AudioTranscriptionConfig() if self.explicit_transcription_config else None,
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     start_of_speech_sensitivity=start_sens_enum,
@@ -3228,6 +4652,18 @@ class PhoneAssistant:
             )
         )
 
+        self.dbg.log(
+            "live_config", app_version=APP_VERSION, model=MODEL_LIVE, voice=voice_name, language=self.current_lang,
+            speech_language_code_sent=speech_lang_code or None, explicit_transcription=self.explicit_transcription_config,
+            vad={"start": self.vad_start_sens, "end": self.vad_end_sens, "prefix_ms": self.vad_prefix_padding_ms, "silence_ms": self.vad_silence_duration_ms},
+            caller_gain=self.caller_gain, noise_gate_base=self.noise_gate_base, gate_hangover_chunks=self.mic_gate_hangover_chunks,
+            echo_suppression=self.software_echo_suppression, protect_greeting=self.protect_initial_greeting,
+            transcription_mode=self.final_transcription_mode, whisper_signals=self.whisper_signals, whisper_bin=WHISPER_BIN or None,
+            whisper_model=self.whisper_full_model, whisper_threads=self.whisper_threads, flush_on_interrupt=self.flush_on_interrupt,
+            audioop=audioop is not None, instruction_chars=len(instruction),
+            pw_record_target=self.pw_record_target, pw_playback_target=self.pw_playback_target,
+            monitor_mode=getattr(self, "monitor_mode", None), python=sys.version.split()[0],
+        )
         is_whitelisted = bool(contact_match and contact_match.get("type") == "whitelist")
         spam_task = asyncio.create_task(self.check_network_spam(is_whitelisted=is_whitelisted))
         asyncio.create_task(self.monitor_routing_manager())
@@ -3237,6 +4673,7 @@ class PhoneAssistant:
                 self.answer_call()
                 self.answered_call = True
                 self.call_start_time = time.time()
+                self._spawn(self._probe_bluetooth_audio())
 
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Bluetooth] Stabilizing audio channel...{_R}")
                 await asyncio.sleep(0.5)
@@ -3272,6 +4709,7 @@ class PhoneAssistant:
                                     self.hangup_triggered = True
                                     self.accumulated_transcript += "\n\n❌ [SYSTEM]: Call hung up — network SPAM detected."
                                     self.update_transcription_db()
+                                    self._note_self_interrupt()
                                     await session.send_realtime_input(text=self.prompts_data.get("spam_detected", ""))
                                     await asyncio.sleep(4)
                                     await self.wait_for_playback_drain()
@@ -3283,6 +4721,11 @@ class PhoneAssistant:
                             break
                         await asyncio.sleep(0.5)
 
+                if self.final_transcription_mode == "online_realtime":
+                    self.online = OnlineTranscriber(self)
+                    self.online.start()
+                    self.dbg.log("online_start", language_codes=self.online.language_codes, vocabulary=self.online.vocabulary)
+
                 await asyncio.gather(self.send_mic_audio(session), self.receive_audio_and_tools(session), monitor_spam())
 
         except Exception as e:
@@ -3291,6 +4734,21 @@ class PhoneAssistant:
                 print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[AI Engine] Gemini Live is unavailable. Delegating call to native phone handler.{_R}")
         finally:
             self.running = False
+            self._flush_pending_alternatives(force=True)
+            self.flush_transcription_db()
+            self._playback_summary()
+            if self._whisper_worker_task is not None:
+                self._whisper_worker_task.cancel()
+            if self.online is not None:
+                self.online.stop()
+                usage = self.online.usage()
+                self.dbg.log("online_usage", **usage)
+                usage["agreed_with_gemini"] = self._alt_agree
+                usage["compared"] = self._alt_total
+                print(f"{_C_MUTED}[{get_timestamp()}] [Online] {usage['audio_sent_s']} s of audio sent in {usage['sessions']} session(s), "
+                      f"{usage['finals']} texts ({self._alt_agree} of {self._alt_total} compared were identical to Gemini's).{_R}", flush=True)
+            self.dbg.log("call_end", reason=getattr(self, "hangup_reason", ""), source=getattr(self, "hangup_source", ""), state=self._state_snapshot())
+            self.dbg.close()
             if getattr(self, "answered_call", False):
                 self.hangup_call()
 
@@ -3314,7 +4772,7 @@ def _set_runtime_setting(key: str, value: Any) -> None:
     """Writes a runtime value (status, progress...) into the SQLite settings table."""
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
         conn.commit()
     except Exception:
@@ -3339,7 +4797,7 @@ def _torrc_quote(path: str) -> str:
 NOTIFY_MAX_ITEMS = 20
 NOTIFY_MAX_WAIT_SECONDS = 30        # upper bound for the optional long-poll ("wait") parameter
 NOTIFY_WAIT_STEP_SECONDS = 1.0      # how often the database is re-checked while waiting
-NOTIFY_SPAM_THRESHOLD = 65          # same threshold used to tag a call as SPAM
+NOTIFY_SPAM_THRESHOLD = SPAM_SCORE_THRESHOLD   # same threshold used to tag a call as SPAM
 _NOTIFY_SERVER: Optional[ThreadingHTTPServer] = None
 
 
@@ -3347,7 +4805,7 @@ def build_notify_payload(since_message: Optional[int], since_call: Optional[int]
     """Returns the newest caller messages and finished calls after the given ids.
     If a cursor is missing (first poll) no items are returned, only the current cursors,
     so enabling notifications never floods the phone with old items."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     try:
         max_message = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
         # Only finished calls have a summary; calls are processed one at a time, so ids grow in finish order.
@@ -3643,9 +5101,10 @@ ONION = OnionService()
 async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
     """Periodically updates the daemon heartbeat in SQLite and checks for pause/stop signals from the GUI."""
     last_logged_state = "running"
+    heartbeat_failing = False
     while True:
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
             row = conn.execute("SELECT value FROM settings WHERE key='daemon_state'").fetchone()
             conn.commit()
@@ -3672,8 +5131,12 @@ async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
                     ONION.stop()
                     main_loop.stop()
                     os._exit(0)
-        except Exception:
-            pass
+        except Exception as heartbeat_error:
+            if not heartbeat_failing:
+                heartbeat_failing = True
+                print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Heartbeat] Could not update the daemon heartbeat: {heartbeat_error}{_R}")
+        else:
+            heartbeat_failing = False
         await asyncio.sleep(3.0)
 
 
@@ -3682,7 +5145,7 @@ async def run_cli_spam_test(test_number: str) -> None:
     ensure_database_exists()
     dummy = PhoneAssistant(dbus_path="/org/ofono/test", caller_number=test_number)
     print(f"{_C_SERVER}Testing number {test_number} (Normalized: {dummy.national_number}) against SPAM providers...{_R}")
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     conn.execute("DELETE FROM spam_cache WHERE number=?", (dummy.national_number or dummy.digits_number,))
     conn.commit()
     conn.close()
@@ -3735,6 +5198,12 @@ def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--show-debug":
+        print_debug_timeline(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+        sys.exit(0)
+    if "--debug" in sys.argv:
+        os.environ["SWITCHBOARD_DEBUG"] = "1"
+
     if not API_KEY:
         print(f"{_C_ERR}{ICON_ERR}Error: GEMINI_API_KEY environment variable not set.{_R}")
         sys.exit(1)
@@ -3746,18 +5215,25 @@ if __name__ == "__main__":
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     ensure_database_exists()
-    ensure_system_dependencies()
+    _truthy = ("1", "true", "yes", "on")
+    if os.environ.get("SWITCHBOARD_SKIP_SYSTEM_CONFIG", "").strip().lower() in _truthy:
+        print(f"{_C_WARN}{ICON_WARN}SWITCHBOARD_SKIP_SYSTEM_CONFIG: WirePlumber / null-sink / oFono configuration left untouched.{_R}")
+    else:
+        ensure_system_dependencies()
 
     initialize_ofono_modems()
     initialize_bluez_devices()
 
-    print(f"{_C_SERVER}{ICON_SERVER}Synchronizing audio subsystem with oFono...{_R}")
-    try:
-        subprocess.run(["systemctl", "--user", "restart", "wireplumber", "pipewire", "pipewire-pulse"], check=True, stderr=subprocess.DEVNULL)
-        time.sleep(2.0)
-        ensure_null_sink()
-    except Exception as e:
-        print(f"{_C_WARN}{ICON_WARN}Warning: Could not restart audio services: {e}{_R}")
+    if os.environ.get("SWITCHBOARD_SKIP_AUDIO_RESTART", "").strip().lower() in _truthy:
+        print(f"{_C_WARN}{ICON_WARN}SWITCHBOARD_SKIP_AUDIO_RESTART: PipeWire / WirePlumber were not restarted.{_R}")
+    else:
+        print(f"{_C_SERVER}{ICON_SERVER}Synchronizing audio subsystem with oFono...{_R}")
+        try:
+            subprocess.run(["systemctl", "--user", "restart", "wireplumber", "pipewire", "pipewire-pulse"], check=True, stderr=subprocess.DEVNULL)
+            time.sleep(2.0)
+            ensure_null_sink()
+        except Exception as e:
+            print(f"{_C_WARN}{ICON_WARN}Warning: Could not restart audio services: {e}{_R}")
 
     main_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(main_loop)

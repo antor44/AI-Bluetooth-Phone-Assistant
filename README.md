@@ -1,6 +1,6 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 2.9.1](https://img.shields.io/badge/Version-2.9.1-brightgreen.svg)
+![Version: 3.0](https://img.shields.io/badge/Version-3.0-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
@@ -77,7 +77,7 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
   <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see SBC Audio Note below), so to monitor call audio locally it is recommended to use a USB sound card or USB speakers.</b>
 </div>
 <br>
-Author: Antonio R. | Version: 2.9.1 | License: GPL 3.0
+Author: Antonio R. | Version: 3.0 | License: GPL 3.0
 
 ---
 
@@ -105,12 +105,16 @@ Author: Antonio R. | Version: 2.9.1 | License: GPL 3.0
 ## 🚀 Main Features
 
 * **🗣️ Real-Time Voice AI (`gemini-3.8-live`):** Low-latency bidirectional conversation with configurable voice, accent profile, and VAD/audio tuning from the Web GUI.
-* **📶 Hardware-Agnostic Bluetooth HFP & Auto-Reconnect:** Works with any smartphone via `BlueZ`, `oFono`, and `PipeWire`. Includes an automatic Bluetooth reconnection watchdog and link counters.
-* **📱 Live Handset Takeover:** Pick up your phone or switch audio away from Bluetooth mid-call to pause the AI (`⏸ Takeover`), and switch back to Bluetooth to resume.
-* **⏳ Smart Hold, Silence & Priority Handling:** Detects hold requests (`on_hold`), extends wait times when priority keywords (*doctor, hospital, lawyer, court...*) are heard, and gives a polite warning before hanging up on dead air.
+* **📶 Hardware-Agnostic Bluetooth HFP & Auto-Reconnect:** Works with any smartphone via `BlueZ`, `oFono`, and `PipeWire`. Includes an automatic Bluetooth reconnection watchdog and link counters. The Web GUI shows whether the phone is connected, whether its **call profile** (the oFono modem that carries the calls) is ready, and the **phone battery** when the phone reports it.
+* **📱 Live Handset Takeover:** Pick up your phone or switch audio away from Bluetooth mid-call to pause the AI, and switch back to Bluetooth to resume. If the caller's audio stops without you touching the phone, the console says `Caller audio stream lost`: the switchboard cannot tell a real takeover from a Bluetooth audio link that dropped.
+* **⏳ Smart Hold, Goodbye & Priority Handling:** Detects hold requests (`on_hold`) and treats hanging up as an *intention* that the caller can still cancel (see [Hold mode](#hold-mode) and [Goodbye and hanging up](#goodbye-and-hanging-up)), extends wait times when priority keywords (*doctor, hospital, lawyer, court...*) are heard, and gives a polite warning before hanging up on dead air.
 * **🛡️ Live SPAM Protection & Contact Rules:** Queries online SPAM databases (`curl_cffi`) with SQLite caching, supports exact and wildcard (`626288*`) Whitelist/Blacklist rules, and allows custom AI instructions per contact.
+* **🏷️ Call Log Labels That Follow Your Rules:** The **custom tag** and the **note** of a contact rule apply to every call of that number or wildcard, past calls included. Add or change them and the whole call log updates; clear the tag or delete the rule and each call goes back to its own classification (the one the AI gave it, or the one you chose by hand in the call log). A Blacklist rule without a custom tag shows the blacklist label; calls it rejected go back to the general label when the rule is deleted. The note works as the caller name only when no name was heard during the call. A tag chosen by hand in the call log is replaced when a rule with a custom tag matches that number. Calls saved by older versions are updated on the first run of this version: your existing rules are applied to them, and the ones with no rule cannot tell what they were classified as before a custom tag, so they go back to SPAM if their risk score was 65 or more, and to the general label otherwise.
 * **🔒 Deterministic Security Guardrails (`CallPolicyEngine`):** Prevents premature hangups during holds, protects private owner data (such as surnames), and enforces a 2-attempt caller identification rule.
+* **🎨 Custom Tag Icons:** Every custom tag of a contact rule has an icon (color) chosen from a dropdown next to the tag text, so tags are easy to tell apart in the call log. New tags start with 🟣, a color the standard labels do not use; change it at any time or choose *No icon*. The icons offered are listed under `contact_tag_icons` in the language file (`gui.json`), and the icon is stored as the first character of the tag, so no database change is needed.
+* **🧭 Contacts & Wildcard Rules Layout:** The Web GUI shows the list of rules first, so a number added from the call log is visible right away, and the form to add a new rule sits below it under its own heading.
 * **📬 Dedicated Caller Messages Inbox:** Stores messages captured via `save_message` with exact date/time, caller name, phone number, and Read/Unread filters.
+* **🎙️ Optional Online Transcription (`gemini-3.5-transcribe-live`):** A second, independent live transcription of the caller, made in parallel by Google. It gets a language hint and a vocabulary (the assistant's name, your name and extra names or terms you enter in the Web GUI), so names and technical words come out better. Only the caller's speech is sent, and if it fails the call is not affected. See [Pricing](#3-approximate-pricing-pay-as-you-go).
 * **🧠 Tiered Call Memory & AI Summaries:** Generates post-call summaries and classifies calls (`PERSONAL`, `WORK`, `PRIORITY`, `SPAM`, `GENERAL`) with a priority memory system (number rule > category rule > default).
 * **🎙️ Stereo MP3 Call Recording & Local Monitoring:** Saves synchronized stereo MP3 recordings (Left = Caller, Right = AI) and isolated caller tracks via `lameenc` (WAV fallback). Supports local speaker monitoring with independent volume control while keeping the PC microphone isolated.
 * **🌍 Remote Access (Tor) & Android App:** Optional built-in private Tor onion service with QR pairing and a free Android companion app that polls for new message and call notifications without Google/Firebase push servers.
@@ -139,6 +143,11 @@ This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire,
 ### 🎧 Complex Bluetooth Scenarios
 1.  **Headsets and Speakers Connected Simultaneously:** If you have Bluetooth headphones or speakers connected to the same Bluetooth adapter as the paired phone, the script extracts the phone's specific MAC address and forces the HFP profile **only on the phone**, leaving your other Bluetooth audio devices alone. *(Note: depending on your BT chip bandwidth, handling A2DP music and HFP bidirectional audio simultaneously may cause slight audio drops. Simultaneous operation of additional Bluetooth headphones or speakers during phone calls has not been tested).*
 2.  **Multiple Phones:** The current AI-Bluetooth-Phone-Assistant version does not distinguish between multiple mobile phones paired simultaneously. This is a limitation of the current implementation, not an inherent Bluetooth or Linux limitation. **Only one mobile phone should be paired at a time** to avoid conflicts and ensure reliable call handling. The code may be extended in the future to support multiple phones independently (see [Section 6: Switching Phones / Unpairing Old Devices](#switching-phones) below for instructions on how to unpair old phones when switching devices).
+
+### 🔋 Bluetooth Status & Phone Battery in the Web GUI
+The panel shows one of these states: **Connected**, **Connected, call profile not ready** (BlueZ reports the phone as connected but the oFono modem that carries the calls does not exist yet), **Disconnected (reconnecting automatically)**, **No paired phone found** or **Unknown**. *Unknown* appears when the switchboard is offline or the Bluetooth state has not been refreshed for a minute. Every state change is printed in the console.
+
+The battery is read from BlueZ when the phone reports an exact percentage, otherwise from the oFono handsfree level (0–5, shown in steps of 20 %). Phones report it coarsely and with delay, so it can differ by a few points from the number on the phone. If the phone does not report it, the panel shows *not reported*; the console prints once the properties that oFono exposes (`oFono Handsfree properties: …`).
 
 ---
 
@@ -180,11 +189,11 @@ Changes apply from the **next call**. Change **one setting at a time**, in small
 | **Enable Software Echo Suppression (Half-Duplex)** | Off | On / Off | Mutes the caller's audio while the secretary is speaking. |
 | **Protect Initial Greeting from Early Line Interruptions** | On | On / Off | Mutes the caller's audio while the greeting is played. |
 | **Caller Mic Gain (x)** | 1.5 | 0.5 – 5.0 | The volume of the caller's voice. |
-| **Base Noise Gate (RMS)** | 50 | 0 – 100 | Sounds quieter than this are treated as silence. |
+| **Base Noise Gate (RMS)** | 55 | 0 – 100 | Sounds quieter than this are treated as silence. |
 | **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily she decides that the caller started speaking. |
-| **VAD Prefix Padding (ms)** | 500 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
+| **VAD Prefix Padding (ms)** | 450 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
 | **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller stopped speaking. |
-| **VAD Silence Duration (ms)** | 700 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
+| **VAD Silence Duration (ms)** | 600 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
 
 ### Quick troubleshooting
 
@@ -193,7 +202,7 @@ Changes apply from the **next call**. Change **one setting at a time**, in small
 | She answers too slowly | Lower *VAD Silence Duration* by 100 ms; keep *End Sensitivity* HIGH. |
 | She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1000–1500 ms and set *End Sensitivity* to LOW. |
 | She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; try *Start Sensitivity* HIGH or a lower *Prefix Padding*. |
-| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at 500 or more; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
+| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at its default (450) or higher; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
 | She hears her own voice and repeats or interrupts herself | Turn on *Software Echo Suppression*. |
 | She asks "are you there?" while the caller speaks softly | The gate may be too high or the gain too low (or echo suppression is muting the caller); adjust them in that order. |
 | The greeting is cut when the call is answered | Keep *Protect Initial Greeting* on. |
@@ -232,7 +241,7 @@ The gate looks at the original loudness of the caller's audio, **before** the ga
 
 ### Hold mode
 Hold is handled by **two parts that work at the same time and do not always agree**:
-* **The switchboard's own rules (phrases).** It puts the call on hold when it recognizes a hold phrase ("one moment", "wait a second"…), said by the caller **or by the secretary herself**, and takes it off hold when it recognizes a return phrase, or the assistant's or owner's name, in what the caller says. While on hold it uses a stricter noise gate and a wait limit (15 minutes in total at most).
+* **The switchboard's own rules.** It puts the call on hold when the **caller clearly asks to wait** ("one moment", "hold on", "don't hang up"…). The secretary's own acceptance phrase ("I'll wait") counts only if the caller asked to wait in the last 25 seconds. In every other case a short **text-model vote** decides, and merely mentioning, testing or proposing the hold function ("we can also test the wait") counts as *no*. The call leaves hold when it recognizes a return phrase or the assistant's or owner's name, after two real answers from the secretary, by a vote, or when the Whisper / online transcription shows the caller is back. While on hold it uses a stricter noise gate and a wait limit (15 minutes in total at most).
 * **The AI itself.** Gemini keeps listening all the time and decides on its own whether and when to speak, following its instructions and what it hears. The switchboard does not mute it or give it an order when hold starts or ends (the only exception is a reminder of the time limit when the secretary herself accepts a short hold). So the AI can start talking before the switchboard has noticed the return, stay silent after it has, or react to a TV or to someone near the caller.
 
 This is why hold can sometimes seem late, early or inconsistent, and why no setting can make it fully predictable. What helps is to give both parts the cleanest possible audio:
@@ -270,6 +279,14 @@ The matching is **exact**: single words must match as whole words and longer phr
 
 No setting can restore what never arrived: a call from a quiet place with good signal is transcribed far better than any setting can achieve.
 
+### Goodbye and hanging up
+When Gemini says goodbye or calls its hang-up tool, the switchboard treats it as an **intention**, not as an order. It lets the farewell audio finish and watches what the caller does:
+* The caller says a real goodbye, or stays silent for `farewell_grace_seconds` (2 s by default): the call is hung up.
+* The caller answers with something that is not just politeness ("OK, thanks", "no, nothing else" are polite; a question or a new request is not; the polite words are listed in `farewell_ack_words` in `assistant.json`), the secretary starts a new turn, or her last sentence is a question: the hang-up is **cancelled**.
+* A short text-model vote can also veto the hang-up for 20 seconds when the caller has clearly not finished.
+
+Since v3.0, when a hang-up is cancelled or ignored, the switchboard also **answers Gemini's hang-up tool call** ("the call was not hung up") and sends a short instruction (`hangup_cancelled` in `assistant.json`) so that the secretary keeps attending the caller instead of staying silent. If the caller's closing words are not recognized as polite, the safe side is a call that stays open until the inactivity timer ends it.
+
 <details>
 <summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini Flash 3) change</summary>
 
@@ -277,6 +294,7 @@ No setting can restore what never arrived: a call from a quiet place with good s
 
 None of them changes the live decisions. The switchboard's rules for hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking (and the AI itself listens to the audio, not to any transcript). The Whisper text arrives later, so it cannot take part in those decisions. The only small exception is a safety rule: when the AI tries to hang up during a hold, the switchboard looks for a goodbye word in the last part of the transcript, and in real-time mode that part can already include Whisper's version.
 * **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
+* **Online (`gemini-3.5-transcribe-live`):** the caller's speech is sent to Google while the call goes on and its text is shown next to Gemini's own. It only receives the speech that passed the noise gate and the echo suppression, and it does not need any local processing, so it is the option for small boards where Whisper.cpp is too heavy.
 * **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
 
 </details>
@@ -493,8 +511,16 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
     *   *Audio Input:* $3.00 / 1M tokens (~$0.005 per minute of caller audio).
     *   *Audio Output:* $12.00 / 1M tokens (~$0.018 per minute of assistant speech).
     *   *(A typical 2-minute phone call costs around $0.04).*
+*   **Online Transcription (`gemini-3.5-transcribe-live`, optional):** only the caller's speech is sent.
+    *   *Audio Input:* $3.50 / 1M tokens (~$0.005 per minute of speech sent).
+    *   *Text Output:* $21.00 / 1M tokens (~$0.004 per minute).
+    *   *About $0.009 per minute of speech sent, according to the public pricing information; check Google's pricing page for the current figures.*
 *   **Text Processing, Summaries & SPAM (`gemini-3-flash-preview`):**
     *   Used silently in the background for SPAM checking and parsing call transcripts/summaries (fractions of a cent per call).
+
+---
+
+> 🛠️ **Debug traces (advanced users and support only).** They are off by default. If you are asked to provide one, start the daemon with `python3 phone_assistant.py --debug` (or set `SWITCHBOARD_DEBUG=1`). Each call then creates files in `debug/` (`.jsonl` and, if the audio player reports errors, `_pw-play.log`) that contain the content of the calls and phone numbers, so do not publish them as they are. They are not deleted automatically: remove them with `rm debug/*`.
 
 ---
 
@@ -509,6 +535,7 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
 ├── switchboard.db              # SQLite Database (Auto-generated & migrated on launch)
 ├── requirements.txt            # Python package dependencies
 ├── /logs                       # daemon.log (headless mode, rotated at 5 MB) — auto-created
+├── /debug                      # Debug traces (.jsonl and .log per call), only if debug is turned on; contain call content — auto-created
 ├── /onion_data                 # Private Tor instance & onion service keys (Remote Access) — auto-created
 ├── /android                    # Android app: full Gradle project, ANDROID_BUILD.md and the ready-to-install AI-Switchboard.apk
 │

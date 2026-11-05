@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 2.9
+Version: 3.0
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -27,6 +27,7 @@ https://github.com/antor44/AI-Bluetooth-Phone-Assistant
 
 import streamlit as st
 import streamlit.components.v1 as components
+import fnmatch
 import hashlib
 import html
 import sqlite3
@@ -50,9 +51,27 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-DEFAULT_VAD_SILENCE_DURATION_MS = 700  # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
+APP_VERSION = "3.0"
+DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
+DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
+BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
+BATTERY_UNKNOWN = -1                     # Value published by the daemon when the phone does not report its battery
+DEFAULT_CALLER_GAIN = 1.5                 # Default caller microphone gain (x)
+DEFAULT_NOISE_GATE_BASE = 55             # Default base noise gate (RMS)
+DEFAULT_VAD_PREFIX_PADDING_MS = 450      # Default VAD prefix padding (ms)
+DEFAULT_VAD_SILENCE_DURATION_MS = 600  # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
 DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 LANG_DIR = os.path.join(BASE_DIR, "languages")
+CONTACT_TAG_HELP_DEFAULT = ("Shown on every call of this number or pattern, past calls included. If you clear it or delete the rule, "
+                            "those calls go back to their previous classification (or the one you chose by hand in the call log).")
+# Fallback icons offered for custom tags (the language file key "contact_tag_icons" overrides them). The first one is the
+# default for new tags and is not used by the standard call labels, so a custom tag stands out from them.
+CONTACT_TAG_ICONS_DEFAULT = ["🟣", "🟤", "⚫", "⚪", "🔴", "🟠", "🟡", "🟢", "🔵", "🟪", "🟫", "⬛", "⬜", "🟥", "🟧", "🟨", "🟩", "🟦"]
+CONTACT_NOTE_HELP_DEFAULT = "Used as the caller name on every call of this number or pattern, past calls included, when no name was heard during the call."
+SPAM_SCORE_THRESHOLD = 65               # Risk score from which a call is tagged as SPAM (same value as phone_assistant.py)
+# Texts that phone_assistant.py saves in the call log and this panel recognizes (keep them in sync with that file).
+BLOCKED_SUMMARY_PREFIX = "Blocked by rule"                          # Summary of a call rejected by a Blacklist rule
+UNANSWERED_CALL_MARKER = "Call ended by caller before answering."   # Transcript of a call the caller ended before it was answered
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 WHISPER_CPP_DIR = os.path.expanduser("~/whisper.cpp")
 
@@ -106,7 +125,7 @@ def get_home_numbering(lang_code: str = "") -> Dict[str, Any]:
     if not active_lang:
         conn = None
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             row = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
             active_lang = row[0] if row and row[0] else DEFAULT_LANGUAGE
         except Exception:
@@ -216,6 +235,119 @@ def normalize_phone_pattern(raw_input: str, numbering: Optional[Dict[str, Any]] 
             elif not has_intl_prefix and cleaned.startswith("0") and len(cleaned) - 1 == national_length:
                 cleaned = cleaned[1:]
     return cleaned or raw
+
+
+def load_contact_rules(conn: sqlite3.Connection, numbering: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Loads the contact rules in the same order as the daemon, with their patterns already normalized."""
+    rules = []
+    for pattern_raw, rule_type, tag, note in conn.execute("SELECT number, type, tag, note FROM contacts").fetchall():
+        pattern_norm = normalize_phone_pattern(pattern_raw, numbering)
+        if not pattern_norm:
+            continue
+        rules.append({
+            "pattern_raw": pattern_raw or "",
+            "pattern_norm": pattern_norm,
+            "type": rule_type or "whitelist",
+            "tag": (tag or "").strip(),
+            "note": (note or "").strip()
+        })
+    return rules
+
+
+def find_contact_rule(candidates: List[str], rules: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """Returns the rule that applies to a number: exact match first, then the most specific wildcard
+    (the same precedence as match_contact_rule in phone_assistant.py)."""
+    if not candidates:
+        return None
+    best_rule: Optional[Dict[str, str]] = None
+    best_key: Optional[Tuple[int, int]] = None
+    for rule in rules:
+        pattern = rule["pattern_norm"]
+        if "*" in pattern or "?" in pattern:
+            if any(fnmatch.fnmatchcase(cand, pattern) for cand in candidates):
+                key = (len(re.sub(r"[\*\?]", "", pattern)), len(pattern))
+                if best_key is None or key > best_key:
+                    best_rule, best_key = rule, key
+        elif pattern in candidates or rule["pattern_raw"].strip() in candidates:
+            return rule
+    return best_rule
+
+
+def recalculate_call_labels(labels: Dict[str, str], in_progress_label: str) -> int:
+    """Applies the current contact rules to ALL finished calls, so past calls follow every change of the rules.
+    Tag: the custom tag of the matching rule; otherwise the blocked label if the rule is a Blacklist rule;
+    otherwise the call's own base label (the AI classification, or the one chosen by hand in the call log).
+    Name: the name heard by the AI (or typed by hand); the rule's note only fills in when there is none.
+    Returns how many calls changed."""
+    numbering = get_home_numbering()
+    blocked_label = labels.get("blocked", "🚫 BLACKLISTED")
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+    try:
+        rules = load_contact_rules(conn, numbering)
+        rows = conn.execute(
+            "SELECT id, number, tag, client_name, base_tag, base_client_name FROM calls "
+            "WHERE base_tag IS NOT NULL AND COALESCE(tag, '') != ?",
+            (in_progress_label,)
+        ).fetchall()
+        rule_by_number: Dict[str, Optional[Dict[str, str]]] = {}
+        updates = []
+        for call_id, number, tag, client_name, base_tag, base_client_name in rows:
+            if number not in rule_by_number:
+                _, _, candidates = normalize_phone_candidates(number, numbering)
+                rule_by_number[number] = find_contact_rule(candidates, rules)
+            rule = rule_by_number[number]
+            if rule and rule["tag"]:
+                new_tag = rule["tag"]
+            elif rule and rule["type"] == "blacklist":
+                new_tag = blocked_label
+            else:
+                new_tag = base_tag
+            new_name = base_client_name or (rule["note"] if rule else "")
+            if new_tag != tag or new_name != (client_name or ""):
+                updates.append((new_tag, new_name, call_id))
+        if updates:
+            conn.executemany("UPDATE calls SET tag=?, client_name=? WHERE id=?", updates)
+            conn.commit()
+        return len(updates)
+    finally:
+        conn.close()
+
+
+def backfill_call_base_labels(labels: Dict[str, str], extra_standard_tags: List[str], in_progress_label: str) -> int:
+    """Gives a base label and base name to the finished calls saved by versions that did not store them.
+    Base tag: the saved tag when it is one of the standard labels (it may be the AI classification or a manual choice);
+    otherwise (a custom tag or a blacklist label) SPAM if the risk score reached the SPAM threshold, else the general label.
+    Base name: empty for calls rejected by a Blacklist rule or ended before answering (their name came from the contact
+    note); the saved name for the rest. Returns how many calls were filled in."""
+    blocked_label = labels.get("blocked", "🚫 BLACKLISTED")
+    spam_label = labels.get("spam", "SPAM")
+    general_label = labels.get("general", "GENERAL")
+    standard_tags = {labels[key] for key in ("spam", "priority", "personal", "work", "general") if labels.get(key)}
+    standard_tags.update(tag for tag in extra_standard_tags if tag and tag != blocked_label)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+    try:
+        rows = conn.execute(
+            "SELECT id, tag, spam_score, summary, transcript, client_name FROM calls "
+            "WHERE base_tag IS NULL AND COALESCE(tag, '') != ?",
+            (in_progress_label,)
+        ).fetchall()
+        updates = []
+        for call_id, tag, spam_score, summary, transcript, client_name in rows:
+            current_tag = (tag or "").strip()
+            if current_tag in standard_tags:
+                base_tag = current_tag
+            elif (spam_score or 0) >= SPAM_SCORE_THRESHOLD:
+                base_tag = spam_label
+            else:
+                base_tag = general_label
+            name_came_from_rule = (summary or "").startswith(BLOCKED_SUMMARY_PREFIX) or UNANSWERED_CALL_MARKER in (transcript or "")
+            updates.append((base_tag, "" if name_came_from_rule else (client_name or ""), call_id))
+        if updates:
+            conn.executemany("UPDATE calls SET base_tag=?, base_client_name=? WHERE id=?", updates)
+            conn.commit()
+        return len(updates)
+    finally:
+        conn.close()
 
 
 def format_spam_test_url(url_template: str, raw_number: str, numbering: Optional[Dict[str, Any]] = None) -> str:
@@ -485,12 +617,13 @@ def install_whisper_model(model_name: str, terminal: str) -> Tuple[bool, str]:
 
 def init_db() -> None:
     """Initializes the database schema, runs safe column migrations, and defines global settings."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS calls 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, date TEXT, duration INT, 
                   spam_score INT, transcript TEXT, audio_path TEXT, client_audio_path TEXT, 
-                  tag TEXT, client_name TEXT, company TEXT, summary TEXT DEFAULT '')''')
+                  tag TEXT, client_name TEXT, company TEXT, summary TEXT DEFAULT '',
+                  base_tag TEXT, base_client_name TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS contacts 
                  (number TEXT PRIMARY KEY, type TEXT, prompt_rules TEXT,
                   tag TEXT DEFAULT '', note TEXT DEFAULT '',
@@ -507,6 +640,8 @@ def init_db() -> None:
 
     for alter_sql in [
         "ALTER TABLE calls ADD COLUMN summary TEXT DEFAULT ''",
+        "ALTER TABLE calls ADD COLUMN base_tag TEXT",
+        "ALTER TABLE calls ADD COLUMN base_client_name TEXT",
         "ALTER TABLE contacts ADD COLUMN tag TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN mem_mode TEXT DEFAULT ''",
@@ -520,11 +655,13 @@ def init_db() -> None:
 
     c.execute("INSERT OR IGNORE INTO settings VALUES ('wait_seconds', '5')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('auto_block_spam', 'false')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_block_threshold', '70')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_cache_days', '7')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_model', 'medium')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_quant', '')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('software_echo_suppression', 'false')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'disabled')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('show_filtered_in_transcript', 'true')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'none')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('language', ?)", (DEFAULT_LANGUAGE,))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
@@ -537,11 +674,11 @@ def init_db() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_state', 'running')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_heartbeat', '0')")
 
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('caller_gain', '1.5')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('noise_gate_base', '50')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('caller_gain', ?)", (str(DEFAULT_CALLER_GAIN),))
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('noise_gate_base', ?)", (str(DEFAULT_NOISE_GATE_BASE),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_start_sensitivity', 'LOW')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_end_sensitivity', 'HIGH')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', '500')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', ?)", (str(DEFAULT_VAD_PREFIX_PADDING_MS),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', ?)", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     # One-time migration: the new default replaces the value stored by previous versions (INSERT OR IGNORE never overwrites it)
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
@@ -563,7 +700,7 @@ LOCALIZED_KEYS = [
 
 def get_config(key: str, default_value: str) -> str:
     """Retrieves standard or language-localized configuration elements from the database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
     current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
@@ -584,7 +721,7 @@ def get_config(key: str, default_value: str) -> str:
 
 def has_config(key: str) -> bool:
     """True when a setting has ever been stored (an empty value still counts), using the same lookup order as get_config."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
     current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
@@ -604,7 +741,7 @@ def has_config(key: str) -> bool:
 
 def set_config(key: str, value: Any) -> None:
     """Persists standard or localized settings dynamically to the database."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
     current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
 
@@ -707,15 +844,30 @@ def render_bluetooth_panel() -> None:
 
         bt_state = get_config("bt_state", "unknown")
         bt_device = get_config("bt_device_name", "")
-        if heartbeat_age > 15.0 or bt_state == "unknown":
+        try:
+            bt_heartbeat_age = time.time() - float(get_config("bt_heartbeat", "0"))
+        except ValueError:
+            bt_heartbeat_age = float("inf")
+        if heartbeat_age > DAEMON_HEARTBEAT_STALE_SECONDS or bt_state == "unknown" or bt_heartbeat_age > BT_STATE_STALE_SECONDS:
             bt_badge = trans.get("ui_bt_status_unknown", "⚪ Unknown (daemon offline or not checked yet)")
         elif bt_state == "connected":
             bt_badge = trans.get("ui_bt_status_connected", "🟢 Connected ({device})").format(device=bt_device)
+        elif bt_state == "profile_not_ready":
+            bt_badge = trans.get("ui_bt_status_profile_not_ready", "🟠 Connected, call profile not ready ({device})").format(device=bt_device)
         elif bt_state == "no_device":
             bt_badge = trans.get("ui_bt_status_no_device", "⚪ No paired phone found")
         else:
             bt_badge = trans.get("ui_bt_status_disconnected", "🔴 Disconnected ({device}) - reconnecting automatically").format(device=bt_device)
         st.markdown(f"**{trans.get('ui_bt_status_label', 'Status:')}** {bt_badge}")
+        try:
+            battery_percent = int(float(get_config("bt_battery", str(BATTERY_UNKNOWN))))
+        except ValueError:
+            battery_percent = BATTERY_UNKNOWN
+        if bt_state == "connected" and bt_heartbeat_age <= BT_STATE_STALE_SECONDS and battery_percent >= 0:
+            battery_text = trans.get("ui_bt_battery", "🔋 Phone battery: {percent}%").format(percent=battery_percent)
+        else:
+            battery_text = trans.get("ui_bt_battery_unknown", "🔋 Phone battery: not reported")
+        st.caption(battery_text)
 
         st.caption(trans.get(
             "ui_bt_counters",
@@ -766,7 +918,7 @@ def render_tor_panel() -> None:
             tor_hb_age = 1e9
 
         # What the user should see: the daemon needs a few seconds to react to the switch.
-        if tor_hb_age > 15.0:
+        if tor_hb_age > DAEMON_HEARTBEAT_STALE_SECONDS:
             tor_shown = "off"                       # daemon offline: its Tor instance is gone too
         elif tor_enabled and tor_status == "off":
             tor_shown, tor_progress = "starting", "0"
@@ -914,6 +1066,25 @@ def legacy_aac_copy_path(audio_path: str) -> str:
     return os.path.splitext(audio_path)[0] + ".m4a"
 
 
+_ALT_SPLIT_RE = re.compile(r"\s\|\s\[([^\]\n]{1,80})\]:\s")
+
+
+def split_alternative_texts(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """'<Gemini text> | [Engine]: <alternative text>' -> (Gemini text, [(engine, alternative text), ...]).
+    The old end-of-call format '[Live]: <text>' is shown without the '[Live]:' label."""
+    cleaned = re.sub(r"^\[Live\]:\s*", "", text)
+    parts = _ALT_SPLIT_RE.split(cleaned)
+    alts = [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts) - 1, 2)]
+    return parts[0].strip(), alts
+
+
+def alternatives_markdown(alts: List[Tuple[str, str]]) -> str:
+    """The alternative transcriptions, in grey, right after the Gemini text."""
+    def esc(value: str) -> str:
+        return value.replace("[", "\\[").replace("]", "\\]")
+    return "".join(f" :gray[| **{esc(label)}:** {esc(alt)}]" for label, alt in alts)
+
+
 def audio_mime_type(audio_path: str) -> str:
     """Returns the MIME type used to play a call recording."""
     return "audio/mpeg" if audio_path.lower().endswith(".mp3") else "audio/wav"
@@ -927,40 +1098,6 @@ def remove_audio_files(wav_path: str) -> None:
                 os.remove(path)
         except Exception:
             pass
-
-
-def import_legacy_messages_from_transcripts() -> int:
-    """Scans existing call transcripts for saved message blocks and imports them into the messages table."""
-    conn = sqlite3.connect(DB_PATH)
-    calls = conn.execute("SELECT id, number, date, transcript FROM calls").fetchall()
-    existing = conn.execute("SELECT call_id, time, message_text FROM messages").fetchall()
-    existing_set = {(r[0], r[1], r[2]) for r in existing}
-
-    imported_count = 0
-    pattern = re.compile(
-        r"📝\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[SYSTEM\]:\s*\*\*\*\s*(?:Message from|Recado de)\s+([^:]+):\s*(.*?)\s*\*\*\*",
-        re.IGNORECASE
-    )
-
-    for call_id, number, call_date_str, transcript in calls:
-        if not transcript:
-            continue
-        date_only = (call_date_str or "").split(" ")[0] or datetime.datetime.now().strftime("%Y-%m-%d")
-        for match in pattern.finditer(transcript):
-            msg_time = match.group(1).strip()
-            caller_name = match.group(2).strip()
-            msg_text = match.group(3).strip()
-            if (call_id, msg_time, msg_text) not in existing_set:
-                conn.execute(
-                    "INSERT INTO messages (call_id, number, date, time, caller_name, message_text, is_read) VALUES (?, ?, ?, ?, ?, ?, 0)",
-                    (call_id, number, date_only, msg_time, caller_name, msg_text)
-                )
-                existing_set.add((call_id, msg_time, msg_text))
-                imported_count += 1
-
-    conn.commit()
-    conn.close()
-    return imported_count
 
 
 def get_available_languages() -> List[str]:
@@ -984,7 +1121,7 @@ def apply_language_defaults(lang_code: str) -> None:
     gui_data = load_language_data(lang_code, "gui.json")
     spam_data = load_language_data(lang_code, "spam.json")
     defaults = gui_data.get("defaults", {})
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     if defaults:
         for key, val in defaults.items():
             db_key = f"{lang_code}_{key}"
@@ -993,12 +1130,13 @@ def apply_language_defaults(lang_code: str) -> None:
     for g_key, g_val in [
         ("wait_seconds", "5"),
         ("auto_block_spam", "false"),
+        ("spam_block_threshold", "70"),
         ("spam_cache_days", "7"),
-        ("caller_gain", "1.5"),
-        ("noise_gate_base", "50"),
+        ("caller_gain", str(DEFAULT_CALLER_GAIN)),
+        ("noise_gate_base", str(DEFAULT_NOISE_GATE_BASE)),
         ("vad_start_sensitivity", "LOW"),
         ("vad_end_sensitivity", "HIGH"),
-        ("vad_prefix_padding_ms", "500"),
+        ("vad_prefix_padding_ms", str(DEFAULT_VAD_PREFIX_PADDING_MS)),
         ("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)),
         ("protect_initial_greeting", "true")
     ]:
@@ -1027,6 +1165,15 @@ if current_lang not in available_langs and available_langs:
     current_lang = available_langs[0]
 
 trans = load_language_data(current_lang, "gui.json")
+assistant_labels = load_language_data(current_lang, "assistant.json").get("labels", {})
+in_progress_label = trans.get("ui_in_progress", "IN PROGRESS")
+
+# Calls saved by older versions get their base label once (the daemon fills it in for new calls). Right after that
+# migration the contact rules that already existed are applied to those old calls too.
+if not st.session_state.get("call_base_labels_ready"):
+    if backfill_call_base_labels(assistant_labels, list(trans.get("tags", [])), in_progress_label):
+        recalculate_call_labels(assistant_labels, in_progress_label)
+    st.session_state["call_base_labels_ready"] = True
 
 # Language defaults are written only on the first run of a language, never because a field was left empty.
 if not has_config("assistant_name"):
@@ -1042,7 +1189,7 @@ st.set_page_config(
     page_icon="📞",
     layout="wide"
 )
-st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v2.9")
+st.title(f"{trans.get('gui_header', 'AI Switchboard Panel')} ({current_assistant_name}) — v{APP_VERSION}")
 
 st.markdown("""
 <style>
@@ -1140,7 +1287,7 @@ def confirm_language_dialog() -> None:
     c_saved, c_defaults, c_keep, c_cancel = st.columns(4)
     with c_saved:
         if st.button(target_trans.get("modal_btn_saved", "📂 Load Saved"), key="modal_saved_btn"):
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('language', ?)", (st.session_state.pending_lang,))
             conn.commit()
             conn.close()
@@ -1149,7 +1296,7 @@ def confirm_language_dialog() -> None:
             st.rerun()
     with c_defaults:
         if st.button(target_trans.get("modal_btn_defaults", "🔄 Load Defaults"), key="modal_defaults_btn"):
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute("INSERT OR REPLACE INTO settings VALUES ('language', ?)", (st.session_state.pending_lang,))
             conn.commit()
             conn.close()
@@ -1162,7 +1309,7 @@ def confirm_language_dialog() -> None:
             old_lang = get_config("language", DEFAULT_LANGUAGE)
             target_lang = st.session_state.pending_lang
 
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             for key in LOCALIZED_KEYS:
                 old_key = f"{old_lang}_{key}"
                 res = conn.execute("SELECT value FROM settings WHERE key=?", (old_key,)).fetchone()
@@ -1251,6 +1398,57 @@ def render_pager(state_key: str, total_items: int, page_size: int, key_prefix: s
 CONTACT_MEMORY_MODES = ["inherit", "none", "custom"]
 MEMORY_MODE_ALIASES = {"per_number": "only_numbers", "per_category": "only_categories", "global": "only_global"}
 
+def get_contact_tag_icons() -> List[str]:
+    """Returns the icons offered for custom tags: the list of the language file, or the built-in fallback."""
+    configured = trans.get("contact_tag_icons", CONTACT_TAG_ICONS_DEFAULT)
+    icons = [str(icon).strip() for icon in configured if str(icon).strip()]
+    return icons or list(CONTACT_TAG_ICONS_DEFAULT)
+
+
+def split_contact_tag(tag: str, icons: List[str]) -> Tuple[str, str]:
+    """Splits a stored custom tag into (icon, text). The icon is the first word of the tag when it is one of the
+    available icons; a tag without one keeps an empty icon, so it is shown and saved exactly as it was."""
+    clean = (tag or "").strip()
+    first_word, _, remainder = clean.partition(" ")
+    if first_word in icons and remainder.strip():
+        return first_word, remainder.strip()
+    return "", clean
+
+
+def contact_tag_widgets(key_prefix: str, tag_db: str = "") -> str:
+    """Renders the icon picker and the text of a custom tag side by side and returns the tag ready for the
+    database: icon + text, or an empty string when the text is empty."""
+    icons = get_contact_tag_icons()
+    options = [""] + icons
+    current_icon, current_text = split_contact_tag(tag_db, icons) if tag_db else (icons[0], "")
+    none_label = trans.get("ui_form_tag_icon_none", "No icon")
+
+    icon_key = f"{key_prefix}_tag_icon"
+    icon_sync_key = f"{key_prefix}_tag_icon_synced"
+    if st.session_state.get(icon_key) not in options or st.session_state.get(icon_sync_key) != current_icon:
+        st.session_state[icon_key] = current_icon
+        st.session_state[icon_sync_key] = current_icon
+
+    col_icon, col_text = st.columns([2, 5])
+    with col_icon:
+        chosen_icon = st.selectbox(
+            trans.get("ui_form_tag_icon", "Icon:"),
+            options,
+            format_func=lambda x: x or none_label,
+            key=icon_key,
+            help=trans.get("ui_form_tag_icon_help", "Icon (color) shown before the tag. Choose \"No icon\" to show only the text.")
+        )
+    with col_text:
+        tag_text = st.text_input(
+            trans.get("ui_form_tag", "Custom Tag (optional):"),
+            value=current_text,
+            key=f"{key_prefix}_tag_text",
+            help=trans.get("ui_form_tag_help", CONTACT_TAG_HELP_DEFAULT)
+        )
+    clean_text = tag_text.strip()
+    return f"{chosen_icon} {clean_text}" if chosen_icon and clean_text else clean_text
+
+
 def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=None, mem_days=None):
     """Renders the per-number memory controls and returns (mem_mode, mem_calls, mem_days) ready for the database."""
     labels = trans.get("ui_contact_memory_opts_labels", {
@@ -1311,8 +1509,13 @@ with col1:
         value=True,
         key="toggle_sys_msg"
     )
+    show_filtered_msg = st.checkbox(
+        trans.get("show_filtered_msg_label", "🔇 Show filtered speech and alternative readings (noise, TV, echo, online)"),
+        value=True,
+        key="toggle_filtered_msg"
+    )
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     total_calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
     calls_page = clamp_page("calls_page", total_calls, CALLS_PAGE_SIZE)
     calls = conn.execute(
@@ -1363,6 +1566,8 @@ with col1:
                     if not show_system_msg:
                         if any(marker in block for marker in ["[SYSTEM]", "[Active Hold]", "❌", "⏳", "⏸"]):
                             continue
+                    if not show_filtered_msg and (block.startswith("🔇") or block.startswith("🌐")):
+                        continue
 
                     is_user = block.startswith("🗣")
                     is_assistant = block.startswith("📞")
@@ -1378,6 +1583,10 @@ with col1:
                             pure_text = pure_text.replace(pref, "")
                         pure_text = pure_text.lstrip(": ").strip()
 
+                    main_text, alt_texts = split_alternative_texts(pure_text) if (is_user or is_assistant) else (pure_text, [])
+                    shown_text = main_text + alternatives_markdown(alt_texts)
+                    alt_suffix = "".join(f" | [{label_alt}]: {text_alt}" for label_alt, text_alt in alt_texts)
+
                     if is_user:
                         label_caller = client_name or company or number
                         prefix_md = f"🗣 {ts_str} **[{label_caller}]:**"
@@ -1387,11 +1596,19 @@ with col1:
                         if pending_lines:
                             st.markdown("\n\n".join(pending_lines))
                             pending_lines = []
-                        st.caption(block)
+                        m_filtered = re.match(r"^🔇\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[FILTERED:\s*([^\]]*)\]:\s*(.*)", block, re.DOTALL)
+                        if m_filtered:
+                            st.caption(f"🔇 [{m_filtered.group(1)}] **{trans.get('ui_filtered_label', 'Filtered')}** ({m_filtered.group(2).strip()}): {m_filtered.group(3).strip()}")
+                        else:
+                            m_online = re.match(r"^🌐\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[([^\]]+)\]:\s*(.*)", block, re.DOTALL)
+                            if m_online:
+                                st.caption(f"🌐 [{m_online.group(1)}] **{m_online.group(2).strip()}**: {m_online.group(3).strip()}")
+                            else:
+                                st.caption(block)
                         continue
 
                     if not edit_mode:
-                        pending_lines.append(f"{prefix_md} {pure_text}")
+                        pending_lines.append(f"{prefix_md} {shown_text}")
                         continue
 
                     with st.container(key=f"phrase_{id_call}_{idx_b}"):
@@ -1400,16 +1617,16 @@ with col1:
                             with col_inp:
                                 new_txt = st.text_input(
                                     f"Edit {prefix_md}",
-                                    value=pure_text,
+                                    value=main_text,
                                     key=f"edit_inp_{id_call}_{idx_b}",
                                     label_visibility="collapsed"
                                 )
                             with col_ok:
                                 if st.button("✅", key=f"ok_{id_call}_{idx_b}"):
                                     emoji_orig = "🗣" if is_user else "📞"
-                                    blocks_raw[idx_b] = f"{emoji_orig} {ts_str}: {new_txt}" if ts_str else f"{emoji_orig}: {new_txt}"
+                                    blocks_raw[idx_b] = (f"{emoji_orig} {ts_str}: {new_txt}" if ts_str else f"{emoji_orig}: {new_txt}") + alt_suffix
                                     new_trans = "\n\n".join(blocks_raw)
-                                    conn2 = sqlite3.connect(DB_PATH)
+                                    conn2 = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                                     conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
                                     conn2.commit()
                                     conn2.close()
@@ -1423,7 +1640,7 @@ with col1:
                         else:
                             col_txt, col_edit, col_del = st.columns([6, 0.55, 0.55])
                             with col_txt:
-                                st.markdown(f"{prefix_md} {pure_text}")
+                                st.markdown(f"{prefix_md} {shown_text}")
                             with col_edit:
                                 if st.button("✏️", key=f"edit_btn_{id_call}_{idx_b}"):
                                     st.session_state[edit_key] = idx_b
@@ -1443,7 +1660,7 @@ with col1:
                                         if st.button("✓", key=f"del_yes_{id_call}_{idx_b}"):
                                             blocks_raw.pop(idx_b)
                                             new_trans = "\n\n".join(blocks_raw)
-                                            conn2 = sqlite3.connect(DB_PATH)
+                                            conn2 = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                                             conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
                                             conn2.commit()
                                             conn2.close()
@@ -1458,12 +1675,25 @@ with col1:
                 if pending_lines:
                     st.markdown("\n\n".join(pending_lines))
 
-                if audio_path and os.path.exists(audio_path):
-                    try:
-                        with open(audio_path, "rb") as f:
-                            st.audio(f.read(), format=audio_mime_type(audio_path))
-                    except Exception:
-                        pass
+                # Two players side by side: the stereo conversation, and the caller track alone. The caller track is
+                # saved before any noise filtering, so it still holds the noise / TV / speech that was filtered out.
+                call_audio_ok = bool(audio_path and os.path.exists(audio_path))
+                caller_audio_ok = bool(client_audio_path and os.path.exists(client_audio_path))
+                if call_audio_ok or caller_audio_ok:
+                    col_audio_call, col_audio_caller = st.columns(2)
+                    for col_audio, path_audio, ok_audio, label_audio in (
+                        (col_audio_call, audio_path, call_audio_ok, trans.get("ui_audio_call_label", "🔊 Conversation (caller + assistant)")),
+                        (col_audio_caller, client_audio_path, caller_audio_ok, trans.get("ui_audio_caller_label", "🎤 Caller only (unfiltered, noise included)")),
+                    ):
+                        if not ok_audio:
+                            continue
+                        with col_audio:
+                            st.caption(label_audio)
+                            try:
+                                with open(path_audio, "rb") as f:
+                                    st.audio(f.read(), format=audio_mime_type(path_audio))
+                            except Exception:
+                                pass
 
                 st.write("---")
                 c_edit1, c_edit2 = st.columns([2, 2])
@@ -1491,8 +1721,8 @@ with col1:
                         key=tag_widget_key
                     )
                     if new_tag != tag_current_val:
-                        conn_loc = sqlite3.connect(DB_PATH)
-                        conn_loc.execute("UPDATE calls SET tag=? WHERE id=?", (new_tag, id_call))
+                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                        conn_loc.execute("UPDATE calls SET tag=?, base_tag=? WHERE id=?", (new_tag, new_tag, id_call))
                         conn_loc.commit()
                         conn_loc.close()
                         st.toast(trans.get("ui_toast_tag_updated", "Tag updated"))
@@ -1510,10 +1740,10 @@ with col1:
                         key=f"comp_{id_call}"
                     )
                     if corr_name != (client_name or "") or corr_company != (company or ""):
-                        conn_loc = sqlite3.connect(DB_PATH)
+                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                         conn_loc.execute(
-                            "UPDATE calls SET client_name=?, company=? WHERE id=?",
-                            (corr_name, corr_company, id_call)
+                            "UPDATE calls SET client_name=?, base_client_name=?, company=? WHERE id=?",
+                            (corr_name, corr_name, corr_company, id_call)
                         )
                         conn_loc.commit()
                         conn_loc.close()
@@ -1528,7 +1758,7 @@ with col1:
                             for ap_to_del in (audio_path, client_audio_path):
                                 if ap_to_del:
                                     remove_audio_files(ap_to_del)
-                            conn_loc = sqlite3.connect(DB_PATH)
+                            conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                             conn_loc.execute("UPDATE calls SET audio_path='', client_audio_path='' WHERE id=?", (id_call,))
                             conn_loc.commit()
                             conn_loc.close()
@@ -1539,7 +1769,7 @@ with col1:
                         for ap_to_del in (audio_path, client_audio_path):
                             if ap_to_del:
                                 remove_audio_files(ap_to_del)
-                        conn_loc = sqlite3.connect(DB_PATH)
+                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                         conn_loc.execute("DELETE FROM calls WHERE id=?", (id_call,))
                         conn_loc.commit()
                         conn_loc.close()
@@ -1548,7 +1778,7 @@ with col1:
                 with c_act3:
                     if st.button(trans.get("ui_btn_whitelist", "Whitelist"), key=f"wht_{id_call}"):
                         norm_num = normalize_phone_pattern(number)
-                        conn_loc = sqlite3.connect(DB_PATH)
+                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                         cur = conn_loc.execute("UPDATE contacts SET type='whitelist' WHERE number=?", (norm_num,))
                         if cur.rowcount == 0:
                             conn_loc.execute(
@@ -1557,12 +1787,13 @@ with col1:
                             )
                         conn_loc.commit()
                         conn_loc.close()
+                        recalculate_call_labels(assistant_labels, in_progress_label)
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
                 with c_act4:
                     if st.button(trans.get("ui_btn_blacklist", "Blacklist"), key=f"blk_{id_call}"):
                         norm_num = normalize_phone_pattern(number)
-                        conn_loc = sqlite3.connect(DB_PATH)
+                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                         cur = conn_loc.execute("UPDATE contacts SET type='blacklist' WHERE number=?", (norm_num,))
                         if cur.rowcount == 0:
                             conn_loc.execute(
@@ -1571,6 +1802,7 @@ with col1:
                             )
                         conn_loc.commit()
                         conn_loc.close()
+                        recalculate_call_labels(assistant_labels, in_progress_label)
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
         render_pager("calls_page", total_calls, CALLS_PAGE_SIZE, "calls")
@@ -1581,7 +1813,7 @@ with col1:
 # COLUMN 2: CALLER MESSAGES INBOX & CONTACT FILTERS / WILDCARDS
 # =============================================================================
 with col2:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     messages_rows = conn.execute(
         "SELECT id, call_id, number, date, time, caller_name, message_text, is_read "
         "FROM messages ORDER BY id DESC"
@@ -1593,19 +1825,12 @@ with col2:
     st.subheader(f"{trans.get('messages_inbox_title', '📬 Caller Messages')}{badge_str}")
 
     with st.container(border=True):
-        c_imp1, c_imp2 = st.columns([2, 1])
-        with c_imp1:
-            show_unread_only = db_checkbox(
-                trans.get("ui_messages_unread_only", "Show unread only"),
-                "show_unread_only",
-                "chk_unread_msgs",
-                False
-            )
-        with c_imp2:
-            if st.button(trans.get("ui_messages_import_btn", "📥 Import Old"), key="btn_import_legacy_msgs", use_container_width=True):
-                added = import_legacy_messages_from_transcripts()
-                st.toast(trans.get("ui_messages_imported_toast", "Imported messages: {count}").format(count=added))
-                st.rerun()
+        show_unread_only = db_checkbox(
+            trans.get("ui_messages_unread_only", "Show unread only"),
+            "show_unread_only",
+            "chk_unread_msgs",
+            False
+        )
 
         filtered_msgs = [m for m in messages_rows if (not show_unread_only or m[7] == 0)]
         if filtered_msgs:
@@ -1624,14 +1849,14 @@ with col2:
                         toggle_label = trans.get("ui_btn_mark_read", "✓ Mark Read") if msg_read == 0 else trans.get("ui_btn_mark_unread", "✉️ Mark Unread")
                         if st.button(toggle_label, key=f"msg_read_{msg_id}", use_container_width=True):
                             new_state = 1 if msg_read == 0 else 0
-                            conn_m = sqlite3.connect(DB_PATH)
+                            conn_m = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                             conn_m.execute("UPDATE messages SET is_read=? WHERE id=?", (new_state, msg_id))
                             conn_m.commit()
                             conn_m.close()
                             st.rerun()
                     with mc2:
                         if st.button(trans.get("ui_btn_delete_msg", "🗑️ Delete"), key=f"msg_del_{msg_id}", use_container_width=True):
-                            conn_m = sqlite3.connect(DB_PATH)
+                            conn_m = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                             conn_m.execute("DELETE FROM messages WHERE id=?", (msg_id,))
                             conn_m.commit()
                             conn_m.close()
@@ -1642,41 +1867,8 @@ with col2:
 
     st.write("---")
 
-    st.subheader(trans.get("filters_title", "🚫 Contact Filters & Wildcards"))
-    st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (600123456) and wildcards (* and ?, e.g. 626288*)."))
-    st.info(trans.get(
-        "ui_wildcard_help",
-        "Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. "
-        "Example: 626288* blocks or whitelists every number that starts with 626288. "
-        "If several rules match, the exact number wins, then the most specific wildcard."
-    ))
-
-    with st.form("new_contact"):
-        phone_num = st.text_input(trans.get("ui_form_phone", "Phone Number or Wildcard (e.g. 626288*):"))
-        c_f1, c_f2 = st.columns(2)
-        with c_f1:
-            contact_type = st.selectbox(trans.get("ui_form_category", "Action:"), ["whitelist", "blacklist"])
-        with c_f2:
-            contact_tag = st.text_input(trans.get("ui_form_tag", "Custom Tag (optional):"), value="")
-        contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="")
-        prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"))
-        new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact")
-        submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
-
-        if submit and phone_num.strip():
-            norm_number = normalize_phone_pattern(phone_num)
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute(
-                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (norm_number, contact_type, prompt_rules.strip(), contact_tag.strip(), contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days)
-            )
-            conn.commit()
-            conn.close()
-            st.success(trans.get("ui_toast_saved", "Saved successfully"))
-            st.rerun()
-
-    st.write(f"**{trans.get('ui_managed_contacts', 'Managed contacts & wildcard rules:')}**")
-    conn = sqlite3.connect(DB_PATH)
+    st.subheader(trans.get("ui_managed_contacts", "Managed contacts & wildcard rules:"))
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
 
@@ -1693,7 +1885,8 @@ with col2:
             badge = "🛡️ WHITELIST" if c_type == "whitelist" else "🚫 BLACKLIST"
             wildcard_badge = " [WILDCARD]" if any(w in c_num for w in ("*", "?")) else ""
             note_str = f" — {c_note}" if c_note else ""
-            tag_str = f" | 🏷️ {c_tag}" if c_tag else ""
+            tag_has_icon = bool(split_contact_tag(c_tag, get_contact_tag_icons())[0])
+            tag_str = (f" | {c_tag}" if tag_has_icon else f" | 🏷️ {c_tag}") if c_tag else ""
 
             with st.expander(f"{c_num}{wildcard_badge} -> [{badge}]{note_str}{tag_str}"):
                 edit_num = st.text_input(
@@ -1701,24 +1894,18 @@ with col2:
                     value=c_num,
                     key=f"edit_c_num_{ckey}"
                 )
-                ec1, ec2 = st.columns(2)
-                with ec1:
-                    edit_type = st.selectbox(
-                        trans.get("ui_form_category", "Action:"),
-                        ["whitelist", "blacklist"],
-                        index=0 if c_type == "whitelist" else 1,
-                        key=f"edit_c_type_{ckey}"
-                    )
-                with ec2:
-                    edit_tag = st.text_input(
-                        trans.get("ui_form_tag", "Custom Tag:"),
-                        value=c_tag or "",
-                        key=f"edit_c_tag_{ckey}"
-                    )
+                edit_type = st.selectbox(
+                    trans.get("ui_form_category", "Action:"),
+                    ["whitelist", "blacklist"],
+                    index=0 if c_type == "whitelist" else 1,
+                    key=f"edit_c_type_{ckey}"
+                )
+                edit_tag = contact_tag_widgets(f"edit_c_{ckey}", c_tag or "")
                 edit_note = st.text_input(
                     trans.get("ui_form_note", "Note:"),
                     value=c_note or "",
-                    key=f"edit_c_note_{ckey}"
+                    key=f"edit_c_note_{ckey}",
+                    help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT)
                 )
                 edit_prompt = st.text_area(
                     trans.get("ui_form_prompt", "Custom Instructions:"),
@@ -1730,28 +1917,63 @@ with col2:
                 with eb1:
                     if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{ckey}", use_container_width=True):
                         norm_new_num = normalize_phone_pattern(edit_num)
-                        conn_c = sqlite3.connect(DB_PATH)
+                        conn_c = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                         if norm_new_num != c_num:
                             conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
                         conn_c.execute(
                             "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag.strip(), edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days)
+                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag, edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days)
                         )
                         conn_c.commit()
                         conn_c.close()
+                        recalculate_call_labels(assistant_labels, in_progress_label)
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
                 with eb2:
                     if st.button(trans.get("ui_btn_delete_contact", "🗑️ Delete"), key=f"btn_del_c_{ckey}", use_container_width=True):
-                        conn_c = sqlite3.connect(DB_PATH)
+                        conn_c = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                         conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
                         conn_c.commit()
                         conn_c.close()
+                        recalculate_call_labels(assistant_labels, in_progress_label)
                         st.toast(trans.get("ui_toast_record_deleted", "Deleted"))
                         st.rerun()
         render_pager("contacts_page", len(contacts), CONTACTS_PAGE_SIZE, "contacts")
     else:
         st.caption(trans.get("ui_no_contacts", "No contacts or wildcard rules configured yet."))
+
+    st.write("---")
+
+    st.markdown(f"#### {trans.get('ui_new_rule_title', 'Add a new rule:')}")
+    st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (600123456) and wildcards (* and ?, e.g. 626288*)."))
+    st.info(trans.get(
+        "ui_wildcard_help",
+        "Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. "
+        "Example: 626288* blocks or whitelists every number that starts with 626288. "
+        "If several rules match, the exact number wins, then the most specific wildcard."
+    ))
+
+    with st.form("new_contact"):
+        phone_num = st.text_input(trans.get("ui_form_phone", "Phone Number or Wildcard (e.g. 626288*):"))
+        contact_type = st.selectbox(trans.get("ui_form_category", "Action:"), ["whitelist", "blacklist"])
+        contact_tag = contact_tag_widgets("new_contact")
+        contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="", help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT))
+        prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"))
+        new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact")
+        submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
+
+        if submit and phone_num.strip():
+            norm_number = normalize_phone_pattern(phone_num)
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            conn.execute(
+                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (norm_number, contact_type, prompt_rules.strip(), contact_tag, contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days)
+            )
+            conn.commit()
+            conn.close()
+            recalculate_call_labels(assistant_labels, in_progress_label)
+            st.success(trans.get("ui_toast_saved", "Saved successfully"))
+            st.rerun()
 
 # =============================================================================
 # COLUMN 3: SYSTEM CONTROLS & ASSISTANT SETTINGS
@@ -1786,7 +2008,7 @@ with col3:
             last_hb = 0.0
         hb_age = time.time() - last_hb
 
-        if daemon_state == "stopped" or hb_age > 15.0:
+        if daemon_state == "stopped" or hb_age > DAEMON_HEARTBEAT_STALE_SECONDS:
             status_badge = trans.get("ui_daemon_status_stopped", "🔴 Stopped / Offline")
         elif daemon_state == "paused":
             status_badge = trans.get("ui_daemon_status_paused", "⏸️ Paused (Calls ring without answering)")
@@ -1888,7 +2110,7 @@ with col3:
                                     deleted_audio += 1
                                 except Exception:
                                     pass
-                conn_cl = sqlite3.connect(DB_PATH)
+                conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                 all_audio = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
                 for row in all_audio:
                     aid, ap, cap = row
@@ -1908,7 +2130,7 @@ with col3:
             )
             if st.button(trans.get("ui_cleanup_records_btn", "❌ Delete Records"), key="btn_cleanup_records"):
                 cutoff_rec = datetime.datetime.now() - datetime.timedelta(days=int(days_records))
-                conn_cl = sqlite3.connect(DB_PATH)
+                conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
                 old_rows = conn_cl.execute(
                     "SELECT id, audio_path, client_audio_path FROM calls WHERE date < ?",
                     (cutoff_rec.strftime("%Y-%m-%d %H:%M:%S"),)
@@ -1943,7 +2165,7 @@ with col3:
                             deleted_all_audio += 1
                         except Exception:
                             pass
-            conn_cl = sqlite3.connect(DB_PATH)
+            conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             all_rows = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
             deleted_all_recs = len(all_rows)
             for row in all_rows:
@@ -1978,6 +2200,13 @@ with col3:
     if block_spam_chk != current_spam:
         set_config("auto_block_spam", "true" if block_spam_chk else "false")
 
+    db_slider(
+        trans.get("spam_block_threshold_label", "Hang-up cut-off score (AI risk, 0-100):"),
+        "spam_block_threshold", "slider_spam_block_threshold", "70", int,
+        min_value=0, max_value=100, step=5,
+        help=trans.get("spam_block_threshold_help", "The AI rates every unknown number from 0 (safe) to 100 (certain SPAM). The call is hung up only when the score reaches this value. Lower = more aggressive (more wrong hang-ups); higher = more cautious (some SPAM gets through). Doubtful cases, with mixed or contradictory comments, usually get a score in the middle.")
+    )
+
     sc1, sc2 = st.columns([2, 1])
     with sc1:
         current_cache_days = int(get_config("spam_cache_days", "7"))
@@ -1990,7 +2219,7 @@ with col3:
     with sc2:
         st.write("")
         if st.button(trans.get("ui_btn_clear_spam_cache", "🧹 Clear Cache"), key="btn_clr_spam_cache", use_container_width=True):
-            conn_sc = sqlite3.connect(DB_PATH)
+            conn_sc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn_sc.execute("DELETE FROM spam_cache")
             conn_sc.commit()
             conn_sc.close()
@@ -2186,14 +2415,19 @@ with col3:
     whisper_bin_path = find_whisper_bin()
     whisper_installed = bool(whisper_bin_path)
 
+    trans_mode_opts = ["disabled"]
     if whisper_installed:
-        trans_mode_opts = ["disabled", "realtime", "whisper_final"] if "gemma" in current_model.lower() else ["disabled", "realtime", "whisper_final", "gemini_final"]
-    else:
-        trans_mode_opts = ["disabled"] if "gemma" in current_model.lower() else ["disabled", "gemini_final"]
+        trans_mode_opts.append("realtime")
+    trans_mode_opts.append("online_realtime")       # Gemini 3.5 Transcribe Live: needs no local software
+    if whisper_installed:
+        trans_mode_opts.append("whisper_final")
+    if "gemma" not in current_model.lower():
+        trans_mode_opts.append("gemini_final")
 
     trans_mode_labels = trans.get("trans_mode_opts_labels", {
         "disabled": "Disabled (Gemini Live only)",
         "realtime": "Real-time (Whisper.cpp)",
+        "online_realtime": "Online real-time (Gemini 3.5 Transcribe Live)",
         "whisper_final": "Whisper.cpp at end of call",
         "gemini_final": "Gemini Flash 3 at end of call"
     })
@@ -2212,6 +2446,25 @@ with col3:
     if selected_mode != current_trans_mode:
         set_config("final_transcription_mode", selected_mode)
         st.rerun()
+
+    current_store_filtered = get_config("show_filtered_in_transcript", "true") == "true"
+    new_store_filtered = st.checkbox(
+        trans.get("store_filtered_label", "Save filtered speech in the transcript (heard but not used: noise, TV, echo)"),
+        value=current_store_filtered
+    )
+    if new_store_filtered != current_store_filtered:
+        set_config("show_filtered_in_transcript", "true" if new_store_filtered else "false")
+        st.rerun()
+
+    if current_trans_mode == "online_realtime":
+        current_vocab = get_config("online_vocabulary", "")
+        new_vocab = st.text_input(
+            trans.get("online_vocabulary_label", "Online transcription: extra names or terms (comma-separated):"),
+            value=current_vocab,
+            help=trans.get("online_vocabulary_help", "ℹ️ Online mode streams only the caller's speech to Google (gemini-3.5-transcribe-live) in parallel with the call.")
+        )
+        if new_vocab != current_vocab:
+            set_config("online_vocabulary", new_vocab)
 
     if not whisper_installed:
         st.info(trans.get(
@@ -2334,7 +2587,7 @@ with col3:
     with av1:
         db_slider(
             trans.get("caller_gain_label", "Caller Mic Gain (x):"),
-            "caller_gain", "slider_caller_gain", "1.5", float,
+            "caller_gain", "slider_caller_gain", str(DEFAULT_CALLER_GAIN), float,
             min_value=0.5, max_value=5.0, step=0.5
         )
 
@@ -2352,14 +2605,14 @@ with col3:
 
         db_slider(
             trans.get("vad_prefix_padding_label", "VAD Prefix Padding (ms):"),
-            "vad_prefix_padding_ms", "slider_vad_prefix_padding", "500", int,
+            "vad_prefix_padding_ms", "slider_vad_prefix_padding", str(DEFAULT_VAD_PREFIX_PADDING_MS), int,
             min_value=50, max_value=1000, step=50
         )
 
     with av2:
         db_slider(
             trans.get("noise_gate_label", "Base Noise Gate (RMS):"),
-            "noise_gate_base", "slider_noise_gate", "50", int,
+            "noise_gate_base", "slider_noise_gate", str(DEFAULT_NOISE_GATE_BASE), int,
             min_value=0, max_value=100, step=5
         )
 
