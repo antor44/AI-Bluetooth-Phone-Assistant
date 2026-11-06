@@ -5,6 +5,8 @@
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
 
+Author: Antonio R. | Version: 3.0 | License: GPL 3.0
+
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini 3.8 Live** for conversational AI and optional **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages in a dedicated inbox, maintains configurable context-aware memory with AI summaries for repeat callers, and provides a sleek Web GUI to manage your communications and server state.
 
 > ⚠️ **EXPERIMENTAL SOFTWARE — USE AT YOUR OWN RISK**
@@ -14,9 +16,43 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 >
 > Users are responsible for compliance with applicable local laws regarding call recording, transcription, and AI-assisted call handling. The safest default profile is: **incoming calls only**, clear first-message disclosure to the caller, and minimal data retention.
 
+## 📑 Table of Contents
+
+1. [Overview & Features](#overview)
+2. [Requirements & Compatibility](#requirements)
+3. [Installation](#installation)
+4. [Gemini API Key, Pricing & Privacy](#api-key)
+5. [Pairing Your Phone (Bluetooth)](#pairing)
+6. [Running the Switchboard & Auto-Start on Boot](#running)
+7. [Accessing the Web GUI from Other Devices](#access)
+8. [Android App (AI Switchboard)](#android-app)
+9. [Security & Network Exposure](#security)
+10. [User Manual](#user-manual)
+    * [Bluetooth status & phone battery](#bt-status)
+    * [Assistant personality, tuning & languages](#personality-language)
+    * [Contact rules, SPAM filtering & call-log labels](#contact-rules)
+    * [Call handling: handset takeover, goodbye & transcription modes](#call-handling)
+    * [Audio, Echo & Voice Detection Tuning Guide (incl. hold mode)](#audio-tuning-guide)
+    * [Debug traces](#debug-traces)
+11. [Project Directory Structure](#directory-structure)
+12. [Architecture & Design Philosophy](#architecture)
+13. [License](#license)
+
+### 🚦 Quick Start in a Nutshell
+1. Check the [requirements and supported hardware](#requirements).
+2. Run the [automated installer](#installation) and reboot.
+3. Get your [Gemini API key](#api-key).
+4. [Pair your phone](#pairing) from the terminal with `bluetoothctl`.
+5. [Launch the switchboard](#running) and open the Web GUI (port 8501).
+6. Optional: set up [remote access](#access) and the [Android app](#android-app) (read the [security notes](#security) first), and browse the [User Manual](#user-manual) to tune the assistant.
+
+
 ---
 
-## 🌟 Why use this?
+<a id="overview"></a>
+## 🌟 1. Overview & Features
+
+### Why use this?
 
 <div align="center">
   <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant4.jpg" width="80%">
@@ -54,6 +90,58 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
 
 <br><br>
 
+### Main Features
+
+* **🗣️ Real-Time Voice AI (`gemini-3.8-live`):** Low-latency bidirectional conversation with configurable voice, accent profile, and VAD/audio tuning from the Web GUI.
+* **📶 Hardware-Agnostic Bluetooth HFP & Auto-Reconnect:** Works with any smartphone via `BlueZ`, `oFono`, and `PipeWire`. Includes an automatic Bluetooth reconnection watchdog and link counters. The Web GUI shows whether the phone is connected, whether its **call profile** (the oFono modem that carries the calls) is ready, and the **phone battery** when the phone reports it.
+* **📱 Live Handset Takeover:** Pick up your phone or switch audio away from Bluetooth mid-call to pause the AI, and switch back to Bluetooth to resume (see [Live handset takeover](#live-handset-takeover)).
+* **⏳ Smart Hold, Goodbye & Priority Handling:** Detects hold requests (`on_hold`) and treats hanging up as an *intention* that the caller can still cancel (see [Hold mode](#hold-mode) and [Goodbye and hanging up](#goodbye-and-hanging-up)), extends wait times when priority keywords (*doctor, hospital, lawyer, court...*) are heard, and gives a polite warning before hanging up on dead air.
+* **🔒 Deterministic Security Guardrails (`CallPolicyEngine`):** Prevents premature hangups during holds, protects private owner data (such as surnames), and enforces a 2-attempt caller identification rule.
+* **🛡️ Live SPAM Protection & Contact Rules:** Queries online SPAM databases (`curl_cffi`) with SQLite caching, supports exact and wildcard (`626288*`) Whitelist/Blacklist rules, and allows custom AI instructions per contact.
+* **🏷️ Custom Tags, Icons & Notes per Contact Rule:** the custom tag (with a color icon) and the note of a contact rule apply to every call of that number or wildcard, past calls included, and the Web GUI lists the rules first (see [Contact rules, SPAM filtering & call-log labels](#contact-rules)).
+* **📬 Dedicated Caller Messages Inbox:** Stores messages captured via `save_message` with exact date/time, caller name, phone number, and Read/Unread filters.
+* **🎙️ Optional Online Transcription (`gemini-3.5-transcribe-live`):** A second, independent live transcription of the caller, made in parallel by Google. It gets a language hint and a vocabulary (the assistant's name, your name and extra names or terms you enter in the Web GUI), so names and technical words come out better. Only the caller's speech is sent, and if it fails the call is not affected. See [Pricing](#pricing).
+* **🧠 Tiered Call Memory & AI Summaries:** Generates post-call summaries and classifies calls (`PERSONAL`, `WORK`, `PRIORITY`, `SPAM`, `GENERAL`) with a priority memory system (number rule > category rule > default).
+* **🎙️ Stereo MP3 Call Recording & Local Monitoring:** Saves synchronized stereo MP3 recordings (Left = Caller, Right = AI) and isolated caller tracks via `lameenc` (WAV fallback). Supports local speaker monitoring with independent volume control while keeping the PC microphone isolated.
+* **🌍 Remote Access (Tor) & Android App:** Optional built-in private Tor onion service with QR pairing and a free Android companion app that polls for new message and call notifications without Google/Firebase push servers.
+
+### 📸 Screenshots
+
+#### Terminal View (Live Call Processing)
+
+*Real-time processing showing User audio chunks, D-Bus interaction, Gemini AI responses, and Whisper.cpp noise filtering.*
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant1.jpg)
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant2.jpg)
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant3.jpg)
+![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant4.jpg)
+
+#### Web GUI (Control Panel & Call Log)
+
+*Streamlit-based GUI for managing call transcripts, caller messages inbox, SPAM rules, category memory, audio/VAD parameters, and AI personality settings.*
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy3.jpg)
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy2.jpg)
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy4.jpg)
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy1.jpg)
+![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy5.jpg)
+
+
+---
+
+<a id="requirements"></a>
+## 🧰 2. Requirements & Compatibility
+
+### 🌍 Tested Hardware & OS Compatibility
+This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire, and WirePlumber. Because Bluetooth SCO (Synchronous Connection-Oriented) voice routing is sensitive to kernel drivers and audio session managers, **only the following configurations have been verified and are officially supported**:
+
+1. **Standard x86_64 PC:**
+   * **OS:** **Xubuntu / Ubuntu 24.04 LTS (Noble Numbat)**.
+   * **Audio/BT Stack:** PipeWire 1.0.x, WirePlumber 0.4.x (`.lua` configuration), BlueZ 5.72, and oFono.
+
+2. **ARM Single-Board Computer (SBC) — Orange Pi Zero 3 (Allwinner H618):**
+   * **OS (Exact Image Verified):** **`Armbian_25.5.1_Orangepizero3_noble_current_6.12.23_xfce_desktop`** (Ubuntu 24.04 LTS Noble with XFCE Desktop environment, which includes the full user session stack equivalent to Xubuntu 24.04 LTS).
+   * **Bluetooth Hardware Requirement:** The onboard Allwinner/Unisoc combo chip (`sprdbt_tty`) has kernel limitations when handling bidirectional SCO voice channels and is automatically blacklisted by the installer. **An external USB Bluetooth adapter (e.g., Realtek RTL8761BU USB 5.1 dongle) is required.**
+   * **SBC Audio Note:** The onboard Allwinner platform audio codecs (`alsa_card.platform-*`) exhibit DMA clock multiplier bugs on mainline kernels when running headless and are automatically disabled in WirePlumber in favor of the persistent `auto_null` clock source. To monitor calls locally via speakers on the Orange Pi Zero 3, use an external **USB sound card or USB speaker** (`alsa_card.usb-*`).
+
 <table>
   <tr>
     <td width="31%" align="center" valign="top">
@@ -74,63 +162,9 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
 </table>
 <div align="center">
   <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile1.jpg" width="80%">
-  <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see SBC Audio Note below), so to monitor call audio locally it is recommended to use a USB sound card or USB speakers.</b>
+  <br><b>🔌 An expansion board with two extra USB ports and an audio output is also sold for this SBC. However, the onboard audio output is disabled as well (see the SBC Audio Note above), so to monitor call audio locally it is recommended to use a USB sound card or USB speakers.</b>
 </div>
 <br>
-Author: Antonio R. | Version: 3.0 | License: GPL 3.0
-
----
-
-## 📸 Screenshots
-
-### Terminal View (Live Call Processing)
-*Real-time processing showing User audio chunks, D-Bus interaction, Gemini AI responses, and Whisper.cpp noise filtering.*
-![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant1.jpg)
-![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant2.jpg)
-![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant3.jpg)
-![Terminal Output Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/assistant4.jpg)
-
----
-
-### Web GUI (Control Panel & Call Log)
-*Streamlit-based GUI for managing call transcripts, caller messages inbox, SPAM rules, category memory, audio/VAD parameters, and AI personality settings.*
-![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy3.jpg)
-![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy2.jpg)
-![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy4.jpg)
-![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy1.jpg)
-![GUI Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/browser_guy5.jpg)
-
----
-
-## 🚀 Main Features
-
-* **🗣️ Real-Time Voice AI (`gemini-3.8-live`):** Low-latency bidirectional conversation with configurable voice, accent profile, and VAD/audio tuning from the Web GUI.
-* **📶 Hardware-Agnostic Bluetooth HFP & Auto-Reconnect:** Works with any smartphone via `BlueZ`, `oFono`, and `PipeWire`. Includes an automatic Bluetooth reconnection watchdog and link counters. The Web GUI shows whether the phone is connected, whether its **call profile** (the oFono modem that carries the calls) is ready, and the **phone battery** when the phone reports it.
-* **📱 Live Handset Takeover:** Pick up your phone or switch audio away from Bluetooth mid-call to pause the AI, and switch back to Bluetooth to resume. If the caller's audio stops without you touching the phone, the console says `Caller audio stream lost`: the switchboard cannot tell a real takeover from a Bluetooth audio link that dropped.
-* **⏳ Smart Hold, Goodbye & Priority Handling:** Detects hold requests (`on_hold`) and treats hanging up as an *intention* that the caller can still cancel (see [Hold mode](#hold-mode) and [Goodbye and hanging up](#goodbye-and-hanging-up)), extends wait times when priority keywords (*doctor, hospital, lawyer, court...*) are heard, and gives a polite warning before hanging up on dead air.
-* **🔒 Deterministic Security Guardrails (`CallPolicyEngine`):** Prevents premature hangups during holds, protects private owner data (such as surnames), and enforces a 2-attempt caller identification rule.
-* **🛡️ Live SPAM Protection & Contact Rules:** Queries online SPAM databases (`curl_cffi`) with SQLite caching, supports exact and wildcard (`626288*`) Whitelist/Blacklist rules, and allows custom AI instructions per contact.
-* **🏷️ Call Log Labels That Follow Your Rules:** The **custom tag** and the **note** of a contact rule apply to every call of that number or wildcard, past calls included. Add or change them and the whole call log updates; clear the tag or delete the rule and each call goes back to its own classification (the one the AI gave it, or the one you chose by hand in the call log). A Blacklist rule without a custom tag shows the blacklist label; calls it rejected go back to the general label when the rule is deleted. The note works as the caller name only when no name was heard during the call. A tag chosen by hand in the call log is replaced when a rule with a custom tag matches that number. Calls saved by older versions are updated on the first run of this version: your existing rules are applied to them, and the ones with no rule cannot tell what they were classified as before a custom tag, so they go back to SPAM if their risk score was 65 or more, and to the general label otherwise.
-* **🎨 Custom Tag Icons:** Every custom tag of a contact rule has an icon (color) chosen from a dropdown next to the tag text, so tags are easy to tell apart in the call log. New tags start with 🟣, a color the standard labels do not use; change it at any time or choose *No icon*. The icons offered are listed under `contact_tag_icons` in the language file (`gui.json`), and the icon is stored as the first character of the tag, so no database change is needed.
-* **🧭 Contacts & Wildcard Rules Layout:** The Web GUI shows the list of rules first, so a number added from the call log is visible right away, and the form to add a new rule sits below it under its own heading.
-* **📬 Dedicated Caller Messages Inbox:** Stores messages captured via `save_message` with exact date/time, caller name, phone number, and Read/Unread filters.
-* **🎙️ Optional Online Transcription (`gemini-3.5-transcribe-live`):** A second, independent live transcription of the caller, made in parallel by Google. It gets a language hint and a vocabulary (the assistant's name, your name and extra names or terms you enter in the Web GUI), so names and technical words come out better. Only the caller's speech is sent, and if it fails the call is not affected. See [Pricing](#3-approximate-pricing-pay-as-you-go).
-* **🧠 Tiered Call Memory & AI Summaries:** Generates post-call summaries and classifies calls (`PERSONAL`, `WORK`, `PRIORITY`, `SPAM`, `GENERAL`) with a priority memory system (number rule > category rule > default).
-* **🎙️ Stereo MP3 Call Recording & Local Monitoring:** Saves synchronized stereo MP3 recordings (Left = Caller, Right = AI) and isolated caller tracks via `lameenc` (WAV fallback). Supports local speaker monitoring with independent volume control while keeping the PC microphone isolated.
-* **🌍 Remote Access (Tor) & Android App:** Optional built-in private Tor onion service with QR pairing and a free Android companion app that polls for new message and call notifications without Google/Firebase push servers.
-
-
-### 🌍 Tested Hardware & OS Compatibility
-This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire, and WirePlumber. Because Bluetooth SCO (Synchronous Connection-Oriented) voice routing is sensitive to kernel drivers and audio session managers, **only the following configurations have been verified and are officially supported**:
-
-1. **Standard x86_64 PC:**
-   * **OS:** **Xubuntu / Ubuntu 24.04 LTS (Noble Numbat)**.
-   * **Audio/BT Stack:** PipeWire 1.0.x, WirePlumber 0.4.x (`.lua` configuration), BlueZ 5.72, and oFono.
-
-2. **ARM Single-Board Computer (SBC) — Orange Pi Zero 3 (Allwinner H618):**
-   * **OS (Exact Image Verified):** **`Armbian_25.5.1_Orangepizero3_noble_current_6.12.23_xfce_desktop`** (Ubuntu 24.04 LTS Noble with XFCE Desktop environment, which includes the full user session stack equivalent to Xubuntu 24.04 LTS).
-   * **Bluetooth Hardware Requirement:** The onboard Allwinner/Unisoc combo chip (`sprdbt_tty`) has kernel limitations when handling bidirectional SCO voice channels and is automatically blacklisted by the installer. **An external USB Bluetooth adapter (e.g., Realtek RTL8761BU USB 5.1 dongle) is required.**
-   * **SBC Audio Note:** The onboard Allwinner platform audio codecs (`alsa_card.platform-*`) exhibit DMA clock multiplier bugs on mainline kernels when running headless and are automatically disabled in WirePlumber in favor of the persistent `auto_null` clock source. To monitor calls locally via speakers on the Orange Pi Zero 3, use an external **USB sound card or USB speaker** (`alsa_card.usb-*`).
 
 > ⚠️ **CRITICAL PERFORMANCE WARNING FOR ARM SBCs (Keep `whisper.cpp` Disabled):**
 > Starting in v2.0, **Transcription Mode** defaults to **"Disabled (Gemini Live only)"** and `install_system_deps.sh` skips compiling `whisper.cpp` unless `--with-whisper` is passed. On ARM single-board computers (such as the Orange Pi Zero 3 or other modest SBCs), **keep local `whisper.cpp` transcription disabled**. Running local Whisper inference on low-power ARM CPUs will saturate all cores at 100%, starving the real-time PipeWire audio threads and **causing the board to freeze or hang even when using the smallest (`base`) models**.
@@ -142,192 +176,22 @@ This codebase interacts at a low level with Linux D-Bus, BlueZ, oFono, PipeWire,
 
 ### 🎧 Complex Bluetooth Scenarios
 1.  **Headsets and Speakers Connected Simultaneously:** If you have Bluetooth headphones or speakers connected to the same Bluetooth adapter as the paired phone, the script extracts the phone's specific MAC address and forces the HFP profile **only on the phone**, leaving your other Bluetooth audio devices alone. *(Note: depending on your BT chip bandwidth, handling A2DP music and HFP bidirectional audio simultaneously may cause slight audio drops. Simultaneous operation of additional Bluetooth headphones or speakers during phone calls has not been tested).*
-2.  **Multiple Phones:** The current AI-Bluetooth-Phone-Assistant version does not distinguish between multiple mobile phones paired simultaneously. This is a limitation of the current implementation, not an inherent Bluetooth or Linux limitation. **Only one mobile phone should be paired at a time** to avoid conflicts and ensure reliable call handling. The code may be extended in the future to support multiple phones independently (see [Section 6: Switching Phones / Unpairing Old Devices](#switching-phones) below for instructions on how to unpair old phones when switching devices).
+2.  **Multiple Phones:** The current AI-Bluetooth-Phone-Assistant version does not distinguish between multiple mobile phones paired simultaneously. This is a limitation of the current implementation, not an inherent Bluetooth or Linux limitation. **Only one mobile phone should be paired at a time** to avoid conflicts and ensure reliable call handling. The code may be extended in the future to support multiple phones independently (see [Switching Phones / Unpairing Old Devices](#switching-phones) below for instructions on how to unpair old phones when switching devices).
 
-### 🔋 Bluetooth Status & Phone Battery in the Web GUI
-The panel shows one of these states: **Connected**, **Connected - call profile not ready** (BlueZ reports the phone as connected but the oFono modem that carries the calls does not exist yet), **Disconnected (reconnecting automatically)**, **No paired phone found** or **Unknown**. *Unknown* appears when the switchboard is offline or the Bluetooth state has not been refreshed for a minute. Every state change is printed in the console.
+### 📶 Internet Connection
 
-The battery is read from BlueZ when the phone reports an exact percentage, otherwise from the oFono handsfree level (0–5, shown in steps of 20 %). Phones report it coarsely and with delay, so it can differ by a few points from the number on the phone. If the phone does not report it, the panel shows *not reported*; the console prints once the properties that oFono exposes (`oFono Handsfree properties: …`).
+An Internet connection is currently required for the phone assistant to access Google AI models and external services, including websites used to check phone numbers and identify potential spam or fraudulent calls.
 
----
+The connection can be provided through Ethernet, Wi-Fi, or USB tethering from your mobile phone.
 
-## 🧠 Tuning & Personality
+> 🟠 **No Wi-Fi network available?** You can use your phone's mobile data instead. Simply enable its Wi-Fi hotspot (also known as tethering or mobile hotspot) and connect the computer to it.
 
-*   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases. Since v2.6, each language file starts with a **voice and accent profile** and can define an explicit `speech_language_code` (BCP-47, e.g., `es-ES`) for use by other parts of the application. However, Gemini Live does not use this language code to determine the language it speaks. See [Voice & Language Configuration](#4-voice--language-configuration) below for further details. Accent drift cannot be fully eliminated with Gemini 3.8 Live; if it persists, try other voices in `voice_names`.
-*   **GUI Personality Changes:** You can radically change the secretary's personality through the GUI (e.g., by modifying its instructions, strictness, or tone), including on a per-phone-number basis. These are initial instructions for the Gemini Live AI, which are added to the default prompts. Keep in mind that significant personality changes may affect the reliability of structural commands. Additional instructions or personality changes may also affect the assistant's reliability and even alter its voice characteristics (e.g., causing it to switch from a female to a male voice). To avoid errors, write clear and concise instructions, avoid contradictory behavioral requirements, and stay away from ambiguous wording and gender-specific terms. Also, avoid describing the caller: their phone number is already available, so there is no need to provide additional information about them. Finally, test your instructions by making a call yourself from another mobile phone. If you are testing instructions configured for a specific phone number, make sure to configure that number with the same instructions first.
-*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. For a new language also set `home_country_code` and `home_national_length` in `spam.json`, and adapt the voice and accent profile at the top of the prompt, `speech_language_code`, `voice_names`, and the word lists (`cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). Always copy **all** the keys from the English or Spanish files: missing keys can cause incomplete texts or unexpected behavior.
-
-### Recommended Operating Profile
-For a balanced default experience, the recommended profile is:
-*   Concise and neutral tone
-*   Inbound-call focused
-*   Limited to call handling, message capture, hold management, and basic classification
-*   Resistant to oversharing personal or schedule details
-
-A more expressive or conversational personality sounds nicer, but may reduce reliability for structural commands during real calls.
-
-For the audio, echo and voice-detection settings (answer speed, hold mode, transcript quality) see the [Audio, Echo & Voice Detection Tuning Guide](#-audio-echo--voice-detection-tuning-guide).
+> 🔮 **Looking ahead:** Future support for local speech-to-speech models could reduce or even eliminate the need for cloud-based AI services for live conversations. Some existing local models are already quite capable, but currently have limited language support, with English being their strongest supported language. Depending on the model, some code improvements and additional local components may also be needed to handle assistant tools and call-management commands. These could include local LLMs working alongside a transcription model (STT), such as the already optionally implemented Whisper.cpp, to provide functionality that local speech-to-speech models generally do not natively support.
 
 ---
 
-## 🔊 Audio, Echo & Voice Detection Tuning Guide
-
-> ✅ **You probably do not need this section.** The default values work well in most cases, so if your calls sound and transcribe fine, leave everything as it is. Come here only if you notice a specific problem (she answers too slowly, interrupts the caller, misses quiet voices, reacts to noise…). The parts marked **🧪 Advanced** are for the curious and for experienced users; you can skip them.
-
-The secretary can only react to what she hears. The **Audio, Echo & VAD Tuning** block of the Web GUI controls how the caller's voice is cleaned, how loud it is and how the system decides when the caller starts and stops talking (*VAD* = Voice Activity Detection, the part of Gemini Live that notices when somebody is speaking). That affects:
-
-* **How fast she answers:** how long she waits before deciding that the caller has finished.
-* **Interruptions:** whether noise makes her stop or answer for nothing, and whether she misses a quiet caller.
-* **Hold mode and transcript quality:** the switchboard decides hold, goodbye detection and priority keywords from the words it recognizes, and the AI itself reacts to what it hears, so poor audio can mean a missed hold, a false wake-up or an answer at the wrong moment.
-
-Changes apply from the **next call**. Change **one setting at a time**, in small steps, and test with a real call. The table shows the default values, so you can always go back.
-
-### The settings
-
-| Setting (Web GUI label) | Default | Range | In one sentence |
-| :--- | :--- | :--- | :--- |
-| **Enable Software Echo Suppression (Half-Duplex)** | Off | On / Off | Mutes the caller's audio while the secretary is speaking. |
-| **Protect Initial Greeting from Early Line Interruptions** | On | On / Off | Mutes the caller's audio while the greeting is played. |
-| **Caller Mic Gain (x)** | 1.5 | 0.5 – 5.0 | The volume of the caller's voice. |
-| **Base Noise Gate (RMS)** | 55 | 0 – 100 | Sounds quieter than this are treated as silence. |
-| **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily she decides that the caller started speaking. |
-| **VAD Prefix Padding (ms)** | 450 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
-| **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller stopped speaking. |
-| **VAD Silence Duration (ms)** | 600 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
-
-### Quick troubleshooting
-
-| What you notice | What to try (one change at a time) |
-| :--- | :--- |
-| She answers too slowly | Lower *VAD Silence Duration* by 100 ms; keep *End Sensitivity* HIGH. |
-| She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1000–1500 ms and set *End Sensitivity* to LOW. |
-| She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; try *Start Sensitivity* HIGH or a lower *Prefix Padding*. |
-| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at its default (450) or higher; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
-| She hears her own voice and repeats or interrupts herself | Turn on *Software Echo Suppression*. |
-| She asks "are you there?" while the caller speaks softly | The gate may be too high or the gain too low (or echo suppression is muting the caller); adjust them in that order. |
-| The greeting is cut when the call is answered | Keep *Protect Initial Greeting* on. |
-| The first words of a caller who speaks at once are lost | Turn *Protect Initial Greeting* off. |
-| Hold is not activated when the caller says "one moment" | Improve the audio (gain, gate) or lower *Prefix Padding* so a short phrase is not lost. The switchboard registers the hold only when it recognizes the phrase; the AI may still stay quiet or answer on its own. |
-| Hold ends by itself, or she reacts late when the caller returns, with a TV or voices behind the caller | See [TV or voices behind the caller](#tv-or-voices-behind-the-caller). |
-
-Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and what works best depends on your phone and on your usual callers.
-
-### What each setting does
-
-**Software Echo Suppression (Half-Duplex).** While the secretary is speaking, whatever comes from the caller's line is replaced by silence before Gemini hears it. **Turn it on** if she hears her own voice coming back (echo from a speakerphone, a car kit or a poor line) and gets confused, repeats herself or interrupts herself. **Leave it off** otherwise: with it on, the caller **cannot interrupt** her while she talks, and what the caller says in that moment is not heard or transcribed (the call recording still keeps it).
-
-**Protect Initial Greeting.** While the greeting plays (at most about 8 seconds) the caller's audio is muted, so clicks, line noise or a quick "hello?" when the call is answered do not cut the greeting. **Keep it on** for a clean, complete greeting. **Turn it off** if you prefer that she can be interrupted from the very first second; the price is that noise at pick-up can cut the greeting.
-
-**Caller Mic Gain.** The volume of the caller's voice before Gemini hears it; it also changes the volume of the call recording. **Too low:** quiet callers are missed and transcripts get worse. **Too high:** loud parts distort and background noise is amplified, which causes false detections and garbled text. Change it in steps of 0.5. Many phones already boost the voice automatically, so avoid a high gain on top of that.
-
-**Base Noise Gate.** Anything quieter than the gate is replaced by silence before Gemini hears it. It **adapts by itself** to the noise of the line and is a bit higher while a call is on hold. It works on a very low volume scale, so it removes **the hiss of the line and very quiet noise**; a TV playing at normal volume next to the caller is usually well above it and **cannot be filtered out with this setting**. **Lower it** (steps of 5) if quiet callers are cut or words are missing at the start or end. **Raise it** if hiss, hum or distant voices reach Gemini and you see nonsense or `[Noise Filtered]` in the transcript. The gate only affects what Gemini hears: the call recording keeps the full caller audio.
-
-**VAD Start Sensitivity.** **LOW (default):** she needs clearer speech to decide that somebody started talking: fewer false triggers from clicks, coughs or noise, but a soft-spoken caller may be noticed late. **HIGH:** quieter and shorter sounds count as speech: faster reaction, but noise can interrupt her.
-
-**VAD Prefix Padding.** Despite its name, this is the **minimum amount of speech she must hear before accepting that the caller started talking** (it is not a recording buffer). **Lower values** (50–200 ms): very short words such as "yes", "no" or "hello" are noticed, but short noises also count. **Higher values** (500 ms or more): short noises are ignored, but a very short word may be missed.
-
-**VAD End Sensitivity and VAD Silence Duration.** These two work together and are the main controls of the **answer speed**. *End Sensitivity* says how readily a pause counts as the end of the sentence, and *Silence Duration* says how long that pause must last.
-* **Faster answers:** End Sensitivity HIGH and a short silence (200–500 ms). Risk: she answers while the caller is only taking a breath or thinking, and cuts into names, phone numbers or spelled words.
-* **More patient:** End Sensitivity LOW and a long silence (1000–2000 ms). Better for slow speakers, older callers and for leaving messages, but answers feel slower.
-
-<details>
-<summary>🧪 <b>Advanced:</b> exact behavior of the noise gate</summary>
-
-&nbsp;
-
-The gate looks at the original loudness of the caller's audio, **before** the gain is applied, so the gain does not change what the gate lets through. The switchboard keeps measuring the background noise of the line and raises the gate when the line is noisy (up to about 65), but never below the base value you set; if you set the base above 65, your value is used as it is. While a call is on hold the gate is raised by 15 more (up to 80). Even 80 is about 52 dB below the maximum level, which is why it cannot remove a TV. At the start of each call the terminal prints the gain and the base gate in use (`[Mic] Active on node … (Gain: …, Base Gate: …)`).
-
-</details>
-
-### Hold mode
-Hold is handled by **two parts that work at the same time and do not always agree**:
-* **The switchboard's own rules.** It puts the call on hold when the **caller clearly asks to wait** ("one moment", "hold on", "don't hang up"…). The secretary's own acceptance phrase ("I'll wait") counts only if the caller asked to wait in the last 25 seconds. In every other case a short **text-model vote** decides, and merely mentioning, testing or proposing the hold function ("we can also test the wait") counts as *no*. The call leaves hold when it recognizes a return phrase or the assistant's or owner's name, after two real answers from the secretary, by a vote, or when the Whisper / online transcription shows the caller is back. While on hold it uses a stricter noise gate and a wait limit (15 minutes in total at most).
-* **The AI itself.** Gemini keeps listening all the time and decides on its own whether and when to speak, following its instructions and what it hears. The switchboard does not mute it or give it an order when hold starts or ends (the only exception is a reminder of the time limit when the secretary herself accepts a short hold). So the AI can start talking before the switchboard has noticed the return, stay silent after it has, or react to a TV or to someone near the caller.
-
-This is why hold can sometimes seem late, early or inconsistent, and why no setting can make it fully predictable. What helps is to give both parts the cleanest possible audio:
-* If noise garbles "one moment", the switchboard **does not register the hold**, and she may keep talking or ask if the caller is still there.
-* Background voices (a TV, for example) are heard by the AI too: they can make her **react late** or **speak by herself**, and if their words happen to contain a return phrase they can **wake her up**.
-* If the gate is too high or the gain too low, the caller who comes back with a soft voice is **not heard**; she keeps waiting, and the wait limit may end the call.
-
-### TV or voices behind the caller
-This is the hardest case, because the secretary cannot tell a TV from a person.
-* The **Base Noise Gate does not help much here**: it removes the hiss of the line, not a TV at normal volume.
-* She hears the TV as speech. While it keeps talking there is **no silence**, so she needs longer to decide that the caller finished, and the transcript mixes the TV with the caller's words. The AI may also answer the TV on its own. That is why the reaction after a hold can be late or odd, and the transcription poor.
-
-What can help:
-1. **The caller's side** makes the biggest difference: a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls.
-2. **Do not raise *VAD Prefix Padding*** for this problem: return phrases are short ("hello?") and a high value can make her miss them.
-3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–600 ms. If the TV never stops, this cannot help.
-
-<details>
-<summary>🧪 <b>Advanced:</b> adding return phrases (for the curious and experienced users)</summary>
-
-&nbsp;
-
-During hold, the switchboard ignores text that does not contain a return phrase (the terminal log shows `Active Hold Ignored background noise / TV`). So the switchboard's own detection of the return depends on a **return phrase being correctly transcribed** among the noise. Keep in mind that this only affects the switchboard's rules: the AI hears the audio directly and may react on its own. In the `assistant.json` file of your language (`languages/<language>/assistant.json`), inside the `"words"` block, the `"return_triggers"` list holds those phrases (the assistant's name and the owner's name also count).
-
-The matching is **exact**: single words must match as whole words and longer phrases as text, with no fuzzy or phonetic matching. You can add the **short phrases your callers really say**, written **the way the transcription writes them**; the `Active Hold Ignored background noise / TV '…'` lines of the terminal log (`./my_gui.sh --logs`) show what was heard when the caller came back. Make a backup of the file first, only add entries to the list and keep the keys unchanged. It applies from the next call.
-
-</details>
-
-### What else changes the result (not adjustable here)
-* **The caller's surroundings:** street, car, wind, a TV or several people talking, speakerphone use.
-* **The mobile network and the line:** weak coverage and heavy compression produce distorted or missing syllables.
-* **The phones, on both ends:** many phones apply automatic gain control, noise reduction with several microphones, or AI voice isolation.
-* **The Bluetooth link:** distance and interference.
-* **Language and accent:** accuracy changes with the language, the accent and uncommon names.
-
-No setting can restore what never arrived: a call from a quiet place with good signal is transcribed far better than any setting can achieve.
-
-### Goodbye and hanging up
-When Gemini says goodbye or calls its hang-up tool, the switchboard treats it as an **intention**, not as an order. It lets the farewell audio finish and watches what the caller does:
-* The caller says a real goodbye, or stays silent for `farewell_grace_seconds` (2 s by default): the call is hung up.
-* The caller answers with something that is not just politeness ("OK, thanks", "no, nothing else" are polite; a question or a new request is not; the polite words are listed in `farewell_ack_words` in `assistant.json`), the secretary starts a new turn, or her last sentence is a question: the hang-up is **cancelled**.
-* A short text-model vote can also veto the hang-up for 20 seconds when the caller has clearly not finished.
-
-Since v3.0, when a hang-up is cancelled or ignored, the switchboard also **answers Gemini's hang-up tool call** ("the call was not hung up") and sends a short instruction (`hangup_cancelled` in `assistant.json`) so that the secretary keeps attending the caller instead of staying silent. If the caller's closing words are not recognized as polite, the safe side is a call that stays open until the inactivity timer ends it.
-
-<details>
-<summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini Flash 3) change</summary>
-
-&nbsp;
-
-None of them changes the live decisions. The switchboard's rules for hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking (and the AI itself listens to the audio, not to any transcript). The Whisper text arrives later, so it cannot take part in those decisions. The only small exception is a safety rule: when the AI tries to hang up during a hold, the switchboard looks for a goodbye word in the last part of the transcript, and in real-time mode that part can already include Whisper's version.
-* **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
-* **Online (`gemini-3.5-transcribe-live`):** the caller's speech is sent to Google while the call goes on and its text is shown next to Gemini's own. It only receives the speech that passed the noise gate and the echo suppression, and it does not need any local processing, so it is the option for small boards where Whisper.cpp is too heavy.
-* **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
-
-</details>
-
----
-
-## 🌐 Multi-Language Compatibility & Script Limitations
-
-While the application is structurally designed to support translation locales via JSON files, there are technical limitations in the current codebase regarding non-Latin scripts, Asian languages, and Right-to-Left (RTL) languages:
-
-### 1. Hardcoded Character Filtering (CJK Languages)
-At the code level, the daemon employs a regex-based noise filter in the `is_valid_text` function to discard transcription artifacts caused by Bluetooth static. This filter explicitly blocks character ranges for:
-- Chinese (Kanji/Hanzi: `\u4e00-\u9fff`)
-- Japanese (Hiragana/Katakana: `\u3040-\u30ff`)
-- Korean (Hangul: `\uac00-\ud7a3` / `\u1100-\u11ff`)
-
-If a caller speaks in Chinese, Japanese, or Korean, the daemon will classify the input as noise and produce no response.
-
-### 2. Word Tokenization Failure (CJK Languages)
-The `_calculate_text_similarity` helper splits text using Python's `str.split()`, which tokenizes by whitespace. Chinese and Japanese writing systems do not use spaces between words, so this function will always return `0.0` similarity for CJK input, breaking the hallucination-detection and deduplication logic.
-
-### 3. Right-to-Left (RTL) Languages (Arabic, Hebrew)
-Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment issues in live terminal logs and Web GUI logs.
-
-### 4. Voice & Language Configuration
-The assistant's voice and language-related settings are configured in each language's `assistant.json` file:
-* **`voice_names`:** Sets the female and male voices used by Gemini Live (by default, `Aoede` for female and `Charon` for male). You can change them to any available prebuilt Gemini voice.
-* **`speech_language_code`:** Defines a language code (BCP-47, such as `es-ES` or `en-US`) that can be used by other parts of the application. **Gemini Live does not use this setting to determine or control the language it speaks.** Leaving it empty (`""`) does not itself enable automatic language detection in Gemini Live.
-* **Known Gemini 3.8 Live voice limitation:** The accent and pitch/tone of the voice may occasionally drift during a call. This is a known limitation of the **Gemini 3.8 Live** model itself and is especially noticeable with the **female voice in Spanish**.
-
----
-
-## 🛠️ Installation & Setup
+<a id="installation"></a>
+## 🛠️ 3. Installation
 
 ### Automated Installation (Recommended for Xubuntu 24.04 PC & Orange Pi Zero 3 Armbian 24.04 XFCE)
 Clone the repository and run the automated dependency installer:
@@ -370,8 +234,6 @@ Add `--with-tor` and/or `--with-whisper` if you want those optional components (
 * **Local changes:** if you modified any project file (for example `languages/*`), back it up first, because `git pull` may refuse to overwrite it.
 * **Custom languages:** copy the new keys from the English or Spanish files and translate them (see *Localization*).
 * **Restart:** if you launch it manually, close it and run `./my_gui.sh` again (it can be started from any directory and activates the `venv` automatically). If you use the systemd service: `systemctl --user restart ai-switchboard.service`.
-
----
 
 ### Manual Installation Steps (Reference)
 
@@ -419,9 +281,48 @@ pip install lameenc   # optional: MP3 call recordings (without it recordings are
    ln -s ~/whisper.cpp/models/ggml-base.bin ~/AI-Bluetooth-Phone-Assistant/models/ggml-base.bin
    ```
 
+
 ---
 
-### 5. Bluetooth Mobile Pairing (Crucial!)
+<a id="api-key"></a>
+## 🔑 4. Gemini API Key, Pricing & Privacy
+
+This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live`** for real-time, low-latency bidirectional voice communication, and secondary text models (`gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation, post-call JSON transcript structuring, and call summary generation.
+
+### 1. How to Obtain and Set Your API Key
+1. Go to **[Google AI Studio](https://aistudio.google.com/)**.
+2. Sign in and click **"Get API key"** -> **"Create API key"**.
+3. Export the key in your `~/.bashrc`:
+   ```bash
+   echo 'export GEMINI_API_KEY="YOUR_API_KEY_HERE"' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+
+### 2. Free Tier vs. Paid Tier — Privacy Considerations
+*   **Free Tier:** Google may use conversation data (anonymously) to improve their AI models.
+*   **Paid Tier (Pay-As-You-Go):** Your data is strictly private — Paid API data is *not* used to train Google models. **For a privacy-focused deployment, the Paid Tier is recommended.**
+
+<a id="pricing"></a>
+### 3. Approximate Pricing (Pay-As-You-Go)
+*   **Real-Time Voice Calls (`gemini-3.8-live`):**
+    *   *Audio Input:* $3.00 / 1M tokens (~$0.005 per minute of caller audio).
+    *   *Audio Output:* $12.00 / 1M tokens (~$0.018 per minute of assistant speech).
+    *   *(A typical 2-minute phone call costs around $0.04).*
+*   **Online Transcription (`gemini-3.5-transcribe-live`, optional):** only the caller's speech is sent.
+    *   *Audio Input:* $3.50 / 1M tokens (~$0.005 per minute of speech sent).
+    *   *Text Output:* $21.00 / 1M tokens (~$0.004 per minute).
+    *   *About $0.009 per minute of speech sent, according to the public pricing information; check Google's pricing page for the current figures.*
+*   **Text Processing, Summaries & SPAM (`gemini-3-flash-preview`):**
+    *   Used silently in the background for SPAM checking and parsing call transcripts/summaries (fractions of a cent per call).
+
+
+---
+
+<a id="pairing"></a>
+## 📲 5. Pairing Your Phone (Bluetooth)
+
+<a id="pairing-bluetoothctl"></a>
+### Pairing a Phone with `bluetoothctl` (Crucial!)
 Establishing an active bidirectional Hands-Free profile between Linux and your smartphone requires explicit agent authentication via `bluetoothctl`.
 
 *Desktop GUI tools typically fail to negotiate the bidirectional HFP voice channel properly. Always pair from the terminal:*
@@ -460,10 +361,8 @@ Establishing an active bidirectional Hands-Free profile between Linux and your s
    quit
    ```
 
----
-
 <a id="switching-phones"></a>
-### 6. Switching Phones / Unpairing Old Devices (Crucial for oFono!)
+### Switching Phones / Unpairing Old Devices (Crucial for oFono!)
 If you change your smartphone, **you must remove the old phone from BlueZ**. Leaving an old phone paired will cause `oFono` to repeatedly fail (`org.ofono.Error.Failed`) on startup and can result in silent calls (no audio) on the new phone due to conflicting HFP modem cards.
 
 1. **List currently paired devices to find the old phone's MAC address:**
@@ -484,86 +383,17 @@ If you change your smartphone, **you must remove the old phone from BlueZ**. Lea
    sleep 2
    systemctl --user start pipewire pipewire-pulse wireplumber
    ```
-3. **Pair your new phone using the `bluetoothctl` terminal procedure in Step 5.**
+3. **Pair your new phone using the `bluetoothctl` terminal procedure described in [Pairing a Phone with `bluetoothctl`](#pairing-bluetoothctl).**
    *(Tip: When placing your first test call on a newly paired smartphone, turn up the Bluetooth in-call volume on the phone itself and verify that "Phone Calls" / "Call Audio" is enabled in the phone's Bluetooth settings for this device).*
 
----
-
-## 🔑 API Key Setup, Pricing & Privacy
-
-This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live`** for real-time, low-latency bidirectional voice communication, and secondary text models (`gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation, post-call JSON transcript structuring, and call summary generation.
-
-### 1. How to Obtain and Set Your API Key
-1. Go to **[Google AI Studio](https://aistudio.google.com/)**.
-2. Sign in and click **"Get API key"** -> **"Create API key"**.
-3. Export the key in your `~/.bashrc`:
-   ```bash
-   echo 'export GEMINI_API_KEY="YOUR_API_KEY_HERE"' >> ~/.bashrc
-   source ~/.bashrc
-   ```
-
-### 2. Free Tier vs. Paid Tier — Privacy Considerations
-*   **Free Tier:** Google may use conversation data (anonymously) to improve their AI models.
-*   **Paid Tier (Pay-As-You-Go):** Your data is strictly private — Paid API data is *not* used to train Google models. **For a privacy-focused deployment, the Paid Tier is recommended.**
-
-### 3. Approximate Pricing (Pay-As-You-Go)
-*   **Real-Time Voice Calls (`gemini-3.8-live`):**
-    *   *Audio Input:* $3.00 / 1M tokens (~$0.005 per minute of caller audio).
-    *   *Audio Output:* $12.00 / 1M tokens (~$0.018 per minute of assistant speech).
-    *   *(A typical 2-minute phone call costs around $0.04).*
-*   **Online Transcription (`gemini-3.5-transcribe-live`, optional):** only the caller's speech is sent.
-    *   *Audio Input:* $3.50 / 1M tokens (~$0.005 per minute of speech sent).
-    *   *Text Output:* $21.00 / 1M tokens (~$0.004 per minute).
-    *   *About $0.009 per minute of speech sent, according to the public pricing information; check Google's pricing page for the current figures.*
-*   **Text Processing, Summaries & SPAM (`gemini-3-flash-preview`):**
-    *   Used silently in the background for SPAM checking and parsing call transcripts/summaries (fractions of a cent per call).
 
 ---
 
-> 🛠️ **Debug traces (advanced users and support only).** They are off by default. If you are asked to provide one, start the daemon with `python3 phone_assistant.py --debug` (or set `SWITCHBOARD_DEBUG=1`). Each call then creates files in `debug/` (`.jsonl` and, if the audio player reports errors, `_pw-play.log`) that contain the content of the calls and phone numbers, so do not publish them as they are. They are not deleted automatically: remove them with `rm debug/*`.
+<a id="running"></a>
+## ⚙️ 6. Running the Switchboard & Auto-Start on Boot
 
----
+### Manual Launch
 
-## 📂 Project Directory Structure
-
-```text
-/AI-Bluetooth-Phone-Assistant
-├── phone_assistant.py          # Main daemon (handles HFP, D-Bus, and Gemini 3.8 Live)
-├── my_gui.sh                   # Main GUI Launcher Script (Desktop and Headless/LAN aware)
-├── gui.py                      # Web Control Panel (Streamlit GUI interface)
-├── install_system_deps.sh      # Automated system & Python dependency installer (--with-whisper optional)
-├── switchboard.db              # SQLite Database (Auto-generated & migrated on launch)
-├── requirements.txt            # Python package dependencies
-├── /logs                       # daemon.log (headless mode, rotated at 5 MB) — auto-created
-├── /debug                      # Debug traces (.jsonl and .log per call), only if debug is turned on; contain call content — auto-created
-├── /onion_data                 # Private Tor instance & onion service keys (Remote Access) — auto-created
-├── /android                    # Android app: full Gradle project, ANDROID_BUILD.md and the ready-to-install AI-Switchboard.apk
-│
-├── /models                     # Whisper.cpp Model Folder (Optional)
-│   ├── ggml-medium.bin         # Multilingual model (for PC setups)
-│   └── ggml-base.bin           # Lightweight model (for low-RAM PC setups)
-│
-├── /languages                  # Localization JSON files
-│   ├── /en-US                  # English Default Locale
-│   │   ├── assistant.json      # Core AI prompts, hold rules, and logic variables
-│   │   ├── gui.json            # Web Control Panel translations & defaults
-│   │   └── spam.json           # Default SPAM lookup URL templates + home numbering plan (country code and national number length)
-│   │
-│   ├── /es-ES                  # Spanish Default Locale
-│   │   ├── assistant.json
-│   │   ├── gui.json
-│   │   └── spam.json
-│
-├── /recordings                 # Call audio logs directory (Auto-created)
-│   ├── call_1234_client.mp3    # Isolated caller audio (32 kbps; WAV if lameenc is missing)
-│   └── call_1234.mp3           # Mixed synchronized call recording (64 kbps stereo: Left=Caller, Right=AI)
-```
-
----
-
-## ⚙️ Running the Switchboard & Auto-Start on Boot
-
-### 1. Manual Launch
 On a desktop PC:
 ```bash
 ./my_gui.sh
@@ -575,6 +405,7 @@ On a headless SBC (e.g., Orange Pi Zero 3 via SSH) or to expose the Web GUI over
 ```
 Then open `http://<YOUR_DEVICE_IP>:8501` from any browser on your local network.
 
+<a id="gui-exposure"></a>
 #### 🔒 When is the Web GUI exposed to the local network?
 The launcher decides who can reach the Web GUI (port 8501) like this:
 
@@ -601,82 +432,7 @@ ssh -L 8501:localhost:8501 <user>@<YOUR_DEVICE_IP>
 
 `--local` cannot be combined with `--lan` or `--headless`. It only affects the Web GUI: the assistant daemon starts as usual (in a new terminal window if there is a desktop, in the background otherwise).
 
-#### 📱 Accessing the Web GUI from a Smartphone (Same LAN or Tethering)
-The Web GUI is a regular web page, so you can manage the switchboard directly from the **browser of the phone used for the calls**, or from **any other smartphone or tablet**, as long as the device running the assistant and the phone are on the **same local network** (home Wi-Fi/router) or connected through **tethering** (the phone's Wi-Fi hotspot, or USB tethering).
-
-1. Start the GUI in LAN mode with `./my_gui.sh --lan` (or use the systemd service below, which already does this).
-2. Note the LAN IP address printed in the terminal (`[INFO] Open your PC browser and go to: ...`), or find it with `hostname -I`.
-3. On the phone, open the browser and enter:
-   ```
-   http://<ip_lan>:8501
-   ```
-   For example: `http://192.168.1.50:8501`
-
-> **Tethering note:** when the assistant's device is connected to a phone's hotspot, its IP address is assigned by that phone (usually in a range like `192.168.43.x` or `172.20.10.x`), so check it again with `hostname -I` every time you change network.
-
-> ⚠️ **Security warning:** the Web GUI has **no login or password** and includes sensitive features (call recordings, transcripts, messages, API settings and remote server reboot). Only use it on networks you trust, and **never expose port 8501 to the Internet** (no router port forwarding). See [Security & Network Exposure](#-security--network-exposure) for a comparison of the access methods and a router checklist. For remote access from outside your LAN, see the next section.
-
-#### 🌍 Remote Access from Anywhere (Outside Your LAN)
-To manage the switchboard while away from home (mobile data, work, travel) **never expose the GUI to the Internet** (no router port forwarding, no `tailscale funnel`): it has no password. There are two safe ways, pick the one that suits you:
-
-| | **Option A — Private VPN (Tailscale / WireGuard)** | **Option B — Built-in Tor (quick alternative)** |
-|---|---|---|
-| Setup | Install the VPN on the switchboard and on each phone/PC | Switch it on in the Web GUI; install the Android app on the phone |
-| Accounts / third parties | Tailscale account (or your own WireGuard server) | None — no account, no router configuration, no third-party service |
-| Speed & reliability | Fast and stable | **Can be slow, and may occasionally fail** (Tor circuits take time to build) |
-| Works with | Any browser, Android and iPhone | The Android app, or Tor Browser on a PC (see below) |
-
-##### Option A — Private VPN with Tailscale
-[Tailscale](https://tailscale.com) is the easiest VPN: free for personal use, no router configuration or port forwarding, and it works even behind CGNAT (common with mobile and fibre ISPs).
-
-**On the switchboard device (PC / Orange Pi):**
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up          # opens a login link: sign in once with your account
-tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
-```
-
-**On your phone (Android or iPhone):**
-1. Install the **Tailscale** app and sign in with the **same account**.
-2. Turn the VPN switch on.
-3. Open the phone browser and go to:
-   ```
-   http://<tailscale_ip>:8501
-   ```
-   (or use the device's MagicDNS name, e.g. `http://orangepi:8501`).
-
-**Tips:**
-* Use the browser's **"Add to Home screen"** to get an app-like icon that opens the GUI directly.
-* Optional HTTPS inside your private network: `sudo tailscale serve --bg 8501` publishes the GUI only to your own devices at `https://<device>.<tailnet>.ts.net`.
-* Alternatives: a self-hosted **WireGuard** server on your router, or any other VPN that gives your phone a private route to the switchboard device.
-
-##### Option B — Built-in Tor (private onion service, no third parties)
-The switchboard can publish its Web GUI as a **private Tor onion service protected by an access key** (Tor "client authorization"): without the key nobody can even see that the service exists. It needs no account, no open ports and no router configuration, and it works behind CGNAT. The trade-off is speed: pages load slower than on a VPN, and a connection can occasionally fail and need a retry.
-
-1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl` (Tor must be 0.4.9 or newer: check with `tor --version`). The switchboard uses its own private Tor instance, so you can disable the system-wide service with `sudo systemctl disable --now tor`.
-2. Open the Web GUI and find the **Remote access (Tor)** panel. Press **▶️ Enable remote access** and wait until the status says **🟢 Active** (the first start can take a minute or two).
-3. The onion address is shown with a **copy button**. Press **🔑 Show pairing code** to see the access key (also with a copy button), the full pairing link that joins both, and a QR code. **Keep them secret**: whoever has them can reach your panel.
-4. Connect a device:
-   * **Android phone → the [AI Switchboard app](#-android-app-ai-switchboard)** (recommended): scan the QR code, or paste the onion address and the access key in the two boxes, or paste the full pairing link in the first box.
-   * **PC → Tor Browser (desktop)**: open the onion address; Tor Browser asks for the access key. *(Tor Browser for Android and other mobile Tor browsers may not support access-key protected onion services — according to the Tor Project's issue tracker, Tor Browser for Android did not support them when this was written — so on Android use the app.)*
-   * **iPhone:** there is no app for iOS. Use Option A (Tailscale has an iOS app) or your home network.
-5. To cut remote access at any time, press **⏹️ Disable remote access** in the same panel.
-
-> The switchboard also pushes nothing to any server: the Android app *polls* it through Tor (see below), so no Google/Firebase service is involved.
-
----
-**🛡️ Optional CLI SPAM Test**
-
-You can also test any phone number against your configured SPAM providers from the terminal.
-Run it from the project directory (also when connected via SSH):
-```bash
-cd ~/AI-Bluetooth-Phone-Assistant
-source venv/bin/activate        # use your own environment name if different (.venv, conda...)
-python3 phone_assistant.py --test-spam +34600000000
-```
----
-
-### 2. Automatic Startup on Boot (Systemd User Service)
+### Automatic Startup on Boot (Systemd User Service)
 To run the AI Switchboard automatically in the background whenever your PC or SBC boots up (without needing to log in via SSH or open a terminal), configure a `systemd` user service:
 
 ```bash
@@ -748,9 +504,150 @@ EOF
 source ~/.bashrc
 ```
 
+
 ---
 
-## 🔐 Security & Network Exposure
+<a id="access"></a>
+## 🌍 7. Accessing the Web GUI from Other Devices
+
+By default the Web GUI can be opened from the device itself. The next sections explain how to open it from a smartphone or another computer on the same network, and how to reach it safely from outside your home.
+
+### 📱 Accessing the Web GUI from a Smartphone (Same LAN or Tethering)
+The Web GUI is a regular web page, so you can manage the switchboard directly from the **browser of the phone used for the calls**, or from **any other smartphone or tablet**, as long as the device running the assistant and the phone are on the **same local network** (home Wi-Fi/router) or connected through **tethering** (the phone's Wi-Fi hotspot, or USB tethering).
+
+1. Start the GUI in LAN mode with `./my_gui.sh --lan` (or use the systemd service from *Automatic Startup on Boot*, which already does this).
+2. Note the LAN IP address printed in the terminal (`[INFO] Open your PC browser and go to: ...`), or find it with `hostname -I`.
+3. On the phone, open the browser and enter:
+   ```
+   http://<ip_lan>:8501
+   ```
+   For example: `http://192.168.1.50:8501`
+
+> **Tethering note:** when the assistant's device is connected to a phone's hotspot, its IP address is assigned by that phone (usually in a range like `192.168.43.x` or `172.20.10.x`), so check it again with `hostname -I` every time you change network.
+
+> ⚠️ **Security warning:** the Web GUI has **no login or password** and includes sensitive features (call recordings, transcripts, messages, API settings and remote server reboot). Only use it on networks you trust, and **never expose port 8501 to the Internet** (no router port forwarding). See [Security & Network Exposure](#security) for a comparison of the access methods and a router checklist. For remote access from outside your LAN, see *Remote Access from Anywhere* below.
+
+### 🌍 Remote Access from Anywhere (Outside Your LAN)
+To manage the switchboard while away from home (mobile data, work, travel) **never expose the GUI to the Internet** (no router port forwarding, no `tailscale funnel`): it has no password. There are two safe ways, pick the one that suits you:
+
+| | **Option A — Private VPN (Tailscale / WireGuard)** | **Option B — Built-in Tor (quick alternative)** |
+|---|---|---|
+| Setup | Install the VPN on the switchboard and on each phone/PC | Switch it on in the Web GUI; install the Android app on the phone |
+| Accounts / third parties | Tailscale account (or your own WireGuard server) | None — no account, no router configuration, no third-party service |
+| Speed & reliability | Fast and stable | **Can be slow, and may occasionally fail** (Tor circuits take time to build) |
+| Works with | Any browser, Android and iPhone | The Android app, or Tor Browser on a PC (see below) |
+
+<a id="option-a-vpn"></a>
+#### Option A — Private VPN with Tailscale
+[Tailscale](https://tailscale.com) is the easiest VPN: free for personal use, no router configuration or port forwarding, and it works even behind CGNAT (common with mobile and fibre ISPs).
+
+**On the switchboard device (PC / Orange Pi):**
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up          # opens a login link: sign in once with your account
+tailscale ip -4            # shows the private IP, e.g. 100.101.102.103
+```
+
+**On your phone (Android or iPhone):**
+1. Install the **Tailscale** app and sign in with the **same account**.
+2. Turn the VPN switch on.
+3. Open the phone browser and go to:
+   ```
+   http://<tailscale_ip>:8501
+   ```
+   (or use the device's MagicDNS name, e.g. `http://orangepi:8501`).
+
+**Tips:**
+* Use the browser's **"Add to Home screen"** to get an app-like icon that opens the GUI directly.
+* Optional HTTPS inside your private network: `sudo tailscale serve --bg 8501` publishes the GUI only to your own devices at `https://<device>.<tailnet>.ts.net`.
+* Alternatives: a self-hosted **WireGuard** server on your router, or any other VPN that gives your phone a private route to the switchboard device.
+
+<a id="option-b-tor"></a>
+#### Option B — Built-in Tor (private onion service, no third parties)
+The switchboard can publish its Web GUI as a **private Tor onion service protected by an access key** (Tor "client authorization"): without the key nobody can even see that the service exists. It needs no account, no open ports and no router configuration, and it works behind CGNAT. The trade-off is speed: pages load slower than on a VPN, and a connection can occasionally fail and need a retry.
+
+1. Install the two packages Tor access needs: run `./install_system_deps.sh --with-tor`, or `sudo apt install tor openssl` (Tor must be 0.4.9 or newer: check with `tor --version`). The switchboard uses its own private Tor instance, so you can disable the system-wide service with `sudo systemctl disable --now tor`.
+2. Open the Web GUI and find the **Remote access (Tor)** panel. Press **▶️ Enable remote access** and wait until the status says **🟢 Active** (the first start can take a minute or two).
+3. The onion address is shown with a **copy button**. Press **🔑 Show pairing code** to see the access key (also with a copy button), the full pairing link that joins both, and a QR code. **Keep them secret**: whoever has them can reach your panel.
+4. Connect a device:
+   * **Android phone → the [AI Switchboard app](#android-app)** (recommended): scan the QR code, or paste the onion address and the access key in the two boxes, or paste the full pairing link in the first box.
+   * **PC → Tor Browser (desktop)**: open the onion address; Tor Browser asks for the access key. *(Tor Browser for Android and other mobile Tor browsers may not support access-key protected onion services — according to the Tor Project's issue tracker, Tor Browser for Android did not support them when this was written — so on Android use the app.)*
+   * **iPhone:** there is no app for iOS. Use Option A (Tailscale has an iOS app) or your home network.
+5. To cut remote access at any time, press **⏹️ Disable remote access** in the same panel.
+
+> The switchboard also pushes nothing to any server: the Android app *polls* it through Tor (see below), so no Google/Firebase service is involved.
+
+
+---
+
+<a id="android-app"></a>
+## 📱 8. Android App (AI Switchboard)
+
+A small, free Android app that is the easiest way to reach your switchboard from **anywhere**: it opens the Web GUI through the Tor network built into the app and tells you when a caller leaves a message or a call has finished.
+
+[**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
+
+### Verify the download (optional)
+The official APK (`android/AI-Switchboard.apk`, version 1.1.4) has this SHA-256: `452ff113f053dd5cc1ffa21b501c1e44d052b1e8b858dd7128e95e853b516d96`
+
+> ⚠️ Use version **1.1.4 or newer**: version 1.1.2 and earlier carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026, and version 1.1.3 carries a Tor that lacks later security fixes.
+
+It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate.
+
+> 🛠️ Compare with `sha256sum` and `apksigner verify --print-certs` (`apksigner` is in the `build-tools/<version>/` folder of the Android SDK, usually not in your PATH: call it with its full path).
+
+### Why it is worth installing
+* 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
+* 🗄️ **It keeps almost nothing.** The only thing it stores is your pairing key, encrypted with the Android Keystore and excluded from Android backups, plus its own settings. Calls, recordings and messages stay on your switchboard; the panel you see is just a window onto it (like any browser, the phone may cache the pages it shows).
+* 🔔 **Notifications without Google.** Because Tor is private, the app cannot receive instant pushes from a server; it *asks* your switchboard instead, and you choose how often in **Settings**: **Power saving** (about every 15 minutes, Android's minimum for background work; lowest battery use, no permanent notification), **Balanced** (every 2, 5 or 10 minutes) or **Instant** (keeps one connection open for near-immediate alerts; highest battery use). Balanced and Instant show a permanent notification, because Android requires it for background services. You can also set a **schedule** with one mode for the day and another for the night (including *Off*). Android can delay the checks in Doze or battery saver. Instant mode works best with the latest switchboard version: with an older one the app notices that the switchboard does not hold requests open and checks about every 15 seconds instead. You are notified of **new caller messages** and **finished calls with their AI summary**. SPAM and blocked calls are not notified, and a call that left a message produces a single notification. On the lock screen only a generic text is shown; the content appears once you unlock. The first time you switch notifications on, old items are not sent.
+* 🆓 **Free and open source (GPL v3).** The *About* button shows the version, the license notice and the licenses of the components it uses.
+
+
+### 📸 Android App Screenshots
+
+![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app1.jpg)
+![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app2.jpg)
+![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app3.jpg)
+
+### Installing the App
+1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) (or download it on a PC and copy it over) and open the downloaded file.
+2. Android will ask you to allow installing apps from this source (**"Install unknown apps"** for your browser or file manager). Allow it **only for that app**, then go back and tap **Install**. The app is not distributed through Google Play, so Google Play Protect may warn about an unknown developer: tap *More details → Install anyway*.
+3. Open the app. When it asks for permission to show **notifications**, accept (Android 13+).
+4. On the switchboard, enable **Remote access (Tor)** and press **Show pairing code** (see [Option B](#option-b-tor)).
+5. In the app, **scan the QR code**, or paste the pairing text. The GUI shows the onion address and the access key separately: paste the onion address in the first box and the key in the second, or paste the full pairing link in the first box only.
+6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes; if it seems stuck, press **Refresh**). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
+
+### Using the app
+* **↻ Refresh:** reloads the page. If the page is not showing, or the connection is stuck, it cancels the attempt and restarts the Tor connection from scratch.
+* **⚙️ Settings:** notifications, how often to check, the day/night schedule, the *Allow background activity* button, *About* and *Unpair*.
+* **⏻ Close:** stops the background checks, the permanent notification and Tor, and closes the app completely. Your pairing and settings are kept: when you open the app again, it resumes the checks as you had configured them. After a restart of the phone the background checks also start again by themselves.
+* **Unpair:** forgets the pairing, switches the notifications off and closes the app.
+
+### 🔍 About the QR scanner (optional)
+Scanning the QR code is optional and uses Google's *code scanner*, a component of Google Play services. Images are processed on your device and the app only receives the resulting text. It requires Google Play services, which may download the scanner module the first time you use it. If you prefer not to use it, simply paste the onion address and key manually: the rest of the app never talks to Google.
+
+### Troubleshooting
+| Problem | What to do |
+|---|---|
+| "App not installed" / the file will not open | Allow *Install unknown apps* for the app you used to open the APK. Android 7–8 has a single "Unknown sources" switch in Security settings. |
+| Play Protect warns about an unknown developer | Expected for apps outside Google Play: *More details → Install anyway*. You can compare the file's SHA-256 with the one published in the release. |
+| The app closes, or stays at about 30% on *Connecting through Tor…* | Your app is version 1.1.2 or older, which carries Tor 0.4.8. The Tor network stopped accepting it on 28 October 2026. Install version 1.1.4 or newer (same signing certificate, so it installs over the old one). If it still happens, check that the Tor of the switchboard is 0.4.9 or newer (`tor --version`). |
+| Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. If it seems stuck, press **Refresh** (↻) or **Retry**: both cancel the attempt and restart Tor from scratch. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
+| *Cannot reach the switchboard* | The switchboard is off, offline, or remote access is disabled. |
+| *The WebView … does not support the required proxy feature* | Update **Android System WebView** (and Chrome) in Google Play, or on devices without Google Play update the WebView component by the vendor's means. |
+| *Invalid pairing data* | Paste the onion address (56 characters + `.onion`) and the key (52 characters) in the right boxes, or the full `aiphone://pair?…` link. Do not add spaces or quotes. |
+| No notifications | Allow notifications for the app in Android settings; set the app's battery usage to **Unrestricted / Not optimised**; on Xiaomi, Huawei, Oppo, Samsung and similar, allow *autostart* / *background activity* and lock the app in recent apps. In *Power saving* mode checks happen about every 15 minutes, possibly later in Doze or battery saver; choose *Balanced* or *Instant* in the app's Settings for faster alerts. |
+| No permanent notification in *Power saving* mode | Intended. Only *Balanced* and *Instant* use a background service, and Android requires a permanent notification for it. *Power saving* uses Android's own scheduler instead, which is why it uses less battery. |
+| I want to stop the app completely | Use the **⏻ Close** button on the main screen. Pairing and settings are kept. |
+| Notifications appear with a generic text | That is intended on the lock screen; unlock the phone to read them. |
+| The panel is slow | Normal with Tor. For a faster connection use Option A (VPN). |
+| After reinstalling or changing phone | Pair again: the key is deliberately not backed up. |
+
+
+---
+
+<a id="security"></a>
+## 🔐 9. Security & Network Exposure
 
 The startup script automatically selects the access mode for convenience: it uses `--local` when a desktop environment is detected, and `--lan` when running without one (for example, on a headless Orange Pi). LAN mode is more convenient on headless systems because it allows access from other devices on the local network.
 
@@ -762,7 +659,7 @@ The startup script automatically selects the access mode for convenience: it use
 > * **Neither the switchboard code nor Streamlit opens router ports or uses uPnP.**  However, disabling UPnP is recommended as a general precaution, as other programs and devices may use it.
 > * **Never expose port 8501 to the Internet.** No router port forwarding, no `tailscale funnel`, no DMZ / "exposed host".
 > * **LAN mode is plain HTTP.** Nothing is encrypted on your Wi-Fi, and anyone connected to the same network (guests, smart-home gadgets, an infected computer) can open the panel without a password.
-> * **Check how it is launched.** The systemd service of this README starts the Web GUI with `--lan`, and `./my_gui.sh` without arguments from a plain SSH session also opens it to your whole network (see [the table above](#-when-is-the-web-gui-exposed-to-the-local-network)). Use `--local` if you do not need that.
+> * **Check how it is launched.** The systemd service of this README starts the Web GUI with `--lan`, and `./my_gui.sh` without arguments from a plain SSH session also opens it to your whole network (see [the exposure table in *Running the Switchboard*](#gui-exposure)). Use `--local` if you do not need that.
 > * **Do not forward the SSH port to the Internet** unless SSH itself is hardened (key login, no weak passwords). Otherwise the weak point moves from the panel to SSH.
 
 
@@ -772,8 +669,8 @@ The startup script automatically selects the access mode for convenience: it use
 | :--- | :--- | :--- | :--- |
 | **Local only** (`./my_gui.sh --local`, or the default on a desktop session) | Only the device itself | 🟢 **Very high** | Nothing is published on the network. |
 | **SSH tunnel** (`--local` + `ssh -L 8501:localhost:8501 <user>@<YOUR_DEVICE_IP>`) | Only whoever can log in to the device by SSH | 🟢 **Very high** | Encrypted. It is as strong as your SSH login: use keys or a strong password. |
-| **Private VPN** (Tailscale / WireGuard, see [Option A](#option-a--private-vpn-with-tailscale)) | Only the devices signed in to your VPN | 🟢 **Very high** | Encrypted and works from anywhere. Protect the VPN account (two-factor login if available). |
-| **Built-in Tor** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)) | Only devices with the onion address and the access key | 🟢 **High** | Encrypted, no open ports and no third-party accounts. Without the access key, nobody can access the panel, even if they know the onion address. Keep the access key and pairing link secret. It also works with `--local`: Tor reaches the panel through `127.0.0.1`, so the panel does not need to be opened to your network. However, it is slower than a VPN, and security also depends on the versions of the Tor libraries used by the server, relays, and clients. |
+| **Private VPN** (Tailscale / WireGuard, see [Option A](#option-a-vpn)) | Only the devices signed in to your VPN | 🟢 **Very high** | Encrypted and works from anywhere. Protect the VPN account (two-factor login if available). |
+| **Built-in Tor** (see [Option B](#option-b-tor)) | Only devices with the onion address and the access key | 🟢 **High** | Encrypted, no open ports and no third-party accounts. Without the access key, nobody can access the panel, even if they know the onion address. Keep the access key and pairing link secret. It also works with `--local`: Tor reaches the panel through `127.0.0.1`, so the panel does not need to be opened to your network. However, it is slower than a VPN, and security also depends on the versions of the Tor libraries used by the server, relays, and clients. |
 | **LAN mode** (`--lan`, systemd service) | Devices that can reach the service on your local network | 🟡 **Depends on your network** | No password and no encryption. More convenient, but other devices and programs on the same LAN may be able to access the panel. Use it only on a network you trust, and check that your router does not expose the device to the Internet. |
 | **LAN mode + Internet exposure** (port forwarding, UPnP mappings created by other programs, DMZ / exposed host, or publicly reachable IPv6) | **Potentially anyone on the Internet** | 🔴 **Unsafe** | Your recordings, messages and settings may be accessible to unauthorized users. Never expose the service directly to the Internet. |
 
@@ -820,76 +717,269 @@ The panel has no built-in login. If you want to protect it with a password, you 
 
 Basic Authentication prompts the browser for a username and password, which the browser may retain for the current session. **Important:** over plain HTTP, Basic Authentication does not encrypt credentials in transit. For protection against interception, use HTTPS or access the panel through an SSH tunnel or a properly configured VPN.
 
----
-
-## 📱 Android App (AI Switchboard)
-
-A small, free Android app that is the easiest way to reach your switchboard from **anywhere**: it opens the Web GUI through the Tor network built into the app and tells you when a caller leaves a message or a call has finished.
-
-[**⬇️ Download the APK**](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) &nbsp;·&nbsp; Android 7.0 or newer &nbsp;·&nbsp; [Build it yourself](android/ANDROID_BUILD.md)
-
-### Verify the download (optional)
-The official APK (`android/AI-Switchboard.apk`, version 1.1.4) has this SHA-256: `452ff113f053dd5cc1ffa21b501c1e44d052b1e8b858dd7128e95e853b516d96`
-
-> ⚠️ Use version **1.1.4 or newer**: version 1.1.2 and earlier carry Tor 0.4.8, which the Tor network no longer accepts since 28 October 2026, and version 1.1.3 carries a Tor that lacks later security fixes.
-
-It is signed with a certificate (`CN=Antonio R.`) whose SHA-256 fingerprint is `d5a4c1db9733d27ade3c4054d771c049a716b86dbde1d2bc603f96297aa9fc42`; every future official version will carry the same certificate.
-
-> 🛠️ Compare with `sha256sum` and `apksigner verify --print-certs` (`apksigner` is in the `build-tools/<version>/` folder of the Android SDK, usually not in your PATH: call it with its full path).
-
-### Why it is worth installing
-* 🔒 **Private by design.** The app talks **only to your own switchboard**, through the anonymous Tor network. It never contacts public servers or third-party services of its own: **no analytics, no ads, no trackers, no accounts, no Google or Firebase push service.** The connection is end-to-end encrypted and protected by an access key, and the app refuses to load any address other than your switchboard's.
-* 🗄️ **It keeps almost nothing.** The only thing it stores is your pairing key, encrypted with the Android Keystore and excluded from Android backups, plus its own settings. Calls, recordings and messages stay on your switchboard; the panel you see is just a window onto it (like any browser, the phone may cache the pages it shows).
-* 🔔 **Notifications without Google.** Because Tor is private, the app cannot receive instant pushes from a server; it *asks* your switchboard instead, and you choose how often in **Settings**: **Power saving** (about every 15 minutes, Android's minimum for background work; lowest battery use, no permanent notification), **Balanced** (every 2, 5 or 10 minutes) or **Instant** (keeps one connection open for near-immediate alerts; highest battery use). Balanced and Instant show a permanent notification, because Android requires it for background services. You can also set a **schedule** with one mode for the day and another for the night (including *Off*). Android can delay the checks in Doze or battery saver. Instant mode works best with the latest switchboard version: with an older one the app notices that the switchboard does not hold requests open and checks about every 15 seconds instead. You are notified of **new caller messages** and **finished calls with their AI summary**. SPAM and blocked calls are not notified, and a call that left a message produces a single notification. On the lock screen only a generic text is shown; the content appears once you unlock. The first time you switch notifications on, old items are not sent.
-* 🆓 **Free and open source (GPL v3).** The *About* button shows the version, the license notice and the licenses of the components it uses.
 
 ---
 
-## 📸 Screenshots
+<a id="user-manual"></a>
+## 📖 10. User Manual
 
-![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app1.jpg)
-![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app2.jpg)
-![Android Screenshot](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/mobile_app3.jpg)
+Day-to-day usage notes, explanations and tuning tips. The defaults work well in most cases, so you can come back to this section only when you need it.
+
+<a id="bt-status"></a>
+### 🔋 Bluetooth Status & Phone Battery in the Web GUI
+The panel shows one of these states: **Connected**, **Connected - call profile not ready** (BlueZ reports the phone as connected but the oFono modem that carries the calls does not exist yet), **Disconnected (reconnecting automatically)**, **No paired phone found** or **Unknown**. *Unknown* appears when the switchboard is offline or the Bluetooth state has not been refreshed for a minute. Every state change is printed in the console.
+
+The battery is read from BlueZ when the phone reports an exact percentage, otherwise from the oFono handsfree level (0–5, shown in steps of 20 %). Phones report it coarsely and with delay, so it can differ by a few points from the number on the phone. If the phone does not report it, the panel shows *not reported*; the console prints once the properties that oFono exposes (`oFono Handsfree properties: …`).
+
+<a id="personality-language"></a>
+### 🧠 Assistant Personality, Tuning & Languages
+
+*   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases. Since v2.6, each language file starts with a **voice and accent profile** and can define an explicit `speech_language_code` (BCP-47, e.g., `es-ES`) for use by other parts of the application. However, Gemini Live does not use this language code to determine the language it speaks. See [Voice & Language Configuration](#voice-language-config) below for further details. Accent drift cannot be fully eliminated with Gemini 3.8 Live; if it persists, try other voices in `voice_names`.
+*   **GUI Personality Changes:** You can radically change the secretary's personality through the GUI (e.g., by modifying its instructions, strictness, or tone), including on a per-phone-number basis. These are initial instructions for the Gemini Live AI, which are added to the default prompts. Keep in mind that significant personality changes may affect the reliability of structural commands. Additional instructions or personality changes may also affect the assistant's reliability and even alter its voice characteristics (e.g., causing it to switch from a female to a male voice). To avoid errors, write clear and concise instructions, avoid contradictory behavioral requirements, and stay away from ambiguous wording and gender-specific terms. Also, avoid describing the caller: their phone number is already available, so there is no need to provide additional information about them. Finally, test your instructions by making a call yourself from another mobile phone. If you are testing instructions configured for a specific phone number, make sure to configure that number with the same instructions first.
+*   **Localization:** You can easily add new languages. Simply duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the values in the `.json` files (`gui.json` and `assistant.json`). **Do not change the variable keys/names**, only translate the text values. For a new language also set `home_country_code` and `home_national_length` in `spam.json`, and adapt the voice and accent profile at the top of the prompt, `speech_language_code`, `voice_names`, and the word lists (`cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). Always copy **all** the keys from the English or Spanish files: missing keys can cause incomplete texts or unexpected behavior.
+
+#### Recommended Operating Profile
+For a balanced default experience, the recommended profile is:
+*   Concise and neutral tone
+*   Inbound-call focused
+*   Limited to call handling, message capture, hold management, and basic classification
+*   Resistant to oversharing personal or schedule details
+
+A more expressive or conversational personality sounds nicer, but may reduce reliability for structural commands during real calls.
+
+For the audio, echo and voice-detection settings (answer speed, hold mode, transcript quality) see the [Audio, Echo & Voice Detection Tuning Guide](#audio-tuning-guide).
+
+<a id="voice-language-config"></a>
+#### Voice & Language Configuration
+The assistant's voice and language-related settings are configured in each language's `assistant.json` file:
+* **`voice_names`:** Sets the female and male voices used by Gemini Live (by default, `Aoede` for female and `Charon` for male). You can change them to any available prebuilt Gemini voice.
+* **`speech_language_code`:** Defines a language code (BCP-47, such as `es-ES` or `en-US`) that can be used by other parts of the application. **Gemini Live does not use this setting to determine or control the language it speaks.** Leaving it empty (`""`) does not itself enable automatic language detection in Gemini Live.
+* **Known Gemini 3.8 Live voice limitation:** The accent and pitch/tone of the voice may occasionally drift during a call. This is a known limitation of the **Gemini 3.8 Live** model itself and is especially noticeable with the **female voice in Spanish**.
+
+#### Multi-Language Compatibility & Script Limitations
+
+While the application is structurally designed to support translation locales via JSON files, there are technical limitations in the current codebase regarding non-Latin scripts, Asian languages, and Right-to-Left (RTL) languages:
+
+##### 1. Hardcoded Character Filtering (CJK Languages)
+At the code level, the daemon employs a regex-based noise filter in the `is_valid_text` function to discard transcription artifacts caused by Bluetooth static. This filter explicitly blocks character ranges for:
+- Chinese (Kanji/Hanzi: `\u4e00-\u9fff`)
+- Japanese (Hiragana/Katakana: `\u3040-\u30ff`)
+- Korean (Hangul: `\uac00-\ud7a3` / `\u1100-\u11ff`)
+
+If a caller speaks in Chinese, Japanese, or Korean, the daemon will classify the input as noise and produce no response.
+
+##### 2. Word Tokenization Failure (CJK Languages)
+The `_calculate_text_similarity` helper splits text using Python's `str.split()`, which tokenizes by whitespace. Chinese and Japanese writing systems do not use spaces between words, so this function will always return `0.0` similarity for CJK input, breaking the hallucination-detection and deduplication logic.
+
+##### 3. Right-to-Left (RTL) Languages (Arabic, Hebrew)
+Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Hebrew text, most standard Linux terminal emulators and Streamlit layout renderers do not natively support complex bidirectional text mixing. Expect visual alignment issues in live terminal logs and Web GUI logs.
+
+<a id="contact-rules"></a>
+### 🛡️ Contact Rules, SPAM Filtering & Call-Log Labels
+
+* **🏷️ Call Log Labels That Follow Your Rules:** The **custom tag** and the **note** of a contact rule apply to every call of that number or wildcard, past calls included. Add or change them and the whole call log updates; clear the tag or delete the rule and each call goes back to its own classification (the one the AI gave it, or the one you chose by hand in the call log). A Blacklist rule without a custom tag shows the blacklist label; calls it rejected go back to the general label when the rule is deleted. The note works as the caller name only when no name was heard during the call. A tag chosen by hand in the call log is replaced when a rule with a custom tag matches that number. Calls saved by older versions are updated on the first run of this version: your existing rules are applied to them, and the ones with no rule cannot tell what they were classified as before a custom tag, so they go back to SPAM if their risk score was 65 or more, and to the general label otherwise.
+* **🎨 Custom Tag Icons:** Every custom tag of a contact rule has an icon (color) chosen from a dropdown next to the tag text, so tags are easy to tell apart in the call log. New tags start with 🟣, a color the standard labels do not use; change it at any time or choose *No icon*. The icons offered are listed under `contact_tag_icons` in the language file (`gui.json`), and the icon is stored as the first character of the tag, so no database change is needed.
+* **🧭 Contacts & Wildcard Rules Layout:** The Web GUI shows the list of rules first, so a number added from the call log is visible right away, and the form to add a new rule sits below it under its own heading.
+
+#### 🛡️ Optional CLI SPAM Test
+
+You can also test any phone number against your configured SPAM providers from the terminal.
+Run it from the project directory (also when connected via SSH):
+```bash
+cd ~/AI-Bluetooth-Phone-Assistant
+source venv/bin/activate        # use your own environment name if different (.venv, conda...)
+python3 phone_assistant.py --test-spam +34600000000
+```
+
+<a id="call-handling"></a>
+### 📞 Call Handling: Handset Takeover, Goodbye & Transcription Modes
+
+<a id="live-handset-takeover"></a>
+#### Live Handset Takeover
+
+**📱 Live Handset Takeover:** Pick up your phone or switch audio away from Bluetooth mid-call to pause the AI, and switch back to Bluetooth to resume. If the caller's audio stops without you touching the phone, the console says `Caller audio stream lost`: the switchboard cannot tell a real takeover from a Bluetooth audio link that dropped.
+
+*Hold mode is explained in the [Audio Tuning Guide](#hold-mode), because how it behaves depends largely on the quality of the audio.*
+
+#### Goodbye and hanging up
+When Gemini says goodbye or calls its hang-up tool, the switchboard treats it as an **intention**, not as an order. It lets the farewell audio finish and watches what the caller does:
+* The caller says a real goodbye, or stays silent for `farewell_grace_seconds` (2 s by default): the call is hung up.
+* The caller answers with something that is not just politeness ("OK, thanks", "no, nothing else" are polite; a question or a new request is not; the polite words are listed in `farewell_ack_words` in `assistant.json`), the secretary starts a new turn, or her last sentence is a question: the hang-up is **cancelled**.
+* A short text-model vote can also veto the hang-up for 20 seconds when the caller has clearly not finished.
+
+Since v3.0, when a hang-up is cancelled or ignored, the switchboard also **answers Gemini's hang-up tool call** ("the call was not hung up") and sends a short instruction (`hangup_cancelled` in `assistant.json`) so that the secretary keeps attending the caller instead of staying silent. If the caller's closing words are not recognized as polite, the safe side is a call that stays open until the inactivity timer ends it.
+
+<details>
+<summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini Flash 3) change</summary>
+
+&nbsp;
+
+None of them changes the live decisions. The switchboard's rules for hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking (and the AI itself listens to the audio, not to any transcript). The Whisper text arrives later, so it cannot take part in those decisions. The only small exception is a safety rule: when the AI tries to hang up during a hold, the switchboard looks for a goodbye word in the last part of the transcript, and in real-time mode that part can already include Whisper's version.
+* **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
+* **Online (`gemini-3.5-transcribe-live`):** the caller's speech is sent to Google while the call goes on and its text is shown next to Gemini's own. It only receives the speech that passed the noise gate and the echo suppression, and it does not need any local processing, so it is the option for small boards where Whisper.cpp is too heavy.
+* **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
+
+</details>
+
+<a id="audio-tuning-guide"></a>
+### 🔊 Audio, Echo & Voice Detection Tuning Guide
+
+> ✅ **You probably do not need this section.** The default values work well in most cases, so if your calls sound and transcribe fine, leave everything as it is. Come here only if you notice a specific problem (she answers too slowly, interrupts the caller, misses quiet voices, reacts to noise…). The parts marked **🧪 Advanced** are for the curious and for experienced users; you can skip them.
+
+The secretary can only react to what she hears. The **Audio, Echo & VAD Tuning** block of the Web GUI controls how the caller's voice is cleaned, how loud it is and how the system decides when the caller starts and stops talking (*VAD* = Voice Activity Detection, the part of Gemini Live that notices when somebody is speaking). That affects:
+
+* **How fast she answers:** how long she waits before deciding that the caller has finished.
+* **Interruptions:** whether noise makes her stop or answer for nothing, and whether she misses a quiet caller.
+* **Hold mode and transcript quality:** the switchboard decides hold, goodbye detection and priority keywords from the words it recognizes, and the AI itself reacts to what it hears, so poor audio can mean a missed hold, a false wake-up or an answer at the wrong moment.
+
+Changes apply from the **next call**. Change **one setting at a time**, in small steps, and test with a real call. The table shows the default values, so you can always go back.
+
+#### The settings
+
+| Setting (Web GUI label) | Default | Range | In one sentence |
+| :--- | :--- | :--- | :--- |
+| **Enable Software Echo Suppression (Half-Duplex)** | Off | On / Off | Mutes the caller's audio while the secretary is speaking. |
+| **Protect Initial Greeting from Early Line Interruptions** | On | On / Off | Mutes the caller's audio while the greeting is played. |
+| **Caller Mic Gain (x)** | 1.5 | 0.5 – 5.0 | The volume of the caller's voice. |
+| **Base Noise Gate (RMS)** | 55 | 0 – 100 | Sounds quieter than this are treated as silence. |
+| **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily she decides that the caller started speaking. |
+| **VAD Prefix Padding (ms)** | 450 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
+| **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller stopped speaking. |
+| **VAD Silence Duration (ms)** | 600 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
+
+#### Quick troubleshooting
+
+| What you notice | What to try (one change at a time) |
+| :--- | :--- |
+| She answers too slowly | Lower *VAD Silence Duration* by 100 ms; keep *End Sensitivity* HIGH. |
+| She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1000–1500 ms and set *End Sensitivity* to LOW. |
+| She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; try *Start Sensitivity* HIGH or a lower *Prefix Padding*. |
+| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at its default (450) or higher; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
+| She hears her own voice and repeats or interrupts herself | Turn on *Software Echo Suppression*. |
+| She asks "are you there?" while the caller speaks softly | The gate may be too high or the gain too low (or echo suppression is muting the caller); adjust them in that order. |
+| The greeting is cut when the call is answered | Keep *Protect Initial Greeting* on. |
+| The first words of a caller who speaks at once are lost | Turn *Protect Initial Greeting* off. |
+| Hold is not activated when the caller says "one moment" | Improve the audio (gain, gate) or lower *Prefix Padding* so a short phrase is not lost. The switchboard registers the hold only when it recognizes the phrase; the AI may still stay quiet or answer on its own. |
+| Hold ends by itself, or she reacts late when the caller returns, with a TV or voices behind the caller | See [TV or voices behind the caller](#tv-or-voices-behind-the-caller). |
+
+Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and what works best depends on your phone and on your usual callers.
+
+#### What each setting does
+
+**Software Echo Suppression (Half-Duplex).** While the secretary is speaking, whatever comes from the caller's line is replaced by silence before Gemini hears it. **Turn it on** if she hears her own voice coming back (echo from a speakerphone, a car kit or a poor line) and gets confused, repeats herself or interrupts herself. **Leave it off** otherwise: with it on, the caller **cannot interrupt** her while she talks, and what the caller says in that moment is not heard or transcribed (the call recording still keeps it).
+
+**Protect Initial Greeting.** While the greeting plays (at most about 8 seconds) the caller's audio is muted, so clicks, line noise or a quick "hello?" when the call is answered do not cut the greeting. **Keep it on** for a clean, complete greeting. **Turn it off** if you prefer that she can be interrupted from the very first second; the price is that noise at pick-up can cut the greeting.
+
+**Caller Mic Gain.** The volume of the caller's voice before Gemini hears it; it also changes the volume of the call recording. **Too low:** quiet callers are missed and transcripts get worse. **Too high:** loud parts distort and background noise is amplified, which causes false detections and garbled text. Change it in steps of 0.5. Many phones already boost the voice automatically, so avoid a high gain on top of that.
+
+**Base Noise Gate.** Anything quieter than the gate is replaced by silence before Gemini hears it. It **adapts by itself** to the noise of the line and is a bit higher while a call is on hold. It works on a very low volume scale, so it removes **the hiss of the line and very quiet noise**; a TV playing at normal volume next to the caller is usually well above it and **cannot be filtered out with this setting**. **Lower it** (steps of 5) if quiet callers are cut or words are missing at the start or end. **Raise it** if hiss, hum or distant voices reach Gemini and you see nonsense or `[Noise Filtered]` in the transcript. The gate only affects what Gemini hears: the call recording keeps the full caller audio.
+
+**VAD Start Sensitivity.** **LOW (default):** she needs clearer speech to decide that somebody started talking: fewer false triggers from clicks, coughs or noise, but a soft-spoken caller may be noticed late. **HIGH:** quieter and shorter sounds count as speech: faster reaction, but noise can interrupt her.
+
+**VAD Prefix Padding.** Despite its name, this is the **minimum amount of speech she must hear before accepting that the caller started talking** (it is not a recording buffer). **Lower values** (50–200 ms): very short words such as "yes", "no" or "hello" are noticed, but short noises also count. **Higher values** (500 ms or more): short noises are ignored, but a very short word may be missed.
+
+**VAD End Sensitivity and VAD Silence Duration.** These two work together and are the main controls of the **answer speed**. *End Sensitivity* says how readily a pause counts as the end of the sentence, and *Silence Duration* says how long that pause must last.
+* **Faster answers:** End Sensitivity HIGH and a short silence (200–500 ms). Risk: she answers while the caller is only taking a breath or thinking, and cuts into names, phone numbers or spelled words.
+* **More patient:** End Sensitivity LOW and a long silence (1000–2000 ms). Better for slow speakers, older callers and for leaving messages, but answers feel slower.
+
+<details>
+<summary>🧪 <b>Advanced:</b> exact behavior of the noise gate</summary>
+
+&nbsp;
+
+The gate looks at the original loudness of the caller's audio, **before** the gain is applied, so the gain does not change what the gate lets through. The switchboard keeps measuring the background noise of the line and raises the gate when the line is noisy (up to about 65), but never below the base value you set; if you set the base above 65, your value is used as it is. While a call is on hold the gate is raised by 15 more (up to 80). Even 80 is about 52 dB below the maximum level, which is why it cannot remove a TV. At the start of each call the terminal prints the gain and the base gate in use (`[Mic] Active on node … (Gain: …, Base Gate: …)`).
+
+</details>
+
+#### Hold mode
+Hold is handled by **two parts that work at the same time and do not always agree**:
+* **The switchboard's own rules.** It puts the call on hold when the **caller clearly asks to wait** ("one moment", "hold on", "don't hang up"…). The secretary's own acceptance phrase ("I'll wait") counts only if the caller asked to wait in the last 25 seconds. In every other case a short **text-model vote** decides, and merely mentioning, testing or proposing the hold function ("we can also test the wait") counts as *no*. The call leaves hold when it recognizes a return phrase or the assistant's or owner's name, after two real answers from the secretary, by a vote, or when the Whisper / online transcription shows the caller is back. While on hold it uses a stricter noise gate and a wait limit (15 minutes in total at most).
+* **The AI itself.** Gemini keeps listening all the time and decides on its own whether and when to speak, following its instructions and what it hears. The switchboard does not mute it or give it an order when hold starts or ends (the only exception is a reminder of the time limit when the secretary herself accepts a short hold). So the AI can start talking before the switchboard has noticed the return, stay silent after it has, or react to a TV or to someone near the caller.
+
+This is why hold can sometimes seem late, early or inconsistent, and why no setting can make it fully predictable. What helps is to give both parts the cleanest possible audio:
+* If noise garbles "one moment", the switchboard **does not register the hold**, and she may keep talking or ask if the caller is still there.
+* Background voices (a TV, for example) are heard by the AI too: they can make her **react late** or **speak by herself**, and if their words happen to contain a return phrase they can **wake her up**.
+* If the gate is too high or the gain too low, the caller who comes back with a soft voice is **not heard**; she keeps waiting, and the wait limit may end the call.
+
+#### TV or voices behind the caller
+This is the hardest case, because the secretary cannot tell a TV from a person.
+* The **Base Noise Gate does not help much here**: it removes the hiss of the line, not a TV at normal volume.
+* She hears the TV as speech. While it keeps talking there is **no silence**, so she needs longer to decide that the caller finished, and the transcript mixes the TV with the caller's words. The AI may also answer the TV on its own. That is why the reaction after a hold can be late or odd, and the transcription poor.
+
+What can help:
+1. **The caller's side** makes the biggest difference: a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls.
+2. **Do not raise *VAD Prefix Padding*** for this problem: return phrases are short ("hello?") and a high value can make her miss them.
+3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–600 ms. If the TV never stops, this cannot help.
+
+<details>
+<summary>🧪 <b>Advanced:</b> adding return phrases (for the curious and experienced users)</summary>
+
+&nbsp;
+
+During hold, the switchboard ignores text that does not contain a return phrase (the terminal log shows `Active Hold Ignored background noise / TV`). So the switchboard's own detection of the return depends on a **return phrase being correctly transcribed** among the noise. Keep in mind that this only affects the switchboard's rules: the AI hears the audio directly and may react on its own. In the `assistant.json` file of your language (`languages/<language>/assistant.json`), inside the `"words"` block, the `"return_triggers"` list holds those phrases (the assistant's name and the owner's name also count).
+
+The matching is **exact**: single words must match as whole words and longer phrases as text, with no fuzzy or phonetic matching. You can add the **short phrases your callers really say**, written **the way the transcription writes them**; the `Active Hold Ignored background noise / TV '…'` lines of the terminal log (`./my_gui.sh --logs`) show what was heard when the caller came back. Make a backup of the file first, only add entries to the list and keep the keys unchanged. It applies from the next call.
+
+</details>
+
+#### What else changes the result (not adjustable here)
+* **The caller's surroundings:** street, car, wind, a TV or several people talking, speakerphone use.
+* **The mobile network and the line:** weak coverage and heavy compression produce distorted or missing syllables.
+* **The phones, on both ends:** many phones apply automatic gain control, noise reduction with several microphones, or AI voice isolation.
+* **The Bluetooth link:** distance and interference.
+* **Language and accent:** accuracy changes with the language, the accent and uncommon names.
+
+No setting can restore what never arrived: a call from a quiet place with good signal is transcribed far better than any setting can achieve.
+
+<a id="debug-traces"></a>
+### 🛠️ Debug Traces
+
+> 🛠️ **Debug traces (advanced users and support only).** They are off by default. If you are asked to provide one, start the daemon with `python3 phone_assistant.py --debug` (or set `SWITCHBOARD_DEBUG=1`). Each call then creates files in `debug/` (`.jsonl` and, if the audio player reports errors, `_pw-play.log`) that contain the content of the calls and phone numbers, so do not publish them as they are. They are not deleted automatically: remove them with `rm debug/*`.
+
 
 ---
 
-### Installation
-1. On your phone, open the [APK link](https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/android/AI-Switchboard.apk) (or download it on a PC and copy it over) and open the downloaded file.
-2. Android will ask you to allow installing apps from this source (**"Install unknown apps"** for your browser or file manager). Allow it **only for that app**, then go back and tap **Install**. The app is not distributed through Google Play, so Google Play Protect may warn about an unknown developer: tap *More details → Install anyway*.
-3. Open the app. When it asks for permission to show **notifications**, accept (Android 13+).
-4. On the switchboard, enable **Remote access (Tor)** and press **Show pairing code** (see [Option B](#option-b--built-in-tor-private-onion-service-no-third-parties)).
-5. In the app, **scan the QR code**, or paste the pairing text. The GUI shows the onion address and the access key separately: paste the onion address in the first box and the key in the second, or paste the full pairing link in the first box only.
-6. Wait while it says *Connecting through Tor…* (the first connection can take 1–3 minutes; if it seems stuck, press **Refresh**). Then your Web GUI appears. Switch **Notifications** on if you want alerts.
+<a id="directory-structure"></a>
+## 📂 11. Project Directory Structure
 
-### Using the app
-* **↻ Refresh:** reloads the page. If the page is not showing, or the connection is stuck, it cancels the attempt and restarts the Tor connection from scratch.
-* **⚙️ Settings:** notifications, how often to check, the day/night schedule, the *Allow background activity* button, *About* and *Unpair*.
-* **⏻ Close:** stops the background checks, the permanent notification and Tor, and closes the app completely. Your pairing and settings are kept: when you open the app again, it resumes the checks as you had configured them. After a restart of the phone the background checks also start again by themselves.
-* **Unpair:** forgets the pairing, switches the notifications off and closes the app.
+```text
+/AI-Bluetooth-Phone-Assistant
+├── phone_assistant.py          # Main daemon (handles HFP, D-Bus, and Gemini 3.8 Live)
+├── my_gui.sh                   # Main GUI Launcher Script (Desktop and Headless/LAN aware)
+├── gui.py                      # Web Control Panel (Streamlit GUI interface)
+├── install_system_deps.sh      # Automated system & Python dependency installer (--with-whisper optional)
+├── switchboard.db              # SQLite Database (Auto-generated & migrated on launch)
+├── requirements.txt            # Python package dependencies
+├── /logs                       # daemon.log (headless mode, rotated at 5 MB) — auto-created
+├── /debug                      # Debug traces (.jsonl and .log per call), only if debug is turned on; contain call content — auto-created
+├── /onion_data                 # Private Tor instance & onion service keys (Remote Access) — auto-created
+├── /android                    # Android app: full Gradle project, ANDROID_BUILD.md and the ready-to-install AI-Switchboard.apk
+│
+├── /models                     # Whisper.cpp Model Folder (Optional)
+│   ├── ggml-medium.bin         # Multilingual model (for PC setups)
+│   └── ggml-base.bin           # Lightweight model (for low-RAM PC setups)
+│
+├── /languages                  # Localization JSON files
+│   ├── /en-US                  # English Default Locale
+│   │   ├── assistant.json      # Core AI prompts, hold rules, and logic variables
+│   │   ├── gui.json            # Web Control Panel translations & defaults
+│   │   └── spam.json           # Default SPAM lookup URL templates + home numbering plan (country code and national number length)
+│   │
+│   ├── /es-ES                  # Spanish Default Locale
+│   │   ├── assistant.json
+│   │   ├── gui.json
+│   │   └── spam.json
+│
+├── /recordings                 # Call audio logs directory (Auto-created)
+│   ├── call_1234_client.mp3    # Isolated caller audio (32 kbps; WAV if lameenc is missing)
+│   └── call_1234.mp3           # Mixed synchronized call recording (64 kbps stereo: Left=Caller, Right=AI)
+```
 
-### 🔍 About the QR scanner (optional)
-Scanning the QR code is optional and uses Google's *code scanner*, a component of Google Play services. Images are processed on your device and the app only receives the resulting text. It requires Google Play services, which may download the scanner module the first time you use it. If you prefer not to use it, simply paste the onion address and key manually: the rest of the app never talks to Google.
-
-### Troubleshooting
-| Problem | What to do |
-|---|---|
-| "App not installed" / the file will not open | Allow *Install unknown apps* for the app you used to open the APK. Android 7–8 has a single "Unknown sources" switch in Security settings. |
-| Play Protect warns about an unknown developer | Expected for apps outside Google Play: *More details → Install anyway*. You can compare the file's SHA-256 with the one published in the release. |
-| The app closes, or stays at about 30% on *Connecting through Tor…* | Your app is version 1.1.2 or older, which carries Tor 0.4.8. The Tor network stopped accepting it on 28 October 2026. Install version 1.1.4 or newer (same signing certificate, so it installs over the old one). If it still happens, check that the Tor of the switchboard is 0.4.9 or newer (`tor --version`). |
-| Stuck on *Connecting through Tor…* | The first connection takes 1–3 minutes. If it seems stuck, press **Refresh** (↻) or **Retry**: both cancel the attempt and restart Tor from scratch. Check that the switchboard is on, has Internet, and that its Tor panel says **🟢 Active**. Some networks block Tor: try another Wi-Fi or mobile data. |
-| *Cannot reach the switchboard* | The switchboard is off, offline, or remote access is disabled. |
-| *The WebView … does not support the required proxy feature* | Update **Android System WebView** (and Chrome) in Google Play, or on devices without Google Play update the WebView component by the vendor's means. |
-| *Invalid pairing data* | Paste the onion address (56 characters + `.onion`) and the key (52 characters) in the right boxes, or the full `aiphone://pair?…` link. Do not add spaces or quotes. |
-| No notifications | Allow notifications for the app in Android settings; set the app's battery usage to **Unrestricted / Not optimised**; on Xiaomi, Huawei, Oppo, Samsung and similar, allow *autostart* / *background activity* and lock the app in recent apps. In *Power saving* mode checks happen about every 15 minutes, possibly later in Doze or battery saver; choose *Balanced* or *Instant* in the app's Settings for faster alerts. |
-| No permanent notification in *Power saving* mode | Intended. Only *Balanced* and *Instant* use a background service, and Android requires a permanent notification for it. *Power saving* uses Android's own scheduler instead, which is why it uses less battery. |
-| I want to stop the app completely | Use the **⏻ Close** button on the main screen. Pairing and settings are kept. |
-| Notifications appear with a generic text | That is intended on the lock screen; unlock the phone to read them. |
-| The panel is slow | Normal with Tor. For a faster connection use Option A (VPN). |
-| After reinstalling or changing phone | Pair again: the key is deliberately not backed up. |
 
 ---
 
-## 🏗️ Architecture & Design Philosophy
+<a id="architecture"></a>
+## 🏗️ 12. Architecture & Design Philosophy
 
 This application is built as a **Monolithic State Machine** functioning as a deterministic Telephony Middleware around the LLM:
 
@@ -898,9 +988,11 @@ This application is built as a **Monolithic State Machine** functioning as a det
 3. **Streaming Chunk Reconstruction & Echo Stripping:** Accumulates fragmented streaming text chunks in a 2.5-second sliding window (`_asst_chunk_buffer`) to reliably evaluate goodbye and hold triggers while stripping assistant phrase bleed from incoming transcriptions.
 4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, records synchronized stereo call recordings (MP3, or WAV as fallback), and generates concise AI call summaries for future context memory.
 
+
 ---
 
-## 📝 License
+<a id="license"></a>
+## 📝 13. License
 This project (switchboard and Android app) is licensed under the **GNU General Public License v3.0 or later**. See the `LICENSE` file for details.
 
 The Android app also contains third-party components under their own licenses (all compatible with the GPL v3): Tor (`tor-android`, `jtorctl`; BSD 3-Clause), AndroidX / Kotlin / Kotlinx Coroutines (Apache 2.0) and the Noto Emoji artwork of the icon (Apache 2.0, © Google). Their notices are shown inside the app under *About → Licenses*. The optional QR scan relies on the Google Play services code scanner, which is not part of this repository.
