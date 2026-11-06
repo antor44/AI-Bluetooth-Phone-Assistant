@@ -184,7 +184,7 @@ An Internet connection is currently required for the phone assistant to access G
 
 The connection can be provided through Ethernet, Wi-Fi, or USB tethering from your mobile phone.
 
-> 🟠 **No Wi-Fi network available?** You can use your phone's mobile data instead. Simply enable its Wi-Fi hotspot (also known as tethering or mobile hotspot) and connect the computer to it.
+> ⛺📲 **No Wi-Fi network available?** You can use your phone's mobile data instead. Simply enable its Wi-Fi hotspot (also known as tethering or mobile hotspot) and connect the computer to it.
 
 > 🔮 **Looking ahead:** Future support for local speech-to-speech models could reduce or even eliminate the need for cloud-based AI services for live conversations. Some existing local models are already quite capable, but currently have limited language support, with English being their strongest supported language. Depending on the model, some code improvements and additional local components may also be needed to handle assistant tools and call-management commands. These could include local LLMs working alongside a transcription model (STT), such as the already optionally implemented Whisper.cpp, to provide functionality that local speech-to-speech models generally do not natively support.
 
