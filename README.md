@@ -187,8 +187,8 @@ The connection can be provided through Ethernet, Wi-Fi, or USB tethering from yo
 > ⛺📲 **No Wi-Fi network available?** You can use your phone's mobile data instead. Simply enable its Wi-Fi hotspot (also known as tethering or mobile hotspot) and connect the computer to it.
 
 > 🔮 **Looking ahead:** Future support for local speech-to-speech models could reduce or even eliminate the need for cloud-based AI services for live conversations. Some existing local models are already quite capable, but currently have limited language support, with English being their strongest supported language. Depending on the model, some code improvements and additional local components may also be needed to handle assistant tools and call-management commands. These could include local LLMs working alongside a separate speech-to-text (STT) transcription component (such as the already optionally implemented Whisper.cpp), to provide functionality that local speech-to-speech models generally do not natively support. Several existing open-source projects already use this approach, combining speech recognition, an LLM and speech synthesis into a complete voice-assistant pipeline.
-
-However, running these models locally would currently require a fairly powerful computer to host the necessary model or models. This is well beyond the capabilities of conventional SBCs, even the most powerful mainstream boards. Specialized high-end edge-AI platforms are a different category, but they are considerably more powerful and are not representative of the hardware found in typical SBCs.
+>
+>However, running these models locally would currently require a fairly powerful computer to host the necessary model or models. This is well beyond the capabilities of conventional SBCs, even the most powerful mainstream boards. Specialized high-end edge-AI platforms are a different category, but they are considerably more powerful and are not representative of the hardware found in typical SBCs.
 
 ---
 
