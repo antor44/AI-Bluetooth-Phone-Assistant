@@ -936,7 +936,42 @@ No setting can restore what never arrived: a call from a quiet place with good s
 <a id="debug-traces"></a>
 ### 🛠️ Debug Traces
 
-> 🛠️ **Debug traces (advanced users and support only).** They are off by default. If you are asked to provide one, start the daemon with `python3 phone_assistant.py --debug` (or set `SWITCHBOARD_DEBUG=1`). Each call then creates files in `debug/` (`.jsonl` and, if the audio player reports errors, `_pw-play.log`) that contain the content of the calls and phone numbers, so do not publish them as they are. They are not deleted automatically: remove them with `rm debug/*`.
+
+> 🛠️ **Debug traces (advanced users and support only).** They are disabled by default. If you are asked to provide them, start the daemon with `python3 phone_assistant.py --debug` (or set the `SWITCHBOARD_DEBUG=1` environment variable). Each call then creates files in `debug/` (`.jsonl` and, if the audio player reports errors, `_pw-play.log`) containing call content and phone numbers. **These files contain sensitive information, so do not publish or share them without first reviewing and sanitizing their contents.** They are not deleted automatically; remove them with `rm debug/*` when they are no longer needed.
+
+> ⚙️ **Enabling debug mode when using systemd:** If you run the application as a systemd user service (for example, `ai-switchboard.service`), adding `export SWITCHBOARD_DEBUG=1` to `~/.bashrc` will not normally work. Systemd services do not automatically load your interactive shell configuration files. Instead, add the following lines to the service's drop-in configuration file (`override.conf`), inside the `[Service]` section:
+>
+> ```ini
+> [Service]
+> Environment="SWITCHBOARD_DEBUG=1"
+> ```
+>
+> If the section already exists, simply add the `Environment` line under it rather than creating a duplicate section. The variable will then be inherited by the startup script (e.g. `my_gui.sh --lan`) and passed to `phone_assistant.py`, provided the script does not explicitly remove or override it.
+>
+> **To apply the changes:**
+>
+> 1. Save and close the editor (in nano, press `Ctrl + O`, `Enter`, then `Ctrl + X`).
+> 2. Reload systemd and restart the service:
+>
+>    ```bash
+>    systemctl --user daemon-reload
+>    systemctl --user restart ai-switchboard.service
+>    ```
+>
+> 3. Verify that the variable has been applied:
+>
+>    ```bash
+>    systemctl --user show ai-switchboard.service -p Environment
+>    ```
+>
+>    The output should include `SWITCHBOARD_DEBUG=1`, for example:
+>
+>    ```text
+>    Environment=PYTHONUNBUFFERED=1 SWITCHBOARD_DEBUG=1
+>    ```
+>
+>    If the variable is missing, check that you edited the correct service drop-in file and that the `[Service]` section is correctly formatted.
+
 
 
 ---
