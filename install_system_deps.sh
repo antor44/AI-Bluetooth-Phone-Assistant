@@ -11,7 +11,7 @@
 # Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 2.9
+# Version: 3.1
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -436,7 +436,7 @@ else
     err "pip installation failed."
 fi
 
-# Optional MP3 encoder for call recordings (lightweight LAME binding). Without it recordings are saved as WAV.
+# MP3 encoder for call recordings (lightweight LAME binding). Installed separately so a failure here does not abort the whole setup; without it recordings are saved as WAV.
 progress "Installing the MP3 encoder for call recordings (lameenc)..."
 if pip3 install lameenc --quiet; then
     ok "MP3 encoder installed. Call recordings will be saved as MP3."

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# my_gui.sh v. 3.0 - AI Switchboard Web GUI & Daemon Launcher
+# my_gui.sh v. 3.1 - AI Switchboard Web GUI & Daemon Launcher
 # Automates virtual environment activation, launches the main phone assistant 
 # daemon, and starts the Streamlit Control Panel (Optimized for Headless/LAN).
 #
 # Author: Antonio R.
-# Version: 3.0
+# Version: 3.1
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -188,13 +188,13 @@ if [ -n "$SELECTED_TERMINAL" ] && [ -n "$DISPLAY" ] && [ "$FORCE_HEADLESS" = "0"
 
     case "$SELECTED_TERMINAL" in
         "xfce4-terminal")
-            xfce4-terminal --title="AI Phone Assistant Daemon v3.0" --command="bash -c '$DAEMON_CMD'" &
+            xfce4-terminal --title="AI Phone Assistant Daemon v3.1" --command="bash -c '$DAEMON_CMD'" &
             ;;
         "gnome-terminal")
-            gnome-terminal --title="AI Phone Assistant Daemon v3.0" -- bash -c "$DAEMON_CMD" &
+            gnome-terminal --title="AI Phone Assistant Daemon v3.1" -- bash -c "$DAEMON_CMD" &
             ;;
         "mate-terminal")
-            mate-terminal --title="AI Phone Assistant Daemon v3.0" --command="bash -c '$DAEMON_CMD'" &
+            mate-terminal --title="AI Phone Assistant Daemon v3.1" --command="bash -c '$DAEMON_CMD'" &
             ;;
         *)
             "$SELECTED_TERMINAL" -e bash -c "$DAEMON_CMD" &
@@ -221,7 +221,7 @@ else
 fi
 
 # Launch the Streamlit application in the current terminal
-echo "[INFO] Starting AI Switchboard Web Interface v3.0..."
+echo "[INFO] Starting AI Switchboard Web Interface v3.1..."
 
 if [ "$FORCE_LOCAL" = "1" ]; then
     # Local-only mode: the Web GUI never listens on the network, even without a desktop session.

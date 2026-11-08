@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 3.0
+Version: 3.1
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -51,7 +51,7 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
 DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
 BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
@@ -1152,12 +1152,54 @@ def apply_language_defaults(lang_code: str) -> None:
     conn.close()
 
 
+def migrate_category_prompts() -> None:
+    """One-time migration (per language). The courier and workshop rules used to be part of the general
+    instructions; they are now editable instructions of their categories. Saved categories get them once:
+    a missing default category is added, and a saved one that has no instructions yet receives them.
+    Duplicated in phone_assistant.py on purpose, so the result is the same whichever of the two starts first."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+        for lang_code in get_available_languages():
+            flag_key = f"category_prompts_migrated_{lang_code}"
+            if conn.execute("SELECT 1 FROM settings WHERE key=?", (flag_key,)).fetchone():
+                continue
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (f"{lang_code}_memory_rules",)).fetchone()
+            if row is not None:
+                try:
+                    rules = json.loads(row[0])
+                    default_rules = load_language_data(lang_code, "gui.json").get("defaults", {}).get("memory_rules", [])
+                except Exception:
+                    continue   # Unreadable data: try again on the next run, nothing is changed
+                if isinstance(rules, list):
+                    for default_rule in default_rules:
+                        if not isinstance(default_rule, dict) or not default_rule.get("prompt"):
+                            continue
+                        default_name = str(default_rule.get("category", "")).strip().lower()
+                        saved_rule = next((r for r in rules if isinstance(r, dict) and str(r.get("category", "")).strip().lower() == default_name), None)
+                        if saved_rule is None:
+                            rules.append(dict(default_rule))
+                        elif "prompt" not in saved_rule:
+                            saved_rule["prompt"] = default_rule["prompt"]
+                    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (f"{lang_code}_memory_rules", json.dumps(rules, ensure_ascii=False)))
+            # Without saved categories the language defaults (which already carry these instructions) are written on its first run
+            conn.execute("INSERT OR REPLACE INTO settings VALUES (?, '1')", (flag_key,))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
 init_db()
 
 # Clear widget session state at the very start of the rerun (before any widgets are instantiated)
 if st.session_state.pop("_clear_session_on_rerun", False):
     for k in list(st.session_state.keys()):
         del st.session_state[k]
+
+migrate_category_prompts()
 
 available_langs = get_available_languages()
 current_lang = get_config("language", DEFAULT_LANGUAGE)
@@ -2350,7 +2392,7 @@ with col3:
 
     new_cat_name = st.text_input(trans.get("add_category_label", "Add category:"))
     if st.button(trans.get("create_category_btn", "+ Create")) and new_cat_name:
-        rules.append({"category": new_cat_name, "keywords": [], "days": 7, "wait_seconds": 120})
+        rules.append({"category": new_cat_name, "keywords": [], "days": 7, "wait_seconds": 120, "prompt": ""})
         set_config("memory_rules", json.dumps(rules, ensure_ascii=False))
         st.rerun()
 
@@ -2370,6 +2412,8 @@ with col3:
             calls_val = st.number_input(trans.get("ui_cat_calls", "Calls to remember (0 = general value):"), min_value=0, max_value=20, value=rule_calls, key=f"calls_{widget_suffix}")
             chars_val = st.number_input(trans.get("ui_cat_chars", "Max characters (0 = general value):"), min_value=0, max_value=12000, value=rule_chars, step=250, key=f"chars_{widget_suffix}")
             wait_val = st.number_input(trans.get("ui_cat_wait", "Wait Seconds:"), min_value=10, value=rule_wait, key=f"wait_{widget_suffix}")
+            prompt_val = st.text_area(trans.get("ui_cat_prompt", "Category instructions:"), value=str(rule.get("prompt", "") or ""), height=160, key=f"prompt_{widget_suffix}")
+            st.caption(trans.get("ui_cat_prompt_help", ""))
 
             rules[idx] = {
                 "category": new_cat_title,
@@ -2377,7 +2421,8 @@ with col3:
                 "days": days_val,
                 "calls": calls_val,
                 "chars": chars_val,
-                "wait_seconds": wait_val
+                "wait_seconds": wait_val,
+                "prompt": prompt_val.strip()
             }
 
             if st.button("🗑️", key=f"delcat_{widget_suffix}"):

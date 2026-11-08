@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 3.0
+Version: 3.1
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -34,6 +34,7 @@ import asyncio
 import base64
 import re
 import fnmatch
+import fcntl
 import unicodedata
 import difflib
 import warnings
@@ -171,7 +172,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
@@ -399,6 +400,14 @@ class MonitorWriter:
                 self.chunks.put_nowait(data)
             except (queue.Empty, queue.Full):
                 pass
+
+    def clear(self) -> None:
+        """Drops every chunk that is still waiting to be written to the player."""
+        try:
+            while True:
+                self.chunks.get_nowait()
+        except queue.Empty:
+            pass
 
     def _run(self) -> None:
         while True:
@@ -678,8 +687,57 @@ def apply_language_defaults(lang_code: str) -> None:
             pass
 
 
-def ensure_database_exists() -> None:
-    """Ensures that the SQLite database, tables, and v2.0 schema migrations are applied."""
+def migrate_category_prompts() -> None:
+    """One-time migration (per language). The courier and workshop rules used to be part of the general
+    instructions; they are now editable instructions of their categories. Saved categories get them once:
+    a missing default category is added, and a saved one that has no instructions yet receives them.
+    Duplicated in gui.py on purpose, so the result is the same whichever of the two starts first."""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+        for lang_code in sorted(os.listdir(LANG_DIR)):
+            gui_path = os.path.join(LANG_DIR, lang_code, "gui.json")
+            if not os.path.isfile(gui_path):
+                continue
+            flag_key = f"category_prompts_migrated_{lang_code}"
+            if conn.execute("SELECT 1 FROM settings WHERE key=?", (flag_key,)).fetchone():
+                continue
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (f"{lang_code}_memory_rules",)).fetchone()
+            if row is not None:
+                try:
+                    rules = json.loads(row[0])
+                    with open(gui_path, "r", encoding="utf-8") as f:
+                        default_rules = json.load(f).get("defaults", {}).get("memory_rules", [])
+                except Exception:
+                    continue   # Unreadable data: try again on the next start, nothing is changed
+                if isinstance(rules, list):
+                    for default_rule in default_rules:
+                        if not isinstance(default_rule, dict) or not default_rule.get("prompt"):
+                            continue
+                        default_name = str(default_rule.get("category", "")).strip().lower()
+                        saved_rule = next((r for r in rules if isinstance(r, dict) and str(r.get("category", "")).strip().lower() == default_name), None)
+                        if saved_rule is None:
+                            rules.append(dict(default_rule))
+                        elif "prompt" not in saved_rule:
+                            saved_rule["prompt"] = default_rule["prompt"]
+                    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (f"{lang_code}_memory_rules", json.dumps(rules, ensure_ascii=False)))
+            # Without saved categories the language defaults (which already carry these instructions) are written on its first run
+            conn.execute("INSERT OR REPLACE INTO settings VALUES (?, '1')", (flag_key,))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+def ensure_database_exists(reset_runtime_state: bool = False) -> None:
+    """Ensures that the SQLite database, tables, and v2.0 schema migrations are applied.
+
+    The runtime state (daemon state, heartbeat, Tor status) is reset only when the daemon itself starts
+    (reset_runtime_state=True). Any other caller, such as the --test-spam command, must never overwrite the
+    state of a daemon that is already running."""
+    runtime_insert = "INSERT OR REPLACE" if reset_runtime_state else "INSERT OR IGNORE"
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     conn.execute("PRAGMA journal_mode=WAL")   # Readers (Web GUI) no longer block the daemon writers (heartbeat, traces)
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -755,17 +813,17 @@ def ensure_database_exists() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_grace_seconds', '2.0')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_cancel_min_words', '3')")
 
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_state', 'running')")
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
+    c.execute(f"{runtime_insert} INTO settings VALUES ('daemon_state', 'running')")
+    c.execute(f"{runtime_insert} INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
 
     # Remote access through a private Tor onion service (off unless the user enables it in the GUI)
     c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_enabled', 'false')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_gui_port', '8501')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_notify_port', '8502')")
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_status', 'off')")
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_progress', '0')")
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_onion', '')")
-    c.execute("INSERT OR REPLACE INTO settings VALUES ('tor_error', '')")
+    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_status', 'off')")
+    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_progress', '0')")
+    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_onion', '')")
+    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_error', '')")
 
     conn.commit()
     conn.close()
@@ -780,6 +838,8 @@ def ensure_database_exists() -> None:
             apply_language_defaults(current_lang)
     except Exception:
         pass
+
+    migrate_category_prompts()
 
 
 def ensure_system_dependencies() -> None:
@@ -2577,10 +2637,7 @@ class PhoneAssistant:
 
             if mode in ["both", "assistant"]:
                 if self.asst_pacat is None or self.asst_pacat.poll() is not None:
-                    self.asst_pacat = subprocess.Popen(
-                        ["pacat", "--format=s16le", "--rate=24000", "--channels=1", "--raw", f"--volume={monitor_volume_percent() * 65536 // 100}"],
-                        stdin=subprocess.PIPE, stderr=subprocess.DEVNULL
-                    )
+                    self.asst_pacat = self._start_assistant_monitor_player()
             else:
                 if self.asst_pacat and self.asst_pacat.poll() is None:
                     self.asst_pacat.terminate()
@@ -2665,6 +2722,38 @@ class PhoneAssistant:
                     pacat.wait()
                 except Exception:
                     pass
+
+    @staticmethod
+    def _start_assistant_monitor_player() -> subprocess.Popen:
+        """Starts the player that sends the assistant's voice to the monitoring speakers."""
+        return subprocess.Popen(
+            ["pacat", "--format=s16le", "--rate=24000", "--channels=1", "--raw", f"--volume={monitor_volume_percent() * 65536 // 100}"],
+            stdin=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+
+    def _flush_assistant_monitor(self) -> None:
+        """Drops the assistant speech that was already sent to the monitoring speakers. The model streams faster than
+        real time, so most of a discarded answer is already buffered there when the caller interrupts. The phone
+        side is emptied in the same way (queue dropped and player killed), and the monitor must match it."""
+        player = self.asst_pacat
+        if player is None:
+            return
+        writer = getattr(player, "monitor_writer", None)
+        if writer is not None:
+            writer.clear()
+        if player.poll() is not None:
+            return
+        try:
+            player.kill()
+            player.wait(timeout=1.0)
+        except Exception:
+            pass
+        # A new player is started at once so the beginning of the next answer is not lost while the routing manager notices
+        if get_config("monitor_mode", "none") in ("both", "assistant"):
+            try:
+                self.asst_pacat = self._start_assistant_monitor_player()
+            except Exception:
+                self.asst_pacat = None
 
     @staticmethod
     async def _apply_player_volume(process_id: int, volume_pct: int) -> bool:
@@ -3387,6 +3476,7 @@ class PhoneAssistant:
                     proc.kill()  # The playback thread notices the dead player and starts a new one with the next audio
                 except Exception:
                     pass
+            self._flush_assistant_monitor()
             self.playback_end_time = time.time()
             self._asst_chunk_buffer = ""
             self._asst_turn_text = ""
@@ -4517,6 +4607,22 @@ class PhoneAssistant:
         conn.close()
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Post-Processing] Complete. Tagged as: {final_tag}{_R}")
 
+    def build_category_rules(self) -> str:
+        """Joins the instructions written in the categories (always added, like the rest of the general instructions).
+        {boss_name} and {assistant_name} are replaced one by one, so any other braces typed by the user stay untouched."""
+        header_template = self.assistant_data.get("category_rule_header", "RULES FOR THE CATEGORY {category} (MANDATORY):")
+        blocks = []
+        for rule in self._memory_rules:
+            if not isinstance(rule, dict):
+                continue
+            rule_text = str(rule.get("prompt", "") or "").strip()
+            if not rule_text:
+                continue
+            rule_text = rule_text.replace("{boss_name}", self.boss_name).replace("{assistant_name}", self.assistant_name)
+            header = header_template.replace("{category}", str(rule.get("category", "")).strip())
+            blocks.append(f"{header}\n{rule_text}")
+        return "\n\n".join(blocks)
+
     async def run(self) -> None:
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Caller] Raw: '{self.caller_number}' | Normalized: '{self.national_number}'{_R}")
 
@@ -4561,16 +4667,27 @@ class PhoneAssistant:
             return
 
         raw_instruction = self.assistant_data.get("system_instruction", "")
+        category_rules = self.build_category_rules()
+        business_details = self.business_description
+        if self.expected_calls.strip():
+            expected_calls_header = self.assistant_data.get("expected_calls_header", "EXPECTED TYPES OF CALLS:")
+            business_details = f"{business_details}\n\n{expected_calls_header}\n{self.expected_calls.strip()}".strip()
+        category_rules_placed = "{category_rules}" in raw_instruction
         try:
             instruction = raw_instruction.format(
                 assistant_name=self.assistant_name,
                 role_assistant=pick_role_text(self.assistant_data.get("role_mappings", {}), is_female_gender(self.assistant_gender, self.gui_data), "Secretary"),
                 owner_desc=pick_owner_text(self.assistant_data.get("owner_type_mappings", {}), self.owner_type, "Private"),
                 boss_name=self.boss_name,
-                business_details=self.business_description
+                business_details=business_details,
+                category_rules=category_rules
             )
         except (KeyError, ValueError):
             instruction = raw_instruction
+            category_rules_placed = False
+        if category_rules and not category_rules_placed:
+            # Language files that do not have the {category_rules} marker still get the category instructions
+            instruction += f"\n\n{category_rules}"
 
         memory_block = self.build_memory_context(contact_match)
         if memory_block:
@@ -4924,6 +5041,8 @@ class OnionService:
         self.proc: Optional[subprocess.Popen] = None
         self.last_failure: float = 0.0
         self.progress: int = 0
+        self.state: str = "off"        # What this daemon knows about its own Tor: off, starting, running or error
+        self.onion: str = ""
 
     # ---- key material (same scheme as onion_poc.py) -------------------------------------
 
@@ -4991,6 +5110,7 @@ class OnionService:
 
     def _fail(self, code: str) -> None:
         self.last_failure = time.time()
+        self.state, self.onion = "error", ""
         _set_runtime_setting("tor_status", "error")
         _set_runtime_setting("tor_error", code)
         _set_runtime_setting("tor_onion", "")
@@ -5014,6 +5134,7 @@ class OnionService:
             if proc.poll() is None:
                 proc.terminate()
             return
+        self.state, self.onion = "running", onion
         _set_runtime_setting("tor_onion", onion)
         _set_runtime_setting("tor_error", "")
         _set_runtime_setting("tor_status", "running")
@@ -5059,6 +5180,7 @@ class OnionService:
             print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Tor] Could not start: {e}{_R}")
             self._fail("start_failed")
             return
+        self.state, self.onion = "starting", ""
         _set_runtime_setting("tor_error", "")
         _set_runtime_setting("tor_onion", "")
         _set_runtime_setting("tor_progress", "0")
@@ -5075,10 +5197,24 @@ class OnionService:
             except subprocess.TimeoutExpired:
                 proc.kill()
             print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Tor] Remote access stopped.{_R}")
+        self.state, self.onion = "off", ""
         _set_runtime_setting("tor_status", "off")
         _set_runtime_setting("tor_error", "")
         _set_runtime_setting("tor_onion", "")
         _set_runtime_setting("tor_progress", "0")
+
+    def _restore_published_state(self) -> None:
+        """Self-repair: if the status stored in the database no longer matches this running Tor (something else overwrote it),
+        the real state is published again. Without this the Web GUI could show "Starting (0%)" for as long as Tor stays up."""
+        if self.state not in ("starting", "running"):
+            return
+        if get_config("tor_status", "off") == self.state and (self.state != "running" or get_config("tor_onion", "") == self.onion):
+            return
+        print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Tor] The published status did not match the running Tor. Publishing it again.{_R}")
+        _set_runtime_setting("tor_error", "")
+        _set_runtime_setting("tor_onion", self.onion)
+        _set_runtime_setting("tor_progress", 100 if self.state == "running" else self.progress)
+        _set_runtime_setting("tor_status", self.state)
 
     def sync(self, enabled: bool) -> None:
         """Called every few seconds by the heartbeat loop: makes reality match the GUI switch."""
@@ -5091,6 +5227,8 @@ class OnionService:
         if enabled:
             if self.proc is None and time.time() - self.last_failure >= ONION_RETRY_SECONDS:
                 self.start()
+            elif self.proc is not None:
+                self._restore_published_state()
         elif self.proc is not None or get_config("tor_status", "off") != "off":
             self.stop()
 
@@ -5138,6 +5276,28 @@ async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
         else:
             heartbeat_failing = False
         await asyncio.sleep(3.0)
+
+
+DAEMON_LOCK_WAIT_SECONDS = 10.0     # A daemon that is being replaced (service restart) may still hold the lock for a moment
+_DAEMON_LOCK_FILE = None
+
+
+def acquire_daemon_lock() -> bool:
+    """Allows only one daemon at a time. The lock is held on this script file (no extra file is needed) and the system
+    releases it by itself when the process ends, even after a crash."""
+    global _DAEMON_LOCK_FILE
+    lock_file = open(os.path.abspath(__file__), "rb")
+    deadline = time.time() + DAEMON_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _DAEMON_LOCK_FILE = lock_file   # It must stay open for as long as the daemon runs
+            return True
+        except OSError:
+            if time.time() >= deadline:
+                lock_file.close()
+                return False
+            time.sleep(0.5)
 
 
 async def run_cli_spam_test(test_number: str) -> None:
@@ -5212,9 +5372,13 @@ if __name__ == "__main__":
         asyncio.run(run_cli_spam_test(sys.argv[2]))
         sys.exit(0)
 
+    if not acquire_daemon_lock():
+        print(f"{_C_ERR}{ICON_ERR}Another instance of the switchboard daemon is already running. Stop it first (or use ./my_gui.sh --logs to watch it).{_R}")
+        sys.exit(1)
+
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    ensure_database_exists()
+    ensure_database_exists(reset_runtime_state=True)
     _truthy = ("1", "true", "yes", "on")
     if os.environ.get("SWITCHBOARD_SKIP_SYSTEM_CONFIG", "").strip().lower() in _truthy:
         print(f"{_C_WARN}{ICON_WARN}SWITCHBOARD_SKIP_SYSTEM_CONFIG: WirePlumber / null-sink / oFono configuration left untouched.{_R}")
