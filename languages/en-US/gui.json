@@ -237,6 +237,8 @@
   "ui_cat_keywords": "Keywords (comma-separated):",
   "ui_cat_days": "Memory days:",
   "ui_cat_wait": "Dynamic wait seconds:",
+  "ui_cat_prompt": "Category instructions:",
+  "ui_cat_prompt_help": "They are always added to the assistant's instructions when the call starts. You can use `{boss_name}` and `{assistant_name}`. For example, in Couriers you can change the rule so the assistant does allow leaving the package with a neighbour or at a nearby shop. Leave it empty if you want no special instructions.",
   "audio_mode_title": "🎚️ Audio, Echo & Gemini 3.8 VAD Tuning",
   "show_system_msg_label": "👁️ Show system messages in transcript (Hold, Hangup, etc.)",
   "show_filtered_msg_label": "🔇 Show filtered speech and alternative readings (noise, TV, echo, online)",
@@ -285,7 +287,8 @@
     "memory_rules": [
       {"category": "Doctors", "keywords": ["doctor", "hospital", "surgery", "clinic"], "days": 90, "wait_seconds": 300},
       {"category": "Lawyers", "keywords": ["lawyer", "attorney", "court", "notary", "legal"], "days": 180, "wait_seconds": 180},
-      {"category": "Mechanic/Dentist", "keywords": ["mechanic", "garage", "dentist", "dental"], "days": 15, "wait_seconds": 120}
+      {"category": "Mechanic/Dentist", "keywords": ["mechanic", "garage", "dentist", "dental"], "days": 15, "wait_seconds": 120, "prompt": "- Distinguish clearly whether the caller is asking to confirm an appointment for {boss_name}, or whether a supplier (such as a garage or dentist) is calling to let {boss_name} know he should call them back to schedule an appointment.\n- In the latter case, do not force the collection of appointment data. Simply confirm briefly and note the message that {boss_name} should contact them."},
+      {"category": "Couriers", "keywords": ["courier", "delivery", "package", "parcel", "amazon", "postal", "shipping"], "days": 7, "wait_seconds": 60, "prompt": "- If an Amazon, postal service, or courier delivery driver calls, politely inform them that {boss_name} is not available at the moment. If they insist, tell them it is not possible for {boss_name} to collect the package or come to the door. If they suggest leaving it with a neighbour, NEVER give permission for this."}
     ]
   }
 }
