@@ -237,6 +237,8 @@
   "ui_cat_keywords": "Palabras clave (separadas por coma):",
   "ui_cat_days": "Días de memoria:",
   "ui_cat_wait": "Segundos de espera dinámica:",
+  "ui_cat_prompt": "Instrucciones de la categoría:",
+  "ui_cat_prompt_help": "Se añaden siempre a las instrucciones del asistente al empezar la llamada. Puedes usar `{boss_name}` y `{assistant_name}`. Por ejemplo, en Repartidores puedes cambiar la regla para que sí permita dejar el paquete a un vecino o en un comercio cercano. Déjalo vacío si no quieres instrucciones especiales.",
   "audio_mode_title": "🎚️ Ajuste de Audio, Eco y VAD (Gemini 3.8)",
   "show_system_msg_label": "👁️ Mostrar mensajes de sistema en la transcripción (Hold, Cuelgues, etc.)",
   "show_filtered_msg_label": "🔇 Mostrar lo filtrado y las lecturas alternativas (ruido, TV, eco, transcripción online)",
@@ -285,7 +287,8 @@
     "memory_rules": [
       {"category": "Médicos", "keywords": ["médico", "doctor", "hospital", "operación"], "days": 90, "wait_seconds": 300},
       {"category": "Abogados", "keywords": ["abogado", "juicio", "notario", "legal"], "days": 180, "wait_seconds": 180},
-      {"category": "Taller/Dentista", "keywords": ["taller", "dentista", "mecánico", "clínica"], "days": 15, "wait_seconds": 120}
+      {"category": "Taller/Dentista", "keywords": ["taller", "dentista", "mecánico", "clínica"], "days": 15, "wait_seconds": 120, "prompt": "- Distingue claramente si el que llama te está pidiendo/confirmando una cita para {boss_name}, o si por el contrario, es un proveedor (como un taller mecánico o un dentista) llamando para avisar de que {boss_name} debe llamarles a ellos para pedir cita.\n- En este último caso, no intentes forzar la recopilación de datos de la cita; simplemente confirma de forma muy breve y anota el recado de que {boss_name} debe ponerse en contacto con ellos."},
+      {"category": "Repartidores", "keywords": ["repartidor", "paquete", "amazon", "correos", "mensajería", "envío"], "days": 7, "wait_seconds": 60, "prompt": "- Si llama un repartidor de Amazon, correos o mensajería, infórmale educadamente de que {boss_name} no se encuentra en casa en este momento. Si insiste, le dices que es imposible que {boss_name} recoja el paquete o que baje. Si te sugiere dejar el paquete a un vecino, NUNCA le des permiso para hacerlo."}
     ]
   }
 }
