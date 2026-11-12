@@ -186,10 +186,6 @@ The connection can be provided through Ethernet, Wi-Fi, or USB tethering from yo
 
 > ⛺📲 **No Wi-Fi network available?** You can use your phone's mobile data instead. Simply enable its Wi-Fi hotspot (also known as tethering or mobile hotspot) and connect the computer to it.
 
-> 🔮 **Looking ahead:** Future support for local speech-to-speech models could reduce or even eliminate the need for cloud-based AI services for live conversations. Some existing local models are already quite capable, but currently have limited language support, with English being their strongest supported language. Depending on the model, some code improvements and additional local components may also be needed to handle assistant tools and call-management commands. These could include local LLMs working alongside a separate speech-to-text (STT) transcription component (such as the already optionally implemented Whisper.cpp), to provide functionality that local speech-to-speech models generally do not natively support. Several existing open-source projects already use this approach, combining speech recognition, an LLM and speech synthesis into a complete voice-assistant pipeline.
->
->However, running these models locally would currently require a fairly powerful computer to host the necessary model or models. This is well beyond the capabilities of conventional SBCs, even the most powerful mainstream boards. Specialized high-end edge-AI platforms are a different category, but they are considerably more powerful and are not representative of the hardware found in typical SBCs.
-
 ---
 
 <a id="installation"></a>
@@ -1024,8 +1020,19 @@ This application is built as a **Monolithic State Machine** functioning as a det
 1. **Active Silence & Hold Tracking:** Tracks seconds of inactivity (`time_without_user`) to prompt silent callers or execute grace-period disconnections, while extending timeouts dynamically when a call is placed on hold (`self.on_hold`) or matches priority keywords.
 2. **Deterministic Guardrails (`CallPolicyEngine`):** Intercepts AI tool calls (`hangup`, `save_message`) and validates them against the real-time state machine to prevent premature disconnections during active holds and store structured messages in the inbox.
 3. **Streaming Chunk Reconstruction & Echo Stripping:** Accumulates fragmented streaming text chunks in a 2.5-second sliding window (`_asst_chunk_buffer`) to reliably evaluate goodbye and hold triggers while stripping assistant phrase bleed from incoming transcriptions.
-4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, records synchronized stereo call recordings (MP3, or WAV as fallback), and generates concise AI call summaries for future context memory.
+4. **Hardware Actuation & Post-Call Curation:** Translates AI intent into `oFono` D-Bus calls, isolates PipeWire audio channels, records synchronized stereo call recordings (MP3, or WAV as fallback), and generates concise AI call summaries for optional future context.
 
+> 🔮 **Looking ahead: Local Speech-to-Speech Models**
+>
+> Future support for local speech-to-speech models could reduce or even eliminate the need for cloud-based AI services for live conversations. Some existing local models are already quite capable, although language support varies considerably between models, with English generally being their strongest supported language.
+>
+> Depending on the model, additional code or components may be needed to support external tools (function calling) and application-specific operations such as telephone call management. These tools could include functions to hang up, save a caller's message, wait for the caller to finish speaking, resume a conversation or transfer a call.
+>
+> When native tool calling is supported, the model itself decides when a particular tool should be invoked based on the context and meaning of the conversation available to it, rather than simply matching keywords or analysing only the caller's latest short utterance in isolation. For example, it should understand when a caller has finished dictating a message and it is appropriate to save it, or when the conversation has reached a point where ending the call makes sense. The application then executes the requested function and returns the result to the model. The existing middleware and its deterministic guardrails would remain responsible for validating these requests and controlling the actual telephony operations.
+>
+> Some newer speech-to-speech models already support native tool calling, while others do not. An alternative is to combine a local speech-to-speech model with a separate LLM capable of function calling, or use a conventional pipeline combining speech-to-text (STT), an LLM and text-to-speech (TTS). This could include a separate transcription component such as the already optionally implemented Whisper.cpp, alongside a local LLM to handle assistant tools and call-management operations. Several existing open-source projects already use variations of this combined approach.
+>
+> However, running these models locally with acceptable performance would generally require considerably more computing power than conventional SBCs can provide, particularly when multiple models need to run simultaneously. Specialized high-end edge-AI platforms are a different category, offering substantially greater computing capabilities, but they should not be confused with the hardware found in typical SBCs.
 
 ---
 
