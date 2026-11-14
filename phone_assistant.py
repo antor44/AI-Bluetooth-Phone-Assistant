@@ -281,6 +281,7 @@ BT_HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"  # Hands-Free Audio Gate
 BT_WATCHDOG_INTERVAL_SECONDS = 10.0
 BT_RECONNECT_BACKOFF_MIN_SECONDS = 10.0
 BT_RECONNECT_BACKOFF_MAX_SECONDS = 120.0
+BT_RELEASE_TIMEOUT_SECONDS = 5           # Maximum wait for BlueZ when the phone is released at shutdown
 BT_CONNECT_TIMEOUT_SECONDS = 30
 BT_MODEM_MISSING_CYCLES = 3             # Connected phone without an oFono modem for this many cycles -> reconnect the profile
 
@@ -1742,6 +1743,27 @@ class BluetoothWatchdog:
         if battery_value != self.published_battery:   # Written only when it changes: it hardly ever does
             self.published_battery = battery_value
             set_runtime_setting("bt_battery", battery_value)
+
+
+def release_bluetooth_phones() -> None:
+    """Disconnects the hands-free link of the paired phones. Called when the switchboard is stopped from the Web GUI, so the
+    phone goes back to using its own speaker and microphone. The watchdog connects it again when the daemon starts."""
+    try:
+        bus = dbus.SystemBus()
+        manager = dbus.Interface(bus.get_object("org.bluez", "/"), "org.freedesktop.DBus.ObjectManager")
+        for device_path, interfaces in manager.GetManagedObjects().items():
+            props = interfaces.get("org.bluez.Device1")
+            if props is None or not BluetoothWatchdog._is_paired_phone(props) or not props.get("Connected", False):
+                continue
+            device_name = str(props.get("Alias") or props.get("Name") or device_path)
+            device = dbus.Interface(bus.get_object("org.bluez", str(device_path)), "org.bluez.Device1")
+            try:
+                device.DisconnectProfile(BT_HFP_AG_UUID, timeout=BT_RELEASE_TIMEOUT_SECONDS)
+            except dbus.exceptions.DBusException:
+                device.Disconnect(timeout=BT_RELEASE_TIMEOUT_SECONDS)
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] {device_name} released: its audio goes back to the phone.{_R}")
+    except Exception as release_error:
+        print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Could not release the phone at shutdown: {release_error}{_R}")
 
 
 async def bluetooth_watchdog_loop() -> None:
@@ -5659,6 +5681,7 @@ async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
                             GLIB_LOOP.quit()
                         except Exception:
                             pass
+                    release_bluetooth_phones()
                     ONION.stop()
                     main_loop.stop()
                     os._exit(0)
