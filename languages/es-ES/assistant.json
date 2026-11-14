@@ -14,6 +14,7 @@
   "custom_contact_rule": "\nRegla personalizada para este cliente: {rule}",
   "ui_saved_message": "Recado de {name}: {message}",
   "ui_in_progress": "🟢 EN CURSO",
+  "passthrough_message": "Llamada dejada al móvil: la centralita no la atendió ({pattern}).",
 
   "owner_type_mappings": {
     "privado": "particular",
@@ -37,7 +38,11 @@
     "silence_grace_start": "[SISTEMA: El usuario sigue en silencio prolongado. Avisa de forma natural que colgarás en 15 segundos si no hay respuesta. NO llames a hangup todavía. Habla con acento de España y con tu voz habitual.]",
     "silence_grace_end": "[SISTEMA: El tiempo de gracia terminó. Di un adiós rápido e invoca la herramienta hangup inmediatamente. Habla con acento de España y con tu voz habitual.]",
     "spam_detected": "[SISTEMA: La verificación de red confirma que este número es SPAM. Interrumpe amablemente y cuelga. Habla con acento de España y con tu voz habitual.]",
-    "hold_return_prompt": "[SISTEMA: El audio Bluetooth ha vuelto a la centralita. No hables (no produzcas ningún audio) hasta que el interlocutor te hable directamente. Habla con acento de España y con tu voz habitual.]"
+    "hold_return_prompt": "[SISTEMA: El audio Bluetooth ha vuelto a la centralita. No hables (no produzcas ningún audio) hasta que el interlocutor te hable directamente. Habla con acento de España y con tu voz habitual.]",
+    "greeting_adaptive": "[SISTEMA: La llamada acaba de descolgarse. Empieza a hablar enseguida, como una persona cercana y nunca como una grabación o un guion. En este primer turno DEBES transmitir TODOS los puntos esenciales del siguiente mensaje, incluido cualquier aviso o advertencia que contenga, en frases cortas y naturales y con tus propias palabras (no lo leas palabra por palabra y no dejes ningún punto sin decir): '{phrase}'. Varía la forma de decirlo con naturalidad. Si quien llama habla mientras saludas, deja de hablar, responde a lo que haya dicho en una frase corta y después transmite los puntos esenciales que aún no hayas dicho. No repitas nunca una frase que ya hayas dicho. Habla con acento de España y con tu voz habitual.]",
+    "session_resumed_prompt": "[SISTEMA: La conexión se interrumpió un instante y ya se ha restablecido. La llamada continúa. No saludes otra vez ni repitas lo que ya dijiste. No hables (no produzcas ningún audio) hasta que el interlocutor te hable o se espere claramente una respuesta tuya. Habla con acento de España y con tu voz habitual.]",
+    "session_restored_prompt": "[SISTEMA: La conexión se interrumpió un instante y ya se ha restablecido. La llamada continúa. Esto es lo que se ha dicho hasta ahora:\n{dialogue}\nNo saludes otra vez ni repitas lo que ya dijiste. Continúa con naturalidad desde ahí. Si el interlocutor esperaba una respuesta, dásela; si no, no hables (no produzcas ningún audio) hasta que te hable. Habla con acento de España y con tu voz habitual.]",
+    "greeting_adaptive_reminder": "[SISTEMA: Asegúrate de que quien llama ha oído los puntos esenciales del saludo: '{phrase}'. Si ya los has dicho todos en esta llamada, no digas nada más (no produzcas audio). Si no, en tu próximo turno da los puntos que aún debes en un resumen breve y natural, sin volver a saludar y sin repetir lo que ya dijiste. Habla con acento de España y con tu voz habitual.]"
   },
 
   "output_schema_instruction": "Analiza la siguiente transcripción completa de una llamada telefónica y clasifícala de forma retrospectiva.\nREGLAS ESTRICTAS DE CLASIFICACIÓN Y EXTRACCIÓN:\n- 'caller_type': Clasifica estrictamente como 'spam' si el llamante ofrece inversiones financieras dudosas, trading, criptomonedas, ganancias irrealistas (ej. duplicar dinero, 100% de rentabilidad mensual garantizada y sin riesgo, Forex), encuestas sospechosas o ventas frías extremadamente agresivas. Clasifica como 'commercial' si es telemarketing estándar y legítimo. Clasifica como 'work' si es un asunto laboral o de negocios real para {boss_name}. Clasifica como 'friend_family' para familiares o amigos.\n- 'risk_score': Asigna una puntuación alta de 80 a 100 si se detecta un intento claro de estafa financiera, propuestas de alta rentabilidad sospechosas, bucles de trading, o si el llamante se niega rotundamente a identificarse. Asigna de 0 a 20 para llamadas claramente amistosas o de confianza.\n- 'caller_name': Extrae ÚNICAMENTE el nombre de pila de la persona externa que llama. NUNCA extraigas el nombre de {boss_name} ni de {assistant_name} por error.\n- 'company': Extrae el nombre de la empresa, hospital o taller. Si no hay empresa identificable, devuelve una cadena vacía. Ignora palabras alucinadas por ruido.\n- 'summary': Escribe un resumen conciso (de 40 a 70 palabras en español) indicando quién llamó, qué quería y cualquier recado, cita o resultado.\n- FILTRADO: Ignora todo ruido de fondo, TV o conversaciones ajenas a la conversación principal.",
@@ -81,6 +86,7 @@
     "work": "🟠 TRABAJO / NEGOCIOS",
     "general": "🟡 LLAMADA GENERAL",
     "blocked": "🚫 LISTA NEGRA",
+    "passthrough": "📱 EN EL MÓVIL",
     "ui_user_label": "Llamante"
   }
 }
