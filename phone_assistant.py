@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 3.1
+Version: 3.2
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -128,6 +128,52 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "switchboard.db")
 LANG_DIR = os.path.join(BASE_DIR, "languages")
 
+# Volatile runtime state (heartbeats) lives in RAM, not in SQLite: it changes every few seconds and writing it to the
+# database wore out SD cards and eMMC. The Web GUI (gui.py keeps a copy of these helpers: keep them in sync) reads it from here.
+RAM_STATE_DIR = "/dev/shm"
+_RAM_STATE_LOCK = threading.Lock()
+
+
+def ram_state_path() -> str:
+    """Path of the RAM-backed state file of this user, or an empty string when there is no writable RAM directory."""
+    if os.path.isdir(RAM_STATE_DIR) and os.access(RAM_STATE_DIR, os.W_OK):
+        return os.path.join(RAM_STATE_DIR, f"ai-switchboard-state-{os.getuid()}.json")
+    return ""
+
+
+def write_ram_state(key: str, value: Any) -> bool:
+    """Stores a small volatile value in RAM. Returns False when it could not (the caller then falls back to the database)."""
+    path = ram_state_path()
+    if not path:
+        return False
+    try:
+        with _RAM_STATE_LOCK:
+            try:
+                with open(path, "r", encoding="utf-8") as state_file:
+                    data = json.load(state_file)
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, ValueError):
+                data = {}
+            data[key] = str(value)
+            tmp_path = f"{path}.{os.getpid()}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as state_file:
+                json.dump(data, state_file)
+            os.replace(tmp_path, path)
+        return True
+    except Exception:
+        return False
+
+
+def open_db(durable: bool = True) -> sqlite3.Connection:
+    """Opens the database. Durable connections keep SQLite's default of syncing every commit to disk (messages, final call
+    data). Non-durable ones (live transcript updates) sync only when the WAL is checkpointed: far fewer disk writes, and
+    after a power cut the database is never corrupted, at most the last live-transcript update is lost."""
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+    if not durable:
+        conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
 
 def find_whisper_bin() -> str:
     """Dynamically searches for the Whisper executable across common build paths."""
@@ -172,7 +218,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
@@ -201,10 +247,29 @@ HOLD_RENEW_WINDOW_SECONDS = 60.0         # The assistant's waiting phrases only 
 SEMANTIC_VOTE_TIMEOUT = 8.0              # Seconds to wait for the text-model opinion; without an answer there is simply no vote
 SEMANTIC_MIN_INTERVAL = 10.0             # Minimum seconds between two semantic checks of the same kind
 SEMANTIC_MAX_PER_CALL = 12               # Safety limit of semantic checks per call (cost)
-DB_WRITE_MIN_INTERVAL = 0.5              # Live transcript writes to SQLite are merged: at most one write per interval
+DB_WRITE_MIN_INTERVAL = 2.0              # Live transcript writes to SQLite are merged: at most one write per interval (fewer writes = longer SD / eMMC life)
 WHISPER_QUEUE_MAX = 8                    # Pending Whisper jobs per call; beyond this the oldest work is not worth waiting for
 HANGUP_STREAM_QUIET_SECONDS = 1.0       # No new audio from the model for this long before cutting the call
 HANGUP_MAX_WAIT_SECONDS = 20.0          # Safety limit: never wait longer than this for the audio to finish
+HOLD_MAX_TOTAL_SECONDS = 900.0          # Accumulated hold time of one call after which the grace warning starts (15 minutes)
+
+# Long calls with Gemini Live (see PhoneAssistant.live_session_supervisor). Google limits one WebSocket connection to about
+# 10 minutes, and an audio session without context window compression to 15 minutes.
+LIVE_RECONNECT_MAX_ATTEMPTS = 6          # Consecutive failed reconnections before the call is ended
+LIVE_RECONNECT_BACKOFF_SECONDS = 1.0     # First wait between two reconnection attempts (it doubles each time)
+LIVE_RECONNECT_BACKOFF_MAX_SECONDS = 8.0
+LIVE_RESTORE_DIALOGUE_CHARS = 2500       # Conversation text sent to a brand new session when there is no resumption handle
+LIVE_RESTORE_DIALOGUE_LINES = 40         # ... and the maximum number of lines of it
+LIVE_MIN_RESUME_RUN_SECONDS = 5.0        # A connection that lasted less than this does not reset the failed-attempts counter
+LIVE_STALE_HANDLE_FAILURES = 2           # After this many failed attempts the resumption handle is dropped (the context is rebuilt from the text)
+
+# Calls that stay on the phone (see PhoneAssistant.run_phone_passthrough).
+PASSTHROUGH_POLL_SECONDS = 1.0           # How often the state of the call is read while it stays on the phone
+PASSTHROUGH_RELEASE_PROFILE = "off"      # Audio profile that frees the Bluetooth audio link so the phone keeps the call audio
+PASSTHROUGH_MAX_SECONDS = 4 * 3600       # Safety limit: a call that stays on the phone is not followed for longer than this
+BT_CALL_PROFILES = ["headset-audio-gateway", "headset-head-unit", "hfp-ag", "hfp-hf"]   # Same order as enforce_bluetooth_call_profile
+BT_CALL_PROFILE_PATTERN = r"headset|hfp|hsp|head-unit|audio-gateway"   # Names of the call (hands-free) audio profiles found on the card
+ADAPTIVE_GREETING_PROTECT_SECONDS = 1.5  # Adaptive greeting: the caller is muted only this long after answering (pickup clicks and noise)
 
 # Bluetooth reconnection watchdog (see BluetoothWatchdog).
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
@@ -500,9 +565,9 @@ def match_contact_rule(caller_number: str, numbering: Optional[Dict[str, Any]] =
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     try:
         try:
-            rows = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts").fetchall()
+            rows = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough FROM contacts").fetchall()
         except sqlite3.OperationalError:
-            rows = [tuple(r) + ("", None, None) for r in conn.execute("SELECT number, type, prompt_rules, tag, note FROM contacts").fetchall()]
+            rows = [tuple(r) + ("", None, None, "", 0) for r in conn.execute("SELECT number, type, prompt_rules, tag, note FROM contacts").fetchall()]
     except Exception:
         rows = []
     finally:
@@ -512,7 +577,7 @@ def match_contact_rule(caller_number: str, numbering: Optional[Dict[str, Any]] =
     wildcard_matches = []
 
     for row in rows:
-        pat_raw, c_type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days = row
+        pat_raw, c_type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough = row
         pat_norm = normalize_contact_pattern(pat_raw, numbering)
         if not pat_norm:
             continue
@@ -526,7 +591,9 @@ def match_contact_rule(caller_number: str, numbering: Optional[Dict[str, Any]] =
             "note": note or "",
             "mem_mode": mem_mode or "",
             "mem_calls": mem_calls,
-            "mem_days": mem_days
+            "mem_days": mem_days,
+            "greeting": greeting or "",
+            "phone_passthrough": bool(phone_passthrough)
         }
 
         if any(w in pat_norm for w in ("*", "?")):
@@ -772,7 +839,9 @@ def ensure_database_exists(reset_runtime_state: bool = False) -> None:
         "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN mem_mode TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN mem_calls INTEGER",
-        "ALTER TABLE contacts ADD COLUMN mem_days INTEGER"
+        "ALTER TABLE contacts ADD COLUMN mem_days INTEGER",
+        "ALTER TABLE contacts ADD COLUMN greeting TEXT DEFAULT ''",
+        "ALTER TABLE contacts ADD COLUMN phone_passthrough INTEGER DEFAULT 0"
     ]:
         try:
             c.execute(alter_sql)
@@ -810,6 +879,9 @@ def ensure_database_exists(reset_runtime_state: bool = False) -> None:
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('protect_initial_greeting', 'true')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('greeting_mode', 'exact')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('paused_calls_to_phone', 'false')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('live_long_calls', 'true')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_grace_seconds', '2.0')")
     c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_cancel_min_words', '3')")
 
@@ -1459,6 +1531,7 @@ class BluetoothWatchdog:
         self.modem_missing_cycles: Dict[str, int] = {}
         self.published_state: Tuple[str, str] = ("", "")
         self.handsfree_keys_logged = False
+        self.published_battery = ""
 
     @staticmethod
     def _mac_token(object_path: str) -> str:
@@ -1665,7 +1738,10 @@ class BluetoothWatchdog:
             self._publish_state("profile_not_ready", connected_name)
         else:
             self._publish_state("disconnected", first_name)
-        set_runtime_setting("bt_battery", str(battery if ready_name else BATTERY_UNKNOWN))
+        battery_value = str(battery if ready_name else BATTERY_UNKNOWN)
+        if battery_value != self.published_battery:   # Written only when it changes: it hardly ever does
+            self.published_battery = battery_value
+            set_runtime_setting("bt_battery", battery_value)
 
 
 async def bluetooth_watchdog_loop() -> None:
@@ -1686,7 +1762,8 @@ async def bluetooth_watchdog_loop() -> None:
                 if cycle_seconds > BT_SLOW_CYCLE_SECONDS:
                     print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Watchdog cycle took {cycle_seconds:.0f}s (a D-Bus call was slow).{_R}")
             # The heartbeat stops by itself if a D-Bus call blocks the cycle above; the Web GUI then shows the state as unknown.
-            set_runtime_setting("bt_heartbeat", str(time.time()))
+            if not write_ram_state("bt_heartbeat", time.time()):
+                set_runtime_setting("bt_heartbeat", str(time.time()))   # No RAM directory available: fall back to the database
         except Exception as e:
             if str(e) != last_error:
                 last_error = str(e)
@@ -2083,6 +2160,17 @@ class PhoneAssistant:
         self._closing_vote: Optional[bool] = None
         self._pending_hangup_calls: List[Tuple[str, str]] = []   # (id, name) of hangup tool calls the model is still waiting an answer for
         self._live_session: Any = None                           # Live API session of this call, used to answer a cancelled hangup
+        self._live_config: Any = None                            # LiveConnectConfig of this call (reused to reconnect)
+        self._live_resume_handle = ""                            # Last session resumption handle sent by Gemini Live
+        self._live_end_reason = ""                               # Why the last Live connection ended
+        self._live_reconnects = 0                                # Reconnections of this call
+        self._playback_thread_started = False
+        self._greeting_sent = False
+        self.live_long_calls = get_config("live_long_calls", "true") == "true"
+        self.greeting_phrase = ""                                # Greeting text chosen for this call (number > category > general)
+        self.greeting_phrase_source = "global"
+        self.greeting_points_pending = False                     # Adaptive greeting: its essential points were not confirmed as said yet
+        self.greeting_interrupted_time = 0.0                     # When the caller cut the adaptive greeting (0 = not cut)
         self._caller_spoke_since_intent = False   # a caller turn arrived after the goodbye / hangup request
         self._intent_text = ""                    # what the assistant had said when the goodbye / hangup was requested
         self._intent_time = 0.0                   # when the goodbye / hangup was requested
@@ -2182,6 +2270,7 @@ class PhoneAssistant:
         self.asst_pacat = None
 
         self.software_echo_suppression = get_config("software_echo_suppression", "false") == "true"
+        self.adaptive_greeting = get_config("greeting_mode", "exact") == "adaptive"
         self.protect_initial_greeting = get_config("protect_initial_greeting", "true") == "true"
         self.greeting_in_progress = False
         self.greeting_started_time = 0.0
@@ -2597,7 +2686,7 @@ class PhoneAssistant:
 
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_CONN}[Bluetooth] Forcing HFP profile on {card_name}...{_R}")
 
-        for profile in ["headset-audio-gateway", "headset-head-unit", "hfp-ag", "hfp-hf"]:
+        for profile in await self._call_profile_candidates():
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "pactl", "set-card-profile", card_name, profile,
@@ -2885,12 +2974,12 @@ class PhoneAssistant:
         if not force and time.monotonic() - self._db_last_write < DB_WRITE_MIN_INTERVAL:
             self._db_dirty = True
             return
-        self._write_transcript_now()
+        self._write_transcript_now(durable=force)
 
-    def _write_transcript_now(self) -> None:
+    def _write_transcript_now(self, durable: bool = False) -> None:
         conn = None
         try:
-            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            conn = open_db(durable=durable)
             conn.execute("UPDATE calls SET transcript=? WHERE id=?", (self.accumulated_transcript, self.call_id))
             conn.commit()
             self._db_last_write = time.monotonic()
@@ -2901,9 +2990,13 @@ class PhoneAssistant:
             if conn:
                 conn.close()
 
-    def flush_transcription_db(self) -> None:
-        if self._db_dirty and self.call_id:
-            self._write_transcript_now()
+    def flush_transcription_db(self, force: bool = False) -> None:
+        """Writes the pending live transcript. Without force it still respects DB_WRITE_MIN_INTERVAL (the receive loop calls
+        this twice a second); with force (end of the call) it writes at once and syncs to disk."""
+        if not (self._db_dirty and self.call_id):
+            return
+        if force or time.monotonic() - self._db_last_write >= DB_WRITE_MIN_INTERVAL:
+            self._write_transcript_now(durable=force)
 
     def save_to_db(self, name: str, message: str) -> None:
         if self.call_id:
@@ -3037,7 +3130,8 @@ class PhoneAssistant:
                             "[SYSTEM: Bluetooth audio has been restored to the switchboard. Remain silent and attentive until the caller speaks to you.]"
                         )
                         self._note_self_interrupt()
-                        await session.send_realtime_input(text=return_prompt)
+                        if self._live_session is not None:
+                            await self._live_session.send_realtime_input(text=return_prompt)
 
                     raw_rms = calculate_rms(data)
                     if raw_rms < 250:
@@ -3065,7 +3159,11 @@ class PhoneAssistant:
                     self._monitor_write(self.caller_pacat, apply_gain(amplified_data, self._monitor_gain))
 
                     if self.greeting_in_progress:
-                        if (now - self.greeting_started_time > 8.0) or (self.greeting_audio_received and not self.currently_playing and self.audio_out_queue.empty()):
+                        if self.adaptive_greeting:
+                            # Adaptive: only the first moments after answering are protected, so the caller is heard right after
+                            if now - self.greeting_started_time > ADAPTIVE_GREETING_PROTECT_SECONDS:
+                                self.greeting_in_progress = False
+                        elif (now - self.greeting_started_time > 8.0) or (self.greeting_audio_received and not self.currently_playing and self.audio_out_queue.empty()):
                             self.greeting_in_progress = False
 
                     is_silence = (raw_rms < noise_gate)
@@ -3105,7 +3203,10 @@ class PhoneAssistant:
                     if self.online is not None:
                         self.online.feed(amplified_data, not (is_silence or is_echo or is_protected_greeting))
 
-                    await session.send_realtime_input(audio=types.Blob(data=out_pcm, mime_type="audio/pcm;rate=16000"))
+                    live_session = self._live_session
+                    if live_session is None:
+                        continue   # The connection with Gemini Live is being re-established: this fraction of audio is dropped
+                    await live_session.send_realtime_input(audio=types.Blob(data=out_pcm, mime_type="audio/pcm;rate=16000"))
 
             except Exception:
                 pass
@@ -3200,7 +3301,7 @@ class PhoneAssistant:
             return sum(1 for w in unique if w in heard) / len(unique) >= 0.7
         return False
 
-    def _recent_dialogue(self, max_chars: int = 900) -> str:
+    def _recent_dialogue(self, max_chars: int = 900, max_lines: int = 10) -> str:
         """The last lines of the call as CALLER / ASSISTANT text, for the semantic checks."""
         names = {"🗣": "CALLER", "📞": "ASSISTANT", "🔇": "CALLER (filtered as noise)"}
         lines = []
@@ -3208,7 +3309,7 @@ class PhoneAssistant:
             m = re.match(r"^(🗣|📞|🔇)\s*\[[^\]]*\]:\s*(.*)$", block.strip(), re.S)
             if m:
                 lines.append(f"{names[m.group(1)]}: {m.group(2).strip()}")
-        return "\n".join(lines[-10:])[-max_chars:]
+        return "\n".join(lines[-max_lines:])[-max_chars:]
 
     def _semantic_budget(self, kind: str) -> bool:
         now = time.time()
@@ -3462,6 +3563,8 @@ class PhoneAssistant:
         self_inflicted = time.time() < self._self_interrupt_until
         if not self_inflicted:
             self._last_interrupted_time = time.time()
+            if self.greeting_points_pending:
+                self.greeting_interrupted_time = time.time()   # The caller cut the adaptive greeting: its points are still owed
         if self.flush_on_interrupt and not self_inflicted:
             try:
                 while True:
@@ -3979,41 +4082,311 @@ class PhoneAssistant:
                 self.accumulated_wait_time += (time.time() - self.current_wait_start)
             self.current_wait_start = 0.0
 
-    async def receive_audio_and_tools(self, session) -> None:
+    def _resolve_greeting_phrase(self, contact_match: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+        """Chooses the greeting text of this call. Priority: the greeting of the number (or wildcard rule), then the greeting
+        of its category (tag of the rule, or tag of the previous call of this number), then the general greeting.
+        Returns (text, source) where source is 'number', 'category' or 'global'."""
+        number_greeting = str((contact_match or {}).get("greeting", "") or "").strip()
+        if number_greeting:
+            return number_greeting, "number"
+        if any(isinstance(rule, dict) and str(rule.get("greeting", "") or "").strip() for rule in self._memory_rules):
+            target_tag = str((contact_match or {}).get("tag", "") or "").strip()
+            if not target_tag and self.caller_candidates:
+                conn = None
+                try:
+                    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                    placeholders = ",".join(["?"] * len(self.caller_candidates))
+                    in_progress_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
+                    row = conn.execute(
+                        f"SELECT tag FROM calls WHERE id != ? AND number IN ({placeholders}) AND COALESCE(transcript, '') != '' "
+                        "AND COALESCE(tag, '') NOT IN (?, 'IN PROGRESS') ORDER BY id DESC LIMIT 1",
+                        [self.call_id or -1] + list(self.caller_candidates) + [in_progress_lbl]
+                    ).fetchone()
+                    if row and row[0]:
+                        target_tag = str(row[0])
+                except Exception:
+                    pass
+                finally:
+                    if conn:
+                        conn.close()
+            category_rule = self._find_memory_category(target_tag)
+            category_greeting = str((category_rule or {}).get("greeting", "") or "").strip()
+            if category_greeting:
+                return category_greeting, "category"
+        return get_config("initial_greeting", ""), "global"
+
+    async def _check_greeting_points(self, session: Any) -> None:
+        """Adaptive greeting: makes sure the caller hears the essential points of the greeting even when the caller spoke over it.
+        If the greeting finished without being cut, nothing else is needed. If it was cut, once the assistant has answered the
+        caller it is reminded (once) to give the points it still owes, in a short natural way."""
+        if self.greeting_interrupted_time <= 0:
+            if self.last_chunk_audio_time > self.greeting_started_time:
+                self.greeting_points_pending = False   # The greeting was spoken without being cut
+            return
+        if self.last_chunk_audio_time <= self.greeting_interrupted_time:
+            return   # The assistant has not answered the caller yet
+        self.greeting_points_pending = False
+        reminder = self.prompts_data.get("greeting_adaptive_reminder", "").replace("{phrase}", self.greeting_phrase)
+        if reminder.strip():
+            self._note_self_interrupt()
+            await session.send_realtime_input(text=reminder)
+            self.dbg.log("greeting_points_reminder", source=self.greeting_phrase_source)
+
+    # ------------------------------------------------------------------ long calls: reconnection of the Live session
+    def _build_resume_config(self) -> Any:
+        """Live configuration of a reconnection: the same as the first one, with the last resumption handle."""
+        handle = self._live_resume_handle or None
+        return self._live_config.model_copy(update={"session_resumption": types.SessionResumptionConfig(handle=handle)})
+
+    async def _announce_resumed_session(self, session: Any) -> None:
+        """Tells a reconnected session what happened. With a resumption handle Gemini Live already restored the conversation;
+        without one (the connection was lost before any handle arrived, or the handle expired) the recent dialogue is sent as
+        text, so the call does not depend only on what the model remembers."""
         self._live_session = session
-        threading.Thread(target=self.sync_playback_loop, daemon=True).start()
+        self._live_reconnects += 1
+        self.last_user_spoke_time = time.time()
+        if not self._greeting_sent:
+            return   # The greeting never reached the model: the receive loop sends it now
+        if self._live_resume_handle:
+            text = self.prompts_data.get("session_resumed_prompt", "")
+        else:
+            dialogue = self._recent_dialogue(LIVE_RESTORE_DIALOGUE_CHARS, LIVE_RESTORE_DIALOGUE_LINES)
+            text = self.prompts_data.get("session_restored_prompt", "").replace("{dialogue}", dialogue)
+        if text.strip():
+            self._note_self_interrupt()
+            await session.send_realtime_input(text=text)
+
+    async def live_session_supervisor(self, first_session: Any) -> None:
+        """Keeps the AI conversation alive for the whole phone call. When the Live connection ends while the call is still
+        going on (Google closes a connection after about 10 minutes) it opens a new one, resuming the same session with the
+        last resumption handle. The microphone sender keeps running meanwhile and drops the audio of the gap."""
+        try:
+            await self.receive_audio_and_tools(first_session)
+        except Exception as first_error:
+            self._live_end_reason = repr(first_error)
+        failures = 0
+        while self.running:
+            if self.hanging_up:
+                # The goodbye was already decided: finish it even though the connection is gone
+                await self.wait_for_playback_drain()
+                self.hangup_call()
+                await asyncio.sleep(0.5)
+                self.running = False
+                return
+            if not self.live_long_calls:
+                return
+            if failures >= LIVE_RECONNECT_MAX_ATTEMPTS:
+                self.log_system_message("Could not reconnect to Gemini Live. Ending the call...", "❌")
+                self.dbg.log("live_reconnect_giveup", failures=failures, reason=self._live_end_reason)
+                self.hangup_reason = "completed"
+                self.hangup_call()
+                self.running = False
+                return
+            self._live_session = None
+            if failures:
+                await asyncio.sleep(min(LIVE_RECONNECT_BACKOFF_MAX_SECONDS, LIVE_RECONNECT_BACKOFF_SECONDS * (2 ** (failures - 1))))
+                if not self.running:
+                    return
+            if failures >= LIVE_STALE_HANDLE_FAILURES and self._live_resume_handle:
+                self._live_resume_handle = ""   # The handle is not accepted any more: rebuild the context from the text
+            self.dbg.log("live_reconnect", attempt=failures + 1, with_handle=bool(self._live_resume_handle), reason=self._live_end_reason)
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_CONN}[Live] Connection with Gemini Live ended ({self._live_end_reason or 'closed by the server'}). "
+                  f"Reconnecting ({'resuming the session' if self._live_resume_handle else 'rebuilding the context'})...{_R}", flush=True)
+            connected_at = 0.0
+            try:
+                async with self.client_live.aio.live.connect(model=MODEL_LIVE, config=self._build_resume_config()) as new_session:
+                    connected_at = time.time()
+                    await self._announce_resumed_session(new_session)
+                    await self.receive_audio_and_tools(new_session)
+            except asyncio.CancelledError:
+                raise
+            except Exception as reconnect_error:
+                self._live_end_reason = repr(reconnect_error)
+            # Only a connection that was really established and held for a while counts as a success; a slow failed attempt does not
+            if connected_at and time.time() - connected_at >= LIVE_MIN_RESUME_RUN_SECONDS:
+                failures = 0
+            else:
+                failures += 1
+
+    # ------------------------------------------------------------------ calls that stay on the phone
+    async def _set_bluetooth_card_profile(self, profiles: List[str]) -> str:
+        """Sets the first accepted audio profile on the Bluetooth audio card of the phone. Returns it, or '' if none worked."""
+        mac_match = re.search(r"dev_([0-9A-Z_]+)", self.dbus_path)
+        if not mac_match:
+            return ""
+        mac_str = mac_match.group(1).upper()
+        card_name = f"bluez_card.{mac_str}"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pactl", "list", "cards", "short",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await proc.communicate()
+            for line in stdout.decode("utf-8", errors="ignore").splitlines():
+                if "bluez_card" in line and mac_str in line:
+                    card_name = line.split()[1]
+                    break
+        except Exception:
+            pass
+        for profile in profiles:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "pactl", "set-card-profile", card_name, profile,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    return profile
+            except Exception:
+                pass
+        return ""
+
+    async def _read_card_profiles(self) -> Tuple[str, str, List[str]]:
+        """Reads the Bluetooth audio card of the phone: (card name, active profile, usable profile names). Empty values when not found."""
+        mac_match = re.search(r"dev_([0-9A-Z_]+)", self.dbus_path)
+        if not mac_match:
+            return "", "", []
+        mac_str = mac_match.group(1).upper()
+        try:
+            proc = await asyncio.create_subprocess_exec("pactl", "list", "cards", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            stdout, _ = await proc.communicate()
+            text = stdout.decode("utf-8", errors="ignore")
+        except Exception:
+            return "", "", []
+        for block in re.split(r"(?m)^Card #\d+", text):
+            name_match = re.search(r"(?m)^\s*Name:\s*(\S+)", block)
+            if not name_match or "bluez_card" not in name_match.group(1) or mac_str not in name_match.group(1).upper():
+                continue
+            active_match = re.search(r"(?m)^\s*Active Profile:\s*(\S+)", block)
+            names = re.findall(r"(?m)^[ \t]+(\S+):[ \t][^\n]*available:[ \t]*(?:yes|unknown)", block)
+            return name_match.group(1), (active_match.group(1) if active_match else ""), names
+        return "", "", []
+
+    async def _call_profile_candidates(self) -> List[str]:
+        """Call (hands-free) audio profiles to try, the fixed names first and then the ones the card really offers."""
+        _, _, names = await self._read_card_profiles()
+        found = [n for n in names if n != PASSTHROUGH_RELEASE_PROFILE and re.search(BT_CALL_PROFILE_PATTERN, n)]
+        return list(dict.fromkeys(BT_CALL_PROFILES + found))
+
+    def _read_call_state(self) -> str:
+        """oFono state of this call ('incoming', 'active'...), or '' when the call does not exist any more."""
+        try:
+            iface = dbus.Interface(dbus.SystemBus().get_object("org.ofono", self.dbus_path), "org.ofono.VoiceCall")
+            return str(iface.GetProperties().get("State", ""))
+        except Exception:
+            return ""
+
+    async def run_phone_passthrough(self, reason: str, contact_match: Optional[Dict[str, Any]] = None) -> None:
+        """The switchboard does NOT answer this call: it keeps ringing on the phone and, when the owner picks it up, its audio
+        has to stay on the phone instead of going through Bluetooth to the switchboard. To get that, the Bluetooth audio link is
+        released (audio profile 'off') while the call is active, and the normal profile is restored when the call ends.
+        reason is 'contact' (whitelist rule with 'phone only') or 'paused' (switchboard paused with the option on)."""
+        self._post_processed = True   # There is nothing to analyze after this call
+        self.running = True
+        if reason == "contact" and contact_match is not None:
+            label = self.labels_data.get("passthrough", "📱 ON THE PHONE")
+            message = str(self.assistant_data.get("passthrough_message", "Call left to the phone: the switchboard did not answer it ({pattern}).")).replace("{pattern}", str(contact_match.get("pattern", "")))
+            self.create_call_record_db(initial_tag=label, initial_transcript=f"📱 [{get_timestamp()}]: [SYSTEM]: {message}",
+                                       audio_path_val="", base_tag=label, base_client_name="")
+            conn = None
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                conn.execute("UPDATE calls SET client_name=?, summary=? WHERE id=?", (contact_match.get("note", ""), message, self.call_id))
+                conn.commit()
+            except Exception as db_error:
+                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Passthrough] Could not save the call record: {db_error}{_R}")
+            finally:
+                if conn:
+                    conn.close()
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Passthrough] Call from {self.caller_number} stays on the phone ({reason}). The switchboard does not answer it.{_R}")
+
+        loop = asyncio.get_running_loop()
+        deadline = time.time() + PASSTHROUGH_MAX_SECONDS
+        audio_released = False
+        previous_profile = ""
+        polls_since_release = 0
+        try:
+            while self.running and time.time() < deadline:
+                state = await loop.run_in_executor(None, self._read_call_state)
+                if not state:
+                    break   # The call does not exist any more
+                if state == "active":
+                    # The phone sets up the audio link by itself when the owner answers: free it (again) so the phone keeps the audio
+                    if not audio_released or polls_since_release >= 5:
+                        if not audio_released:
+                            _, active_profile, _ = await self._read_card_profiles()
+                            if active_profile and active_profile != PASSTHROUGH_RELEASE_PROFILE:
+                                previous_profile = active_profile   # Remembered to put the card back exactly as it was
+                        profile = await self._set_bluetooth_card_profile([PASSTHROUGH_RELEASE_PROFILE])
+                        polls_since_release = 0
+                        if profile and not audio_released:
+                            audio_released = True
+                            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Passthrough] Bluetooth audio link released: the audio stays on the phone.{_R}")
+                        elif not profile and not audio_released:
+                            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Passthrough] Could not release the Bluetooth audio link (no audio card found yet). Trying again...{_R}")
+                    polls_since_release += 1
+                await asyncio.sleep(PASSTHROUGH_POLL_SECONDS)
+        finally:
+            self.running = False
+            if audio_released:
+                wanted = ([previous_profile] if previous_profile else []) + await self._call_profile_candidates()
+                restored = await self._set_bluetooth_card_profile(list(dict.fromkeys(wanted)))
+                if restored:
+                    print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Passthrough] Call ended. Bluetooth audio profile restored: {restored}.{_R}")
+                else:
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Passthrough] Call ended but the Bluetooth audio profile could NOT be restored. The next answered call will try again.{_R}")
+
+    async def receive_audio_and_tools(self, session) -> None:
+        """Handles one Live connection until it ends. The greeting is sent only once per call: a later connection of the same
+        call (see live_session_supervisor) continues the conversation without greeting again."""
+        self._live_session = session
+        self._live_end_reason = ""
+        if not self._playback_thread_started:
+            self._playback_thread_started = True
+            threading.Thread(target=self.sync_playback_loop, daemon=True).start()
 
         self.last_user_spoke_time = time.time()
         self.last_chunk_audio_time = time.time()
         self.last_asst_text_time = time.time()
 
-        initial_greeting = get_config("initial_greeting", "")
-        if initial_greeting:
-            exact_template = self.prompts_data.get(
-                "greeting_exact",
-                "[SYSTEM: Start the call by saying EXACTLY this phrase, word by word, without adding anything else: '{phrase}']"
-            )
-            try:
-                greeting = exact_template.format(phrase=initial_greeting)
-            except (KeyError, ValueError, IndexError):
-                greeting = exact_template.replace("{phrase}", initial_greeting)
-        else:
-            greeting = self.prompts_data.get("greeting", "").format(assistant_name=self.assistant_name, boss_name=self.boss_name)
-
         global ICON_ASST, ICON_USER_STR
         ICON_ASST = "📞 " if USE_EMOJI else f"[{self.assistant_name}]: "
         ICON_USER_STR = "🗣  " if USE_EMOJI else f"[{self.labels_data.get('ui_user_label', 'Caller')}]: "
 
-        print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[{self.assistant_name}] Connecting to Gemini Live websocket...{_R}")
-        if self.protect_initial_greeting:
-            self.greeting_in_progress = True
+        if not self._greeting_sent:
+            initial_greeting = self.greeting_phrase
+            if initial_greeting:
+                template = ""
+                if self.adaptive_greeting:
+                    template = self.prompts_data.get("greeting_adaptive", "")
+                if not template:
+                    template = self.prompts_data.get(
+                        "greeting_exact",
+                        "[SYSTEM: Start the call by saying EXACTLY this phrase, word by word, without adding anything else: '{phrase}']"
+                    )
+                try:
+                    greeting = template.format(phrase=initial_greeting)
+                except (KeyError, ValueError, IndexError):
+                    greeting = template.replace("{phrase}", initial_greeting)
+            else:
+                greeting = self.prompts_data.get("greeting", "").format(assistant_name=self.assistant_name, boss_name=self.boss_name)
+
+            print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_CONN}[{self.assistant_name}] Connecting to Gemini Live websocket...{_R}")
+            if self.protect_initial_greeting:
+                self.greeting_in_progress = True
+                self.greeting_started_time = time.time()
+                self.greeting_audio_received = False
+
+            self._note_self_interrupt()
+
             self.greeting_started_time = time.time()
-            self.greeting_audio_received = False
-
-        self._note_self_interrupt()
-
-        await session.send_realtime_input(text=greeting)
-        print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Connected. Conversation started.{_R}")
+            await session.send_realtime_input(text=greeting)
+            self._greeting_sent = True
+            self.greeting_points_pending = bool(self.adaptive_greeting and initial_greeting)
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Connected. Conversation started"
+                  f"{' (adaptive greeting: ' + self.greeting_phrase_source + ')' if self.adaptive_greeting and initial_greeting else ''}.{_R}")
+        else:
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Live connection {self._live_reconnects + 1} is up. The conversation goes on.{_R}", flush=True)
 
         while self.running:
             if self.farewell_pending and not self.hanging_up:
@@ -4069,10 +4442,10 @@ class PhoneAssistant:
                         self._note_self_interrupt()
                         await session.send_realtime_input(text=self.prompts_data.get("silence_grace_end", ""))
 
-                elif self.on_hold and total_hold_time > 900.0 and not self.waiting_definitive_cut:
+                elif self.on_hold and total_hold_time > HOLD_MAX_TOTAL_SECONDS and not self.waiting_definitive_cut:
                     self.waiting_definitive_cut = True
                     self.cut_warning_time = time.time()
-                    self.log_system_message("Maximum accumulated hold time (15 mins) exceeded. Starting 15s grace warning...", "⚠")
+                    self.log_system_message(f"Maximum accumulated hold time ({int(HOLD_MAX_TOTAL_SECONDS // 60)} mins) exceeded. Starting 15s grace warning...", "⚠")
                     self._note_self_interrupt()
                     await session.send_realtime_input(text=self.prompts_data.get("silence_grace_start", ""))
 
@@ -4098,7 +4471,9 @@ class PhoneAssistant:
                 msg = await asyncio.wait_for(session._receive(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
-            except Exception:
+            except Exception as receive_error:
+                self._live_end_reason = repr(receive_error)
+                self.dbg.log("live_receive_ended", reason=self._live_end_reason)
                 break
 
             if getattr(msg, "tool_call", None):
@@ -4121,6 +4496,10 @@ class PhoneAssistant:
 
             if getattr(msg, "go_away", None):
                 self.dbg.log("go_away", info=str(msg.go_away))
+                print(f"{_C_MUTED}[{get_timestamp()}] [Live] Gemini Live announced that this connection closes soon (time left: {getattr(msg.go_away, 'time_left', '?')}). The call goes on over a new connection.{_R}", flush=True)
+            resume_update = getattr(msg, "session_resumption_update", None)
+            if resume_update is not None and getattr(resume_update, "resumable", False) and getattr(resume_update, "new_handle", None):
+                self._live_resume_handle = str(resume_update.new_handle)
 
             sc = getattr(msg, "server_content", None)
             if sc:
@@ -4129,6 +4508,8 @@ class PhoneAssistant:
                 for _event_flag in ("turn_complete", "generation_complete"):
                     if getattr(sc, _event_flag, False):
                         self.dbg.log(_event_flag)
+                if getattr(sc, "turn_complete", False) and self.greeting_points_pending:
+                    await self._check_greeting_points(session)
                 itx = getattr(sc, "input_transcription", None)
                 if itx and itx.text and self.hanging_up and getattr(self, "hangup_triggered", False):
                     itx = None
@@ -4648,7 +5029,12 @@ class PhoneAssistant:
             self.hangup_call()
             return
 
+        if contact_match and contact_match["type"] == "whitelist" and contact_match.get("phone_passthrough"):
+            await self.run_phone_passthrough("contact", contact_match)
+            return
+
         self.create_call_record_db()
+        self.greeting_phrase, self.greeting_phrase_source = self._resolve_greeting_phrase(contact_match)
         self.running = True
         self.answered_call = False
         self.recording_buffer_wav = bytearray()
@@ -4766,8 +5152,13 @@ class PhoneAssistant:
                     prefix_padding_ms=self.vad_prefix_padding_ms,
                     silence_duration_ms=self.vad_silence_duration_ms,
                 )
-            )
+            ),
+            # Long calls: Google closes one connection after about 10 minutes and one audio session after 15 minutes without
+            # compression. Resumption lets the call continue over a new connection; the sliding window keeps the context bounded.
+            session_resumption=types.SessionResumptionConfig() if self.live_long_calls else None,
+            context_window_compression=types.ContextWindowCompressionConfig(sliding_window=types.SlidingWindow()) if self.live_long_calls else None,
         )
+        self._live_config = config
 
         self.dbg.log(
             "live_config", app_version=APP_VERSION, model=MODEL_LIVE, voice=voice_name, language=self.current_lang,
@@ -4843,7 +5234,7 @@ class PhoneAssistant:
                     self.online.start()
                     self.dbg.log("online_start", language_codes=self.online.language_codes, vocabulary=self.online.vocabulary)
 
-                await asyncio.gather(self.send_mic_audio(session), self.receive_audio_and_tools(session), monitor_spam())
+                await asyncio.gather(self.send_mic_audio(session), self.live_session_supervisor(session), monitor_spam())
 
         except Exception as e:
             print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Session] Unexpected error: {e}{_R}")
@@ -4852,7 +5243,7 @@ class PhoneAssistant:
         finally:
             self.running = False
             self._flush_pending_alternatives(force=True)
-            self.flush_transcription_db()
+            self.flush_transcription_db(force=True)
             self._playback_summary()
             if self._whisper_worker_task is not None:
                 self._whisper_worker_task.cancel()
@@ -5242,11 +5633,13 @@ async def daemon_heartbeat_loop(main_loop: asyncio.AbstractEventLoop) -> None:
     heartbeat_failing = False
     while True:
         try:
+            if not write_ram_state("daemon_heartbeat", time.time()):
+                set_runtime_setting("daemon_heartbeat", time.time())   # No RAM directory available: fall back to the database
             conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-            conn.execute("INSERT OR REPLACE INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
-            row = conn.execute("SELECT value FROM settings WHERE key='daemon_state'").fetchone()
-            conn.commit()
-            conn.close()
+            try:
+                row = conn.execute("SELECT value FROM settings WHERE key='daemon_state'").fetchone()
+            finally:
+                conn.close()
 
             state = row[0] if row else "running"
             if state != last_logged_state:
@@ -5325,6 +5718,15 @@ def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
 
         daemon_state = get_config("daemon_state", "running")
         if daemon_state == "paused":
+            if get_config("paused_calls_to_phone", "false") == "true":
+                print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Paused] Incoming call from {number} is left to the phone with its own audio (Switchboard is PAUSED).{_R}")
+                paused_assistant = PhoneAssistant(dbus_path=path, caller_number=number)
+                paused_assistant._post_processed = True
+                ACTIVE_ASSISTANT = paused_assistant
+                paused_future = asyncio.run_coroutine_threadsafe(paused_assistant.run_phone_passthrough("paused"), main_loop)
+                ACTIVE_TASKS.add(paused_future)
+                paused_future.add_done_callback(ACTIVE_TASKS.discard)
+                return
             print(f"\n{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Paused] Incoming call from {number} ignored (Switchboard is PAUSED).{_R}")
             return
         if daemon_state == "stopped":

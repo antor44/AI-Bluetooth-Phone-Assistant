@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 3.1
+Version: 3.2
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -29,6 +29,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 import fnmatch
 import hashlib
+import shlex
+import sys
 import html
 import sqlite3
 import os
@@ -51,7 +53,7 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
 DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
 BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
@@ -72,6 +74,13 @@ SPAM_SCORE_THRESHOLD = 65               # Risk score from which a call is tagged
 # Texts that phone_assistant.py saves in the call log and this panel recognizes (keep them in sync with that file).
 BLOCKED_SUMMARY_PREFIX = "Blocked by rule"                          # Summary of a call rejected by a Blacklist rule
 UNANSWERED_CALL_MARKER = "Call ended by caller before answering."   # Transcript of a call the caller ended before it was answered
+RAM_STATE_DIR = "/dev/shm"               # Same RAM-backed directory as phone_assistant.py: the volatile heartbeats are not written to the database
+DAEMON_SCRIPT_NAME = "phone_assistant.py"
+DAEMON_SERVICE_NAME = "ai-switchboard.service"
+DAEMON_START_WAIT_SECONDS = 8.0          # How long the Web GUI waits for the first heartbeat of a daemon it has just started
+UPDATE_EXIT_MARKER = "[UPDATE-EXIT-CODE]"  # Line written at the end of the system update log with the exit code
+UPDATE_LOG_TAIL_BYTES = 20000            # How much of the update log is shown
+UPDATE_ERROR_PREFIXES = ("E:", "Err:", "W: Failed", "dpkg: error", "sudo:")   # Lines of the apt / dpkg output that point to a problem
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 WHISPER_CPP_DIR = os.path.expanduser("~/whisper.cpp")
 
@@ -615,6 +624,137 @@ def install_whisper_model(model_name: str, terminal: str) -> Tuple[bool, str]:
         return False, f"Error executing command: {e}"
 
 
+@st.cache_data(ttl=60)
+def daemon_service_exists() -> bool:
+    """True when the systemd user service of the switchboard is installed (cached: it is checked on every page refresh)."""
+    try:
+        return subprocess.run(["systemctl", "--user", "cat", DAEMON_SERVICE_NAME], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def daemon_service_is_active() -> bool:
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", DAEMON_SERVICE_NAME], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def daemon_start_method() -> str:
+    """How this Web GUI can start the daemon: 'process', 'systemd', or '' when it cannot.
+    The service of a normal installation runs this very panel together with the daemon (my_gui.sh), so it is already active
+    when only the daemon was stopped: starting the service again would do nothing. The daemon is then launched as a process
+    that inherits the environment of the panel (GEMINI_API_KEY, audio and D-Bus variables)."""
+    if os.path.isfile(os.path.join(BASE_DIR, DAEMON_SCRIPT_NAME)) and os.environ.get("GEMINI_API_KEY"):
+        return "process"
+    if daemon_service_exists() and not daemon_service_is_active():
+        return "systemd"
+    return ""
+
+
+def start_daemon_process() -> Tuple[bool, str]:
+    """Starts the daemon from the Web GUI. Returns (started, text_key); the text lives in gui.json.
+    The daemon writes to the same output as the panel, so its messages show up in the usual log (./my_gui.sh --logs)."""
+    method = daemon_start_method()
+    if not method:
+        return False, "ui_daemon_start_impossible"
+    proc = None
+    if method == "systemd":
+        try:
+            result = subprocess.run(["systemctl", "--user", "start", DAEMON_SERVICE_NAME], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return False, "ui_daemon_start_failed"
+        if result.returncode != 0:
+            return False, "ui_daemon_start_failed"
+    else:
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", os.path.join(BASE_DIR, DAEMON_SCRIPT_NAME)],
+                cwd=BASE_DIR, stdin=subprocess.DEVNULL, start_new_session=True
+            )
+        except OSError:
+            return False, "ui_daemon_start_failed"
+    deadline = time.time() + DAEMON_START_WAIT_SECONDS
+    started_at = time.time()
+    while time.time() < deadline:
+        try:
+            if float(get_volatile("daemon_heartbeat", "0")) >= started_at - 1:
+                return True, "ui_daemon_start_ok"
+        except ValueError:
+            pass
+        if proc is not None and proc.poll() is not None:
+            return False, "ui_daemon_start_failed"
+        time.sleep(0.5)
+    return True, "ui_daemon_start_slow"
+
+
+def update_log_paths() -> Tuple[str, str]:
+    """RAM-backed log and pid files of the system update (so the update output does not wear the SD card)."""
+    return (os.path.join(RAM_STATE_DIR, f"ai-switchboard-update-{os.getuid()}.log"),
+            os.path.join(RAM_STATE_DIR, f"ai-switchboard-update-{os.getuid()}.pid"))
+
+
+def pid_is_running(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as stat_file:
+            return stat_file.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+    except (OSError, IndexError):
+        return False
+
+
+def start_system_update(sudo_password: str) -> bool:
+    """Runs 'apt-get update' and 'apt-get upgrade' as a detached process whose output goes to a RAM log file."""
+    log_path, pid_path = update_log_paths()
+    inner_command = "apt-get update && apt-get -y -o Dpkg::Options::=--force-confold upgrade"
+    sudo_part = 'sudo -S -p ""' if sudo_password else "sudo -n"
+    shell_command = f'{sudo_part} env LC_ALL=C DEBIAN_FRONTEND=noninteractive bash -c {shlex.quote(inner_command)}; echo "{UPDATE_EXIT_MARKER} $?"'
+    try:
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(["bash", "-c", shell_command], stdin=subprocess.PIPE, stdout=log_file, stderr=subprocess.STDOUT,
+                                    text=True, start_new_session=True)
+        with open(pid_path, "w", encoding="utf-8") as pid_file:
+            pid_file.write(str(proc.pid))
+        try:
+            proc.stdin.write(sudo_password + "\n")
+            proc.stdin.close()
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def read_system_update() -> Dict[str, Any]:
+    """State of the system update: {'state': 'idle'|'running'|'done', 'log': str, 'exit_code': Optional[int], 'errors': List[str]}."""
+    log_path, pid_path = update_log_paths()
+    if not os.path.exists(log_path):
+        return {"state": "idle", "log": "", "exit_code": None, "errors": []}
+    try:
+        with open(log_path, "rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            log_file.seek(max(0, log_file.tell() - UPDATE_LOG_TAIL_BYTES))
+            log_text = log_file.read().decode("utf-8", errors="replace")
+    except OSError:
+        log_text = ""
+    exit_code: Optional[int] = None
+    for line in log_text.splitlines():
+        if line.startswith(UPDATE_EXIT_MARKER):
+            try:
+                exit_code = int(line.split()[-1])
+            except ValueError:
+                exit_code = None
+    marker_seen = UPDATE_EXIT_MARKER in log_text
+    running = False
+    if not marker_seen:
+        try:
+            with open(pid_path, "r", encoding="utf-8") as pid_file:
+                running = pid_is_running(int(pid_file.read().strip()))
+        except (OSError, ValueError):
+            running = False
+    errors = [line.strip() for line in log_text.splitlines() if line.strip().startswith(UPDATE_ERROR_PREFIXES)]
+    return {"state": "running" if running else "done", "log": log_text, "exit_code": exit_code, "errors": errors}
+
+
 def init_db() -> None:
     """Initializes the database schema, runs safe column migrations, and defines global settings."""
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
@@ -646,7 +786,9 @@ def init_db() -> None:
         "ALTER TABLE contacts ADD COLUMN note TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN mem_mode TEXT DEFAULT ''",
         "ALTER TABLE contacts ADD COLUMN mem_calls INTEGER",
-        "ALTER TABLE contacts ADD COLUMN mem_days INTEGER"
+        "ALTER TABLE contacts ADD COLUMN mem_days INTEGER",
+        "ALTER TABLE contacts ADD COLUMN greeting TEXT DEFAULT ''",
+        "ALTER TABLE contacts ADD COLUMN phone_passthrough INTEGER DEFAULT 0"
     ]:
         try:
             c.execute(alter_sql)
@@ -685,6 +827,9 @@ def init_db() -> None:
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     c.execute("INSERT OR IGNORE INTO settings VALUES ('protect_initial_greeting', 'true')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('greeting_mode', 'exact')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('paused_calls_to_phone', 'false')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('live_long_calls', 'true')")
 
     conn.commit()
     conn.close()
@@ -717,6 +862,27 @@ def get_config(key: str, default_value: str) -> str:
     res_global = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     conn.close()
     return res_global[0] if res_global is not None else default_value
+
+
+def ram_state_path() -> str:
+    """Path of the RAM-backed state file written by the daemon (same logic as phone_assistant.py)."""
+    if os.path.isdir(RAM_STATE_DIR) and os.access(RAM_STATE_DIR, os.W_OK):
+        return os.path.join(RAM_STATE_DIR, f"ai-switchboard-state-{os.getuid()}.json")
+    return ""
+
+
+def get_volatile(key: str, default_value: str) -> str:
+    """Reads a volatile value (heartbeats) from RAM, and from the database when the daemon had no RAM directory."""
+    path = ram_state_path()
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8") as state_file:
+                data = json.load(state_file)
+            if isinstance(data, dict) and key in data:
+                return str(data[key])
+        except (OSError, ValueError):
+            pass
+    return get_config(key, default_value)
 
 
 def has_config(key: str) -> bool:
@@ -826,6 +992,60 @@ def _rerun_fragment() -> None:
         st.rerun()
 
 
+@st.fragment(run_every=2)
+def render_system_update_panel() -> None:
+    """System update panel (apt update + apt upgrade). A fragment that refreshes itself, so the output follows the update live."""
+    update = read_system_update()
+    if update["state"] == "idle":
+        st.caption(trans.get("ui_update_desc", "Runs 'apt update' and 'apt upgrade' on this Linux server and shows the output here. Do it when no call is in progress; some services may restart and a reboot may be needed afterwards."))
+        if not st.session_state.get("confirm_system_update", False):
+            if st.button(trans.get("ui_btn_update_system", "🔄 Update Linux (apt update + upgrade)"), key="btn_update_system", use_container_width=True):
+                st.session_state.confirm_system_update = True
+                st.rerun(scope="fragment")
+        else:
+            conn_u = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            call_active = conn_u.execute("SELECT COUNT(*) FROM calls WHERE tag=?", (in_progress_label,)).fetchone()[0] > 0
+            conn_u.close()
+            if call_active:
+                st.warning(trans.get("ui_update_call_active", "A call is in progress. Wait until it ends before updating."))
+            update_pwd = st.text_input(trans.get("ui_sudo_password_label_update", "Sudo password (required to update):"), type="password", key="update_sudo_pwd")
+            uc1, uc2 = st.columns(2)
+            with uc1:
+                if st.button(trans.get("ui_btn_update_start", "✅ Start the update"), key="btn_update_start", use_container_width=True, disabled=call_active):
+                    st.session_state.confirm_system_update = False
+                    if not start_system_update(update_pwd):
+                        st.error(trans.get("ui_update_start_failed", "The update could not be started."))
+                    st.rerun(scope="fragment")
+            with uc2:
+                if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_update_cancel", use_container_width=True):
+                    st.session_state.confirm_system_update = False
+                    st.rerun(scope="fragment")
+        return
+
+    if update["state"] == "running":
+        st.info(trans.get("ui_update_running", "⏳ Update in progress... do not turn off the server."))
+    elif update["exit_code"] == 0 and not update["errors"]:
+        st.success(trans.get("ui_update_ok", "✅ The update finished without errors."))
+    elif update["exit_code"] is None:
+        st.error(trans.get("ui_update_interrupted", "❌ The update was interrupted before it finished. Check the output below."))
+    else:
+        st.error(trans.get("ui_update_failed", "❌ The update finished with errors (exit code {code}). Check the output below.").format(code=update["exit_code"]))
+    if update["errors"]:
+        st.markdown(f"**{trans.get('ui_update_error_lines', 'Lines with errors:')}**")
+        st.code("\n".join(update["errors"][-15:]), language=None)
+    st.code("\n".join(update["log"].splitlines()[-60:]) or "...", language=None)
+    if update["state"] == "done":
+        if os.path.exists("/var/run/reboot-required"):
+            st.warning(trans.get("ui_update_reboot_required", "🔁 The system asks for a reboot to finish the update."))
+        if st.button(trans.get("ui_update_clear", "🧹 Close this result"), key="btn_update_clear", use_container_width=True):
+            for leftover in update_log_paths():
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
+            st.rerun(scope="fragment")
+
+
 @st.fragment(run_every=3)
 def render_bluetooth_panel() -> None:
     """Phone Bluetooth link status and the error counters kept by the daemon's reconnection watchdog.
@@ -838,14 +1058,14 @@ def render_bluetooth_panel() -> None:
 
     with st.container(border=True):
         try:
-            heartbeat_age = time.time() - float(get_config("daemon_heartbeat", "0"))
+            heartbeat_age = time.time() - float(get_volatile("daemon_heartbeat", "0"))
         except ValueError:
             heartbeat_age = float("inf")
 
         bt_state = get_config("bt_state", "unknown")
         bt_device = get_config("bt_device_name", "")
         try:
-            bt_heartbeat_age = time.time() - float(get_config("bt_heartbeat", "0"))
+            bt_heartbeat_age = time.time() - float(get_volatile("bt_heartbeat", "0"))
         except ValueError:
             bt_heartbeat_age = float("inf")
         if heartbeat_age > DAEMON_HEARTBEAT_STALE_SECONDS or bt_state == "unknown" or bt_heartbeat_age > BT_STATE_STALE_SECONDS:
@@ -913,7 +1133,7 @@ def render_tor_panel() -> None:
         tor_onion = get_config("tor_onion", "")
         tor_error = get_config("tor_error", "")
         try:
-            tor_hb_age = time.time() - float(get_config("daemon_heartbeat", "0"))
+            tor_hb_age = time.time() - float(get_volatile("daemon_heartbeat", "0"))
         except ValueError:
             tor_hb_age = 1e9
 
@@ -1138,7 +1358,8 @@ def apply_language_defaults(lang_code: str) -> None:
         ("vad_end_sensitivity", "HIGH"),
         ("vad_prefix_padding_ms", str(DEFAULT_VAD_PREFIX_PADDING_MS)),
         ("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)),
-        ("protect_initial_greeting", "true")
+        ("protect_initial_greeting", "true"),
+        ("greeting_mode", "exact")
     ]:
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (g_key, g_val))
     # Restore the default greeting (legal notice) and default SPAM provider URLs of the selected language
@@ -1793,7 +2014,7 @@ with col1:
                         st.rerun()
 
                 st.write("")
-                c_act1, c_act2, c_act3, c_act4 = st.columns(4)
+                c_act1, c_act2, c_act3, c_act4, c_act5 = st.columns(5)
                 with c_act1:
                     if (audio_path and os.path.exists(audio_path)) or (client_audio_path and os.path.exists(client_audio_path)):
                         if st.button(trans.get("ui_btn_delete_audio", "Delete Audio"), key=f"delaud_{id_call}"):
@@ -1832,6 +2053,12 @@ with col1:
                         recalculate_call_labels(assistant_labels, in_progress_label)
                         st.toast(trans.get("ui_toast_saved", "Saved successfully"))
                         st.rerun()
+                with c_act5:
+                    if st.button(trans.get("ui_btn_check_spam", "Check SPAM"), key=f"spamchk_{id_call}"):
+                        # The SPAM test box is built later in this same run: its value can still be set from here
+                        st.session_state["spam_test_num_inp"] = number
+                        st.session_state["spam_test_expanded"] = True
+                        st.toast(trans.get("ui_toast_spam_prefilled", "Number copied to the SPAM test box in the settings column."))
                 with c_act4:
                     if st.button(trans.get("ui_btn_blacklist", "Blacklist"), key=f"blk_{id_call}"):
                         norm_num = normalize_phone_pattern(number)
@@ -1911,14 +2138,14 @@ with col2:
 
     st.subheader(trans.get("ui_managed_contacts", "Managed contacts & wildcard rules:"))
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days FROM contacts ORDER BY number ASC").fetchall()
+    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
 
     if contacts:
         contacts_page = clamp_page("contacts_page", len(contacts), CONTACTS_PAGE_SIZE)
         contacts_start = contacts_page * CONTACTS_PAGE_SIZE
         for c_row in contacts[contacts_start:contacts_start + CONTACTS_PAGE_SIZE]:
-            c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days = c_row
+            c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days, c_greeting, c_passthrough = c_row
             # Widget keys come from the stored contact itself, not from its position in the list: Streamlit keeps the
             # state of a key and ignores the new default values, so position-based keys showed the data of another
             # contact after an insertion. The key also changes when the stored row changes (e.g. the quick
@@ -1930,7 +2157,8 @@ with col2:
             tag_has_icon = bool(split_contact_tag(c_tag, get_contact_tag_icons())[0])
             tag_str = (f" | {c_tag}" if tag_has_icon else f" | 🏷️ {c_tag}") if c_tag else ""
 
-            with st.expander(f"{c_num}{wildcard_badge} -> [{badge}]{note_str}{tag_str}"):
+            passthrough_badge = " 📱" if (c_passthrough and c_type == "whitelist") else ""
+            with st.expander(f"{c_num}{wildcard_badge} -> [{badge}]{passthrough_badge}{note_str}{tag_str}"):
                 edit_num = st.text_input(
                     trans.get("ui_form_phone", "Phone / Pattern:"),
                     value=c_num,
@@ -1954,6 +2182,17 @@ with col2:
                     value=c_prompt or "",
                     key=f"edit_c_prompt_{ckey}"
                 )
+                edit_greeting = st.text_area(
+                    trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"),
+                    value=c_greeting or "",
+                    key=f"edit_c_greeting_{ckey}"
+                )
+                edit_passthrough = st.checkbox(
+                    trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
+                    value=bool(c_passthrough),
+                    key=f"edit_c_pt_{ckey}",
+                    help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
+                )
                 edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{ckey}", c_mem_mode, c_mem_calls, c_mem_days)
                 eb1, eb2 = st.columns(2)
                 with eb1:
@@ -1963,8 +2202,9 @@ with col2:
                         if norm_new_num != c_num:
                             conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
                         conn_c.execute(
-                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag, edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days)
+                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag, edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days,
+                             edit_greeting.strip(), 1 if edit_passthrough else 0)
                         )
                         conn_c.commit()
                         conn_c.close()
@@ -2001,6 +2241,11 @@ with col2:
         contact_tag = contact_tag_widgets("new_contact")
         contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="", help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT))
         prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"))
+        new_greeting_c = st.text_area(trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"))
+        new_passthrough = st.checkbox(
+            trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
+            help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
+        )
         new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact")
         submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
 
@@ -2008,8 +2253,9 @@ with col2:
             norm_number = normalize_phone_pattern(phone_num)
             conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute(
-                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (norm_number, contact_type, prompt_rules.strip(), contact_tag, contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days)
+                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (norm_number, contact_type, prompt_rules.strip(), contact_tag, contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days,
+                 new_greeting_c.strip(), 1 if new_passthrough else 0)
             )
             conn.commit()
             conn.close()
@@ -2045,7 +2291,7 @@ with col3:
     with st.container(border=True):
         daemon_state = get_config("daemon_state", "running")
         try:
-            last_hb = float(get_config("daemon_heartbeat", "0"))
+            last_hb = float(get_volatile("daemon_heartbeat", "0"))
         except ValueError:
             last_hb = 0.0
         hb_age = time.time() - last_hb
@@ -2059,23 +2305,58 @@ with col3:
 
         st.markdown(f"**{trans.get('ui_daemon_status_label', 'Status:')}** {status_badge}")
 
+        daemon_stopped = daemon_state == "stopped" or hb_age > DAEMON_HEARTBEAT_STALE_SECONDS
+        can_restart_from_gui = bool(daemon_start_method())
         dc1, dc2 = st.columns(2)
         with dc1:
             if daemon_state == "paused":
-                if st.button(trans.get("ui_btn_resume_daemon", "▶️ Resume Switchboard"), key="btn_daemon_resume", use_container_width=True):
+                if st.button(trans.get("ui_btn_resume_daemon", "▶️ Resume Switchboard"), key="btn_daemon_resume", use_container_width=True, disabled=daemon_stopped):
                     set_config("daemon_state", "running")
                     st.toast(trans.get("ui_toast_daemon_resumed", "Switchboard resumed"))
                     st.rerun()
             else:
-                if st.button(trans.get("ui_btn_pause_daemon", "⏸️ Pause Switchboard"), key="btn_daemon_pause", use_container_width=True):
+                if st.button(trans.get("ui_btn_pause_daemon", "⏸️ Pause Switchboard"), key="btn_daemon_pause", use_container_width=True, disabled=daemon_stopped):
                     set_config("daemon_state", "paused")
                     st.toast(trans.get("ui_toast_daemon_paused", "Switchboard paused"))
                     st.rerun()
         with dc2:
-            if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
-                set_config("daemon_state", "stopped")
-                st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
-                st.rerun()
+            if daemon_stopped:
+                if st.button(trans.get("ui_btn_start_daemon", "▶️ Start Daemon"), key="btn_daemon_start", use_container_width=True):
+                    with st.spinner(trans.get("ui_daemon_starting", "Starting the switchboard...")):
+                        started_ok, start_text_key = start_daemon_process()
+                    start_text = trans.get(start_text_key, start_text_key)
+                    if started_ok:
+                        st.toast(start_text)
+                        st.rerun()
+                    else:
+                        st.error(start_text)
+            elif can_restart_from_gui:
+                if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
+                    set_config("daemon_state", "stopped")
+                    st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
+                    st.rerun()
+            else:
+                # The daemon cannot be started again from this panel: the user must know before stopping it
+                if not st.session_state.get("confirm_daemon_stop", False):
+                    if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
+                        st.session_state.confirm_daemon_stop = True
+                        st.rerun()
+                else:
+                    st.warning(trans.get("ui_daemon_stop_warning", "⚠️ The switchboard will stop completely and it cannot be started again from this panel. Start it again from a terminal or restart the server."))
+                    sc1, sc2 = st.columns(2)
+                    with sc1:
+                        if st.button(trans.get("ui_btn_confirm_stop_yes", "✅ Yes, stop it"), key="btn_daemon_stop_yes", use_container_width=True):
+                            st.session_state.confirm_daemon_stop = False
+                            set_config("daemon_state", "stopped")
+                            st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
+                            st.rerun()
+                    with sc2:
+                        if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_daemon_stop_no", use_container_width=True):
+                            st.session_state.confirm_daemon_stop = False
+                            st.rerun()
+
+        db_checkbox(trans.get("ui_paused_to_phone", "While paused, leave the calls to the phone with their own audio"), "paused_calls_to_phone", "chk_paused_to_phone", False)
+        st.caption(trans.get("ui_paused_to_phone_help", "The calls keep ringing on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth to the switchboard."))
 
         st.write("")
         if "confirm_server_reboot" not in st.session_state:
@@ -2113,6 +2394,12 @@ with col3:
                 if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_reboot_no", use_container_width=True):
                     st.session_state.confirm_server_reboot = False
                     st.rerun()
+
+    st.write("---")
+
+    # --- LINUX SYSTEM UPDATE (apt update + upgrade, with live output) ---
+    st.markdown(f"**🛠️ {trans.get('ui_update_title', 'Linux system update')}**")
+    render_system_update_panel()
 
     st.write("---")
 
@@ -2292,7 +2579,7 @@ with col3:
         set_config("spam_providers", json.dumps(new_list, ensure_ascii=False))
         spam_urls_list = new_list
 
-    with st.expander(trans.get("ui_spam_test_expander", "🔍 Test Phone Number Against SPAM Providers")):
+    with st.expander(trans.get("ui_spam_test_expander", "🔍 Test Phone Number Against SPAM Providers"), expanded=bool(st.session_state.get("spam_test_expanded", False))):
         test_num_inp = st.text_input(trans.get("ui_spam_test_input", "Phone number to test:"), key="spam_test_num_inp")
         if st.button(trans.get("ui_spam_test_btn", "Run SPAM Test"), key="btn_run_spam_test") and test_num_inp.strip():
             active_text_model = get_config("text_model", "gemini-3-flash-preview")
@@ -2414,6 +2701,7 @@ with col3:
             wait_val = st.number_input(trans.get("ui_cat_wait", "Wait Seconds:"), min_value=10, value=rule_wait, key=f"wait_{widget_suffix}")
             prompt_val = st.text_area(trans.get("ui_cat_prompt", "Category instructions:"), value=str(rule.get("prompt", "") or ""), height=160, key=f"prompt_{widget_suffix}")
             st.caption(trans.get("ui_cat_prompt_help", ""))
+            greeting_val = st.text_area(trans.get("ui_cat_greeting", "Greeting for this category (empty = the general greeting):"), value=str(rule.get("greeting", "") or ""), height=100, key=f"greeting_{widget_suffix}")
 
             rules[idx] = {
                 "category": new_cat_title,
@@ -2422,7 +2710,8 @@ with col3:
                 "calls": calls_val,
                 "chars": chars_val,
                 "wait_seconds": wait_val,
-                "prompt": prompt_val.strip()
+                "prompt": prompt_val.strip(),
+                "greeting": greeting_val.strip()
             }
 
             if st.button("🗑️", key=f"delcat_{widget_suffix}"):
@@ -2628,6 +2917,9 @@ with col3:
         set_config("protect_initial_greeting", "true" if new_prot_greet else "false")
         st.rerun()
 
+    db_checkbox(trans.get("live_long_calls_label", "Long calls: keep the AI session alive beyond Google's connection limits (recommended)"), "live_long_calls", "chk_live_long_calls", True)
+    st.caption(trans.get("live_long_calls_help", "Gemini Live closes each connection after about 10 minutes and each audio session after 15 minutes. With this on, the call continues over a new connection and the old context is compressed, so long hold times do not drop the call."))
+
     av1, av2 = st.columns(2)
     with av1:
         db_slider(
@@ -2721,6 +3013,21 @@ with col3:
     if new_gender != current_gender:
         set_config("assistant_gender", new_gender)
         st.rerun()
+
+    greeting_mode_opts = ["exact", "adaptive"]
+    greeting_mode_labels = trans.get("greeting_mode_labels", {"exact": "Exact (word for word)", "adaptive": "Adaptive (natural, adapts to the caller)"})
+    current_greeting_mode = get_config("greeting_mode", "exact")
+    if current_greeting_mode not in greeting_mode_opts:
+        current_greeting_mode = "exact"
+    new_greeting_mode = st.selectbox(
+        trans.get("ui_greeting_mode", "Greeting style:"), greeting_mode_opts,
+        index=greeting_mode_opts.index(current_greeting_mode),
+        format_func=lambda opt: greeting_mode_labels.get(opt, opt), key="greeting_mode_select"
+    )
+    if new_greeting_mode != current_greeting_mode:
+        set_config("greeting_mode", new_greeting_mode)
+        st.rerun()
+    st.caption(trans.get("ui_greeting_mode_help", "Adaptive: the assistant says the greeting in its own natural words, listens to the caller from the first second and answers what they say first. Exact: it says the text word for word and the line is protected while it speaks. Use Exact for legal notices."))
 
     current_greeting = get_config("initial_greeting", "")
     new_greeting = st.text_area(trans.get("ui_initial_greeting", "Exact Initial Greeting:"), value=current_greeting)
