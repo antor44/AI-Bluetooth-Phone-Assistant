@@ -276,7 +276,7 @@ PASSTHROUGH_RELEASE_PROFILE = "off"      # Audio profile that closes the audio c
 PASSTHROUGH_MAX_SECONDS = 4 * 3600       # Safety limit: a call that stays on the phone is not followed for longer than this
 PASSTHROUGH_SILENCE_TAIL_SECONDS = 1.5   # The local speakers stay silenced this long after the call audio is released (the phone audio may still be flowing)
 PACTL_TIMEOUT_SECONDS = 3.0              # Maximum wait for one pactl command
-GREETING_MODES = ("exact", "adaptive")  # Values of the greeting style, in the general setting and in a whitelist rule
+GREETING_MODES = ("exact", "adaptive")  # Values of the greeting style, in the general setting, in a whitelist rule and in a category
 BT_CALL_PROFILES = ["headset-audio-gateway", "headset-head-unit", "hfp-ag", "hfp-hf"]   # Same order as enforce_bluetooth_call_profile
 BT_CALL_PROFILE_PATTERN = r"headset|hfp|hsp|head-unit|audio-gateway"   # Names of the call (hands-free) audio profiles found on the card
 ADAPTIVE_GREETING_PROTECT_SECONDS = 1.5  # Adaptive greeting: the caller is muted only this long after answering (pickup clicks and noise)
@@ -4225,44 +4225,52 @@ class PhoneAssistant:
             self.current_wait_start = 0.0
 
     @staticmethod
-    def _resolve_adaptive_greeting(contact_match: Optional[Dict[str, Any]]) -> bool:
-        """Greeting style of this call. A style chosen in a whitelist rule wins over the general setting."""
+    def _resolve_adaptive_greeting(contact_match: Optional[Dict[str, Any]], category_rule: Optional[Dict[str, Any]]) -> bool:
+        """Greeting style of this call. Priority: the style of a whitelist rule, then the style of the category, then the general setting."""
         rule_mode = str((contact_match or {}).get("greeting_mode", "") or "")
         if contact_match and contact_match.get("type") == "whitelist" and rule_mode in GREETING_MODES:
             return rule_mode == "adaptive"
+        category_mode = str((category_rule or {}).get("greeting_mode", "") or "")
+        if category_mode in GREETING_MODES:
+            return category_mode == "adaptive"
         return get_config("greeting_mode", "exact") == "adaptive"
 
-    def _resolve_greeting_phrase(self, contact_match: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    def _resolve_greeting_category_rule(self, contact_match: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Category rule that applies to the greeting of this call: the tag of the number (or wildcard rule), or the tag of the
+        previous call of this number. Returns None when no category has its own greeting text or style (no database lookup then)."""
+        if not any(isinstance(rule, dict) and (str(rule.get("greeting", "") or "").strip() or str(rule.get("greeting_mode", "") or "") in GREETING_MODES)
+                   for rule in self._memory_rules):
+            return None
+        target_tag = str((contact_match or {}).get("tag", "") or "").strip()
+        if not target_tag and self.caller_candidates:
+            conn = None
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                placeholders = ",".join(["?"] * len(self.caller_candidates))
+                in_progress_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
+                row = conn.execute(
+                    f"SELECT tag FROM calls WHERE id != ? AND number IN ({placeholders}) AND COALESCE(transcript, '') != '' "
+                    "AND COALESCE(tag, '') NOT IN (?, 'IN PROGRESS') ORDER BY id DESC LIMIT 1",
+                    [self.call_id or -1] + list(self.caller_candidates) + [in_progress_lbl]
+                ).fetchone()
+                if row and row[0]:
+                    target_tag = str(row[0])
+            except Exception:
+                pass
+            finally:
+                if conn:
+                    conn.close()
+        return self._find_memory_category(target_tag)
+
+    def _resolve_greeting_phrase(self, contact_match: Optional[Dict[str, Any]], category_rule: Optional[Dict[str, Any]]) -> Tuple[str, str]:
         """Chooses the greeting text of this call. Priority: the greeting of the number (or wildcard rule), then the greeting
-        of its category (tag of the rule, or tag of the previous call of this number), then the general greeting.
-        Returns (text, source) where source is 'number', 'category' or 'global'."""
+        of its category, then the general greeting. Returns (text, source) where source is 'number', 'category' or 'global'."""
         number_greeting = str((contact_match or {}).get("greeting", "") or "").strip()
         if number_greeting:
             return number_greeting, "number"
-        if any(isinstance(rule, dict) and str(rule.get("greeting", "") or "").strip() for rule in self._memory_rules):
-            target_tag = str((contact_match or {}).get("tag", "") or "").strip()
-            if not target_tag and self.caller_candidates:
-                conn = None
-                try:
-                    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                    placeholders = ",".join(["?"] * len(self.caller_candidates))
-                    in_progress_lbl = self.gui_data.get("ui_in_progress", "IN PROGRESS")
-                    row = conn.execute(
-                        f"SELECT tag FROM calls WHERE id != ? AND number IN ({placeholders}) AND COALESCE(transcript, '') != '' "
-                        "AND COALESCE(tag, '') NOT IN (?, 'IN PROGRESS') ORDER BY id DESC LIMIT 1",
-                        [self.call_id or -1] + list(self.caller_candidates) + [in_progress_lbl]
-                    ).fetchone()
-                    if row and row[0]:
-                        target_tag = str(row[0])
-                except Exception:
-                    pass
-                finally:
-                    if conn:
-                        conn.close()
-            category_rule = self._find_memory_category(target_tag)
-            category_greeting = str((category_rule or {}).get("greeting", "") or "").strip()
-            if category_greeting:
-                return category_greeting, "category"
+        category_greeting = str((category_rule or {}).get("greeting", "") or "").strip()
+        if category_greeting:
+            return category_greeting, "category"
         return get_config("initial_greeting", ""), "global"
 
     async def _check_greeting_points(self, session: Any) -> None:
@@ -5251,8 +5259,9 @@ class PhoneAssistant:
             return
 
         self.create_call_record_db()
-        self.adaptive_greeting = self._resolve_adaptive_greeting(contact_match)
-        self.greeting_phrase, self.greeting_phrase_source = self._resolve_greeting_phrase(contact_match)
+        greeting_category_rule = self._resolve_greeting_category_rule(contact_match)
+        self.adaptive_greeting = self._resolve_adaptive_greeting(contact_match, greeting_category_rule)
+        self.greeting_phrase, self.greeting_phrase_source = self._resolve_greeting_phrase(contact_match, greeting_category_rule)
         self.running = True
         self.answered_call = False
         self.recording_buffer_wav = bytearray()

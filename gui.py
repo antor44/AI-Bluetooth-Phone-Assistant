@@ -1708,17 +1708,17 @@ def contact_tag_widgets(key_prefix: str, tag_db: str = "") -> str:
 CONTACT_GREETING_MODES = ["", "adaptive", "exact"]   # Greeting style of a whitelist rule: empty = the general setting (daemon: GREETING_MODES)
 
 
-def contact_greeting_mode_widget(key: str, current_mode: str = "") -> str:
-    """Selector of the greeting style of one contact rule. Returns "", "adaptive" or "exact"."""
+def contact_greeting_mode_widget(key: str, current_mode: str = "", label_key: str = "ui_form_greeting_mode", help_key: str = "ui_form_greeting_mode_help") -> str:
+    """Selector of the greeting style of one contact rule or category. Returns "", "adaptive" or "exact"."""
     labels = trans.get("ui_form_greeting_mode_options", {"": "Use the general setting", "adaptive": "Adaptive (natural, adapts to the caller)", "exact": "Exact (word for word)"})
     current_mode = current_mode if current_mode in CONTACT_GREETING_MODES else ""
     return st.selectbox(
-        trans.get("ui_form_greeting_mode", "Greeting style for this number (whitelist only):"),
+        trans.get(label_key, "Greeting style for this number (whitelist only):"),
         CONTACT_GREETING_MODES,
         index=CONTACT_GREETING_MODES.index(current_mode),
         format_func=lambda opt: labels.get(opt, opt),
         key=key,
-        help=trans.get("ui_form_greeting_mode_help", "Overrides the general greeting style for this number or wildcard rule.")
+        help=trans.get(help_key, "Overrides the general greeting style for this number or wildcard rule.")
     )
 
 
@@ -2689,11 +2689,41 @@ with col3:
     except Exception:
         rules = []
 
-    new_cat_name = st.text_input(trans.get("add_category_label", "Add category:"))
-    if st.button(trans.get("create_category_btn", "+ Create")) and new_cat_name:
-        rules.append({"category": new_cat_name, "keywords": [], "days": 7, "wait_seconds": 120, "prompt": ""})
-        set_config("memory_rules", json.dumps(rules, ensure_ascii=False))
-        st.rerun()
+    new_category_input_key = "new_category_name_input"
+    open_category_key = "category_to_keep_open"
+    category_feedback_key = "category_create_feedback"
+
+    def create_category_callback() -> None:
+        """Adds the typed category as a new rule, leaves it open for editing and clears the input box."""
+        typed_name = str(st.session_state.get(new_category_input_key, "")).strip()
+        if not typed_name:
+            st.session_state[category_feedback_key] = ("empty", "")
+            return
+        try:
+            saved_rules = json.loads(get_config("memory_rules", "[]"))
+        except Exception:
+            saved_rules = []
+        if any(isinstance(r, dict) and str(r.get("category", "")).strip().lower() == typed_name.lower() for r in saved_rules):
+            st.session_state[category_feedback_key] = ("duplicate", typed_name)
+            return
+        saved_rules.append({"category": typed_name, "keywords": [], "days": 7, "wait_seconds": 120, "prompt": ""})
+        set_config("memory_rules", json.dumps(saved_rules, ensure_ascii=False))
+        st.session_state[open_category_key] = typed_name.lower()
+        st.session_state[new_category_input_key] = ""
+        st.session_state[category_feedback_key] = ("created", typed_name)
+
+    st.text_input(trans.get("add_category_label", "Add category:"), key=new_category_input_key)
+    st.button(trans.get("create_category_btn", "+ Create"), on_click=create_category_callback)
+
+    category_feedback = st.session_state.pop(category_feedback_key, None)
+    if category_feedback:
+        feedback_kind, feedback_name = category_feedback
+        if feedback_kind == "created":
+            st.success(trans.get("ui_cat_created", "Category '{name}' created. Fill in its fields below and save.").format(name=feedback_name))
+        elif feedback_kind == "empty":
+            st.warning(trans.get("ui_cat_empty_name", "Type a name for the category first."))
+        else:
+            st.warning(trans.get("ui_cat_duplicate", "A category named '{name}' already exists.").format(name=feedback_name))
 
     for idx, rule in enumerate(rules):
         widget_suffix = f"{idx}_{current_lang}"
@@ -2704,7 +2734,7 @@ with col3:
         rule_calls = int(rule.get("calls", 0) or 0)
         rule_chars = int(rule.get("chars", 0) or 0)
 
-        with st.expander(f"📁 {rule_category}"):
+        with st.expander(f"📁 {rule_category}", expanded=str(rule_category).strip().lower() == st.session_state.get(open_category_key)):
             new_cat_title = st.text_input(trans.get("ui_cat_name", "Category Name:"), value=rule_category, key=f"cat_{widget_suffix}")
             keywords_val = st.text_input(trans.get("ui_cat_keywords", "Keywords:"), value=", ".join(rule_keywords), key=f"kw_{widget_suffix}")
             days_val = st.number_input(trans.get("ui_cat_days", "Days:"), min_value=1, value=rule_days, key=f"days_{widget_suffix}")
@@ -2714,6 +2744,7 @@ with col3:
             prompt_val = st.text_area(trans.get("ui_cat_prompt", "Category instructions:"), value=str(rule.get("prompt", "") or ""), height=160, key=f"prompt_{widget_suffix}")
             st.caption(trans.get("ui_cat_prompt_help", ""))
             greeting_val = st.text_area(trans.get("ui_cat_greeting", "Greeting for this category (empty = the general greeting):"), value=str(rule.get("greeting", "") or ""), height=100, key=f"greeting_{widget_suffix}")
+            greeting_mode_val = contact_greeting_mode_widget(f"greeting_mode_{widget_suffix}", str(rule.get("greeting_mode", "") or ""), "ui_cat_greeting_mode", "ui_cat_greeting_mode_help")
 
             rules[idx] = {
                 "category": new_cat_title,
@@ -2723,7 +2754,8 @@ with col3:
                 "chars": chars_val,
                 "wait_seconds": wait_val,
                 "prompt": prompt_val.strip(),
-                "greeting": greeting_val.strip()
+                "greeting": greeting_val.strip(),
+                "greeting_mode": greeting_mode_val
             }
 
             if st.button("🗑️", key=f"delcat_{widget_suffix}"):
