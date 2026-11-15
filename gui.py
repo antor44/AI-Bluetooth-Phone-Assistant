@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 3.2
+Version: 3.3
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -53,7 +53,7 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
 DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
 BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
@@ -71,6 +71,7 @@ CONTACT_TAG_HELP_DEFAULT = ("Shown on every call of this number or pattern, past
 CONTACT_TAG_ICONS_DEFAULT = ["🟣", "🟤", "⚫", "⚪", "🔴", "🟠", "🟡", "🟢", "🔵", "🟪", "🟫", "⬛", "⬜", "🟥", "🟧", "🟨", "🟩", "🟦"]
 CONTACT_NOTE_HELP_DEFAULT = "Used as the caller name on every call of this number or pattern, past calls included, when no name was heard during the call."
 SPAM_SCORE_THRESHOLD = 65               # Risk score from which a call is tagged as SPAM (same value as phone_assistant.py)
+CALL_MAX_TOTAL_SECONDS = 1800.0         # Maximum length of a call answered by the switchboard (same value as phone_assistant.py)
 # Texts that phone_assistant.py saves in the call log and this panel recognizes (keep them in sync with that file).
 BLOCKED_SUMMARY_PREFIX = "Blocked by rule"                          # Summary of a call rejected by a Blacklist rule
 UNANSWERED_CALL_MARKER = "Call ended by caller before answering."   # Transcript of a call the caller ended before it was answered
@@ -788,7 +789,8 @@ def init_db() -> None:
         "ALTER TABLE contacts ADD COLUMN mem_calls INTEGER",
         "ALTER TABLE contacts ADD COLUMN mem_days INTEGER",
         "ALTER TABLE contacts ADD COLUMN greeting TEXT DEFAULT ''",
-        "ALTER TABLE contacts ADD COLUMN phone_passthrough INTEGER DEFAULT 0"
+        "ALTER TABLE contacts ADD COLUMN phone_passthrough INTEGER DEFAULT 0",
+        "ALTER TABLE contacts ADD COLUMN greeting_mode TEXT DEFAULT ''"
     ]:
         try:
             c.execute(alter_sql)
@@ -1272,15 +1274,6 @@ def copy_button(text: str, label: str, done_label: str) -> None:
         components.html(page_html, height=40)
 
 
-def is_onion_session() -> bool:
-    """True when the panel is being viewed through the Tor onion address (e.g. the Android app)."""
-    try:
-        host = (st.context.headers.get("Host") or "").split(":")[0].lower()
-        return host.endswith(".onion")
-    except Exception:
-        return False
-
-
 def legacy_aac_copy_path(audio_path: str) -> str:
     """Path of the small AAC copy that older versions created next to a recording."""
     return os.path.splitext(audio_path)[0] + ".m4a"
@@ -1712,6 +1705,23 @@ def contact_tag_widgets(key_prefix: str, tag_db: str = "") -> str:
     return f"{chosen_icon} {clean_text}" if chosen_icon and clean_text else clean_text
 
 
+CONTACT_GREETING_MODES = ["", "adaptive", "exact"]   # Greeting style of a whitelist rule: empty = the general setting (daemon: GREETING_MODES)
+
+
+def contact_greeting_mode_widget(key: str, current_mode: str = "") -> str:
+    """Selector of the greeting style of one contact rule. Returns "", "adaptive" or "exact"."""
+    labels = trans.get("ui_form_greeting_mode_options", {"": "Use the general setting", "adaptive": "Adaptive (natural, adapts to the caller)", "exact": "Exact (word for word)"})
+    current_mode = current_mode if current_mode in CONTACT_GREETING_MODES else ""
+    return st.selectbox(
+        trans.get("ui_form_greeting_mode", "Greeting style for this number (whitelist only):"),
+        CONTACT_GREETING_MODES,
+        index=CONTACT_GREETING_MODES.index(current_mode),
+        format_func=lambda opt: labels.get(opt, opt),
+        key=key,
+        help=trans.get("ui_form_greeting_mode_help", "Overrides the general greeting style for this number or wildcard rule.")
+    )
+
+
 def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=None, mem_days=None):
     """Renders the per-number memory controls and returns (mem_mode, mem_calls, mem_days) ready for the database."""
     labels = trans.get("ui_contact_memory_opts_labels", {
@@ -2138,14 +2148,14 @@ with col2:
 
     st.subheader(trans.get("ui_managed_contacts", "Managed contacts & wildcard rules:"))
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough FROM contacts ORDER BY number ASC").fetchall()
+    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
 
     if contacts:
         contacts_page = clamp_page("contacts_page", len(contacts), CONTACTS_PAGE_SIZE)
         contacts_start = contacts_page * CONTACTS_PAGE_SIZE
         for c_row in contacts[contacts_start:contacts_start + CONTACTS_PAGE_SIZE]:
-            c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days, c_greeting, c_passthrough = c_row
+            c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days, c_greeting, c_passthrough, c_greeting_mode = c_row
             # Widget keys come from the stored contact itself, not from its position in the list: Streamlit keeps the
             # state of a key and ignores the new default values, so position-based keys showed the data of another
             # contact after an insertion. The key also changes when the stored row changes (e.g. the quick
@@ -2187,6 +2197,7 @@ with col2:
                     value=c_greeting or "",
                     key=f"edit_c_greeting_{ckey}"
                 )
+                edit_greeting_mode = contact_greeting_mode_widget(f"edit_c_gm_{ckey}", c_greeting_mode or "")
                 edit_passthrough = st.checkbox(
                     trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
                     value=bool(c_passthrough),
@@ -2202,9 +2213,9 @@ with col2:
                         if norm_new_num != c_num:
                             conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
                         conn_c.execute(
-                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (norm_new_num, edit_type, edit_prompt.strip(), edit_tag, edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days,
-                             edit_greeting.strip(), 1 if edit_passthrough else 0)
+                             edit_greeting.strip(), 1 if edit_passthrough else 0, edit_greeting_mode)
                         )
                         conn_c.commit()
                         conn_c.close()
@@ -2242,6 +2253,7 @@ with col2:
         contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="", help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT))
         prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"))
         new_greeting_c = st.text_area(trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"))
+        new_greeting_mode = contact_greeting_mode_widget("new_contact_gm")
         new_passthrough = st.checkbox(
             trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
             help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
@@ -2253,9 +2265,9 @@ with col2:
             norm_number = normalize_phone_pattern(phone_num)
             conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute(
-                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (norm_number, contact_type, prompt_rules.strip(), contact_tag, contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days,
-                 new_greeting_c.strip(), 1 if new_passthrough else 0)
+                 new_greeting_c.strip(), 1 if new_passthrough else 0, new_greeting_mode)
             )
             conn.commit()
             conn.close()
@@ -2916,9 +2928,15 @@ with col3:
     if new_prot_greet != current_prot_greet:
         set_config("protect_initial_greeting", "true" if new_prot_greet else "false")
         st.rerun()
+    st.caption(trans.get("protect_greeting_help", "Only for the Exact greeting style. The Adaptive style does not use it: it only ignores the first second and a half of line noise after answering."))
 
     db_checkbox(trans.get("live_long_calls_label", "Long calls: keep the AI session alive beyond Google's connection limits (recommended)"), "live_long_calls", "chk_live_long_calls", True)
-    st.caption(trans.get("live_long_calls_help", "Gemini Live closes each connection after about 10 minutes and each audio session after 15 minutes. With this on, the call continues over a new connection and the old context is compressed, so long hold times do not drop the call."))
+    st.caption(trans.get(
+        "live_long_calls_help",
+        "Google cuts the AI connection after about 10 minutes (and the audio session after 15). With this on, the call goes on over a new connection "
+        "and the old conversation is summarized, so a long call is not cut. With this off, the call is cut when Google closes the connection. "
+        "Whatever you choose, no call lasts more than {minutes} minutes."
+    ).replace("{minutes}", str(int(CALL_MAX_TOTAL_SECONDS // 60))))
 
     av1, av2 = st.columns(2)
     with av1:
