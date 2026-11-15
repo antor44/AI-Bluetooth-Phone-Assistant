@@ -154,6 +154,8 @@
   "ui_form_greeting_mode_help": "Only for whitelist rules. It replaces the general greeting style for this number or wildcard rule.",
   "ui_form_passthrough": "📱 Leave these calls to the phone (whitelist only)",
   "ui_form_passthrough_help": "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone. The phone is disconnected from the switchboard while the call lasts, so other calls are not handled by the switchboard meanwhile (the phone answers them). Every 20 seconds the switchboard reconnects the phone for a moment to check if the call is still going; during that moment the speakers of the switchboard are silenced so nothing is heard.",
+  "ui_cat_greeting_mode": "Greeting style for this category:",
+  "ui_cat_greeting_mode_help": "Replaces the general greeting style for callers of this category. The greeting is said before the caller speaks, so the category cannot come from the keywords of the current call: it is the category already known for the number (its tag) or the category of the last call of that number. Unknown callers get the general style. A style chosen in a whitelist rule wins over this one.",
   "ui_cat_greeting": "Greeting for this category (empty = the general greeting):",
   "greeting_mode_labels": {"exact": "Exact (word for word)", "adaptive": "Adaptive (natural, adapts to the caller)"},
   "ui_greeting_mode": "Greeting style:",
@@ -270,6 +272,9 @@
 
   "ui_whisper_base": "Base Model:",
   "ui_whisper_quant": "Quantization:",
+  "ui_cat_created": "Category '{name}' created. Fill in its fields below and save.",
+  "ui_cat_empty_name": "Type a name for the category first.",
+  "ui_cat_duplicate": "A category named '{name}' already exists.",
   "ui_cat_name": "Category Name:",
   "ui_cat_keywords": "Keywords (comma-separated):",
   "ui_cat_days": "Memory days:",
