@@ -154,6 +154,8 @@
   "ui_form_greeting_mode_help": "Solo para reglas de lista blanca. Sustituye al estilo de saludo general para este número o regla con comodín.",
   "ui_form_passthrough": "📱 Dejar estas llamadas al móvil (solo lista blanca)",
   "ui_form_passthrough_help": "La centralita no descuelga: la llamada suena en el móvil y, al descolgar tú, el audio se queda en el móvil. El móvil se desconecta de la centralita mientras dura la llamada, así que otras llamadas no las atiende la centralita en ese tiempo (las contesta el móvil). Cada 20 segundos la centralita reconecta el móvil un momento para comprobar si la llamada sigue; durante ese momento se silencian los altavoces de la centralita para que no se oiga nada.",
+  "ui_cat_greeting_mode": "Estilo de saludo para esta categoría:",
+  "ui_cat_greeting_mode_help": "Sustituye al estilo de saludo general para quienes llaman de esta categoría. El saludo se dice antes de que el llamante hable, así que la categoría no puede salir de las palabras clave de la llamada actual: es la categoría ya conocida del número (su etiqueta) o la de la última llamada de ese número. A los llamantes desconocidos se les aplica el estilo general. Un estilo elegido en una regla de lista blanca tiene prioridad sobre este.",
   "ui_cat_greeting": "Saludo para esta categoría (vacío = el saludo general):",
   "greeting_mode_labels": {"exact": "Exacto (palabra por palabra)", "adaptive": "Adaptativo (natural, se adapta a quien llama)"},
   "ui_greeting_mode": "Estilo del saludo:",
@@ -270,6 +272,9 @@
 
   "ui_whisper_base": "Modelo Base:",
   "ui_whisper_quant": "Cuantización:",
+  "ui_cat_created": "Categoría '{name}' creada. Rellena sus campos más abajo y guarda.",
+  "ui_cat_empty_name": "Escribe primero el nombre de la categoría.",
+  "ui_cat_duplicate": "Ya existe una categoría llamada '{name}'.",
   "ui_cat_name": "Nombre de la Categoría:",
   "ui_cat_keywords": "Palabras clave (separadas por coma):",
   "ui_cat_days": "Días de memoria:",
