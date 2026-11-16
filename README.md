@@ -196,6 +196,9 @@ The connection can be provided through Ethernet, Wi-Fi, or USB tethering from yo
 <a id="installation"></a>
 ## 🛠️ 3. Installation
 
+> 🆘 **Something is not working, or you are lost during the installation?**
+> Simply upload (or copy and paste) this very `README.md` file into an AI chat assistant such as Claude, ChatGPT or Google Gemini, describe your problem or paste the error message, and ask it to help you solve it.
+
 ### Automated Installation (Recommended for Xubuntu 24.04 PC & Orange Pi Zero 3 Armbian 24.04 XFCE)
 Clone the repository and run the automated dependency installer:
 
@@ -735,6 +738,15 @@ The battery is read from BlueZ when the phone reports an exact percentage, other
 
 <a id="personality-language"></a>
 ### 🧠 Assistant Personality, Tuning & Languages
+
+> 💡 **TIP: add a new language quickly with an AI assistant**
+> Upload this `README.md` together with the 3 JSON files (`assistant.json`, `gui.json` and `spam.json`) from one of the existing language folders (`en-US` or `es-ES`) to an AI chat assistant such as Claude, ChatGPT or Google Gemini, and ask it to translate them into the language you want, following the instructions in this README.
+>
+> Save the 3 resulting JSON files in a new subdirectory inside `languages/`, named after the new language code. For example: French (`fr-FR`), German (`de-DE`), Portuguese (`pt-PT`), Catalan (`ca-ES`) or British English (`en-GB`).
+>
+> You can also ask the AI to improve, modify or adapt the words and prompts in the JSON files to a particular regional slang or speaking style.
+>
+> **SPAM lookup servers:** ask the AI for the most widely used services, or those with the largest number database, for your country or region, and then test them yourself. A global or country-specific service may not work in another country, even when the base URL is valid.
 
 *   **Language & Accent:** The author is not a native English speaker. The prompts and default interactions were originally heavily tuned for **Spanish** and optimized for a personal assistant role handling specific edge cases. Since v2.6, each language file starts with a **voice and accent profile** and can define an explicit `speech_language_code` (BCP-47, e.g., `es-ES`) for use by other parts of the application. However, Gemini Live does not use this language code to determine the language it speaks. See [Voice & Language Configuration](#voice-language-config) below for further details. Accent drift cannot be fully eliminated with Gemini 3.8 Live; if it persists, try other voices in `voice_names`.
 *   **GUI Personality Changes:** You can radically change the secretary's personality through the GUI (e.g., by modifying its instructions, strictness, or tone), including on a per-phone-number basis. These are initial instructions for the Gemini Live AI, which are added to the default prompts. Keep in mind that significant personality changes may affect the reliability of structural commands. Additional instructions or personality changes may also affect the assistant's reliability and even alter its voice characteristics (e.g., causing it to switch from a female to a male voice). To avoid errors, write clear and concise instructions, avoid contradictory behavioral requirements, and stay away from ambiguous wording and gender-specific terms. Also, avoid describing the caller: their phone number is already available, so there is no need to provide additional information about them. Finally, test your instructions by making a call yourself from another mobile phone. If you are testing instructions configured for a specific phone number, make sure to configure that number with the same instructions first.
