@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 3.3
+Version: 3.4
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -66,8 +66,9 @@ import io
 import dbus
 import dbus.mainloop.glib
 from gi.repository import GLib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 from collections import Counter
 from google import genai
 from google.genai import types
@@ -204,8 +205,26 @@ def get_default_sink() -> str:
         return ""
 
 
-MODEL_LIVE = "gemini-3.8-live"
-MODEL_TRANSCRIBE_LIVE = "gemini-3.5-transcribe-live"   # Online real-time transcription of the caller (optional mode)
+DEFAULTS_FILE = os.path.join(BASE_DIR, "defaults.json")   # Initial values of the settings and names of the Google models: shared with gui.py, so whichever starts first creates the same database
+
+
+def load_defaults() -> Dict[str, Any]:
+    """Reads defaults.json. gui.py keeps a copy of this helper: keep them in sync."""
+    try:
+        with open(DEFAULTS_FILE, "r", encoding="utf-8") as defaults_file:
+            data = json.load(defaults_file)
+        if isinstance(data, dict) and data.get("settings") and data.get("models"):
+            return data
+    except (OSError, ValueError):
+        pass
+    print(f"Error: {DEFAULTS_FILE} is missing or unreadable (it holds the initial settings and the names of the Google models).", file=sys.stderr)
+    sys.exit(1)
+
+
+DEFAULTS = load_defaults()
+MODEL_CATALOG = DEFAULTS["models"]
+MODEL_LIVE = str(MODEL_CATALOG.get("live", {}).get("model", ""))                          # Real-time voice of the call
+MODEL_TRANSCRIBE_LIVE = str(MODEL_CATALOG.get("online_transcription", {}).get("model", ""))   # Online real-time transcription of the caller (optional mode)
 SPAM_SCORE_THRESHOLD = 65           # Risk score from which a call is tagged as SPAM
 # Texts saved in the call log that the Web GUI also recognizes (gui.py keeps a copy of both constants: keep them in sync).
 BLOCKED_SUMMARY_PREFIX = "Blocked by rule"                          # Summary of a call rejected by a Blacklist rule
@@ -218,16 +237,16 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "3.3"
-DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
+APP_VERSION = "3.4"
+DEFAULT_LANGUAGE = DEFAULTS["settings"]["language"]  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
 PLAYBACK_BYTES_PER_SECOND = 24000 * 2   # Gemini Live output: 24 kHz, 16-bit, mono PCM
 HANGUP_AUDIO_TAIL_SECONDS = 1.2         # Extra time after the estimated end of playback (PipeWire + Bluetooth SCO latency)
-DEFAULT_CALLER_GAIN = 1.5                 # Default caller microphone gain (x)
-DEFAULT_NOISE_GATE_BASE = 55             # Default base noise gate (RMS)
-DEFAULT_VAD_PREFIX_PADDING_MS = 450      # Default VAD prefix padding (ms)
-DEFAULT_VAD_SILENCE_DURATION_MS = 600    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
+DEFAULT_CALLER_GAIN = float(DEFAULTS["settings"]["caller_gain"])                 # Default caller microphone gain (x)
+DEFAULT_NOISE_GATE_BASE = int(DEFAULTS["settings"]["noise_gate_base"])             # Default base noise gate (RMS)
+DEFAULT_VAD_PREFIX_PADDING_MS = int(DEFAULTS["settings"]["vad_prefix_padding_ms"])      # Default VAD prefix padding (ms)
+DEFAULT_VAD_SILENCE_DURATION_MS = int(DEFAULTS["settings"]["vad_silence_duration_ms"])    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
 ASSISTANT_TURN_GAP_SECONDS = 4.0         # Output chunks closer than this belong to the same assistant turn (farewell detection)
 HOLD_ACCEPT_WINDOW_SECONDS = 25.0        # An assistant "I'll wait" phrase only starts a hold if the caller asked to wait this recently
 HOLD_RESUME_EXCHANGES = 2                # Caller turns dismissed during a hold but answered by the assistant that end the hold
@@ -247,6 +266,13 @@ HOLD_RENEW_WINDOW_SECONDS = 60.0         # The assistant's waiting phrases only 
 SEMANTIC_VOTE_TIMEOUT = 8.0              # Seconds to wait for the text-model opinion; without an answer there is simply no vote
 SEMANTIC_MIN_INTERVAL = 10.0             # Minimum seconds between two semantic checks of the same kind
 SEMANTIC_MAX_PER_CALL = 12               # Safety limit of semantic checks per call (cost)
+QUOTA_USAGE_KEY_PREFIX = "model_usage:"  # Settings key model_usage:<quota day>:<model> = requests made that day (gui.py reads it)
+QUOTA_STATE_KEY_PREFIX = "model_quota:"  # Settings key model_quota:<model> = JSON with the last quota error of that model (gui.py reads it)
+QUOTA_BLOCK_MIN_SECONDS = 5.0            # A quota error that asks for a shorter wait than this does not block the model
+SPAM_FILTER_LOOKUP_TIMEOUT_SECONDS = 12.0   # SPAM filter mode, unknown numbers left to the AI: longest wait for the SPAM verdict before answering
+SPAM_FILTER_UNKNOWN_CHOICES = ("phone", "ai")   # What the SPAM filter mode does with a number that is not in the contact list
+GREETING_PHASE_TURNS = 1                 # Assistant turns that must be over before an expression that is both a greeting and a farewell ("buenas noches") can count as a farewell
+SAFETY_CATEGORIES_OFF = ("HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")   # Phone calls can contain anything: the text model must analyze it anyway
 DB_WRITE_MIN_INTERVAL = 2.0              # Live transcript writes to SQLite are merged: at most one write per interval (fewer writes = longer SD / eMMC life)
 WHISPER_QUEUE_MAX = 8                    # Pending Whisper jobs per call; beyond this the oldest work is not worth waiting for
 HANGUP_STREAM_QUIET_SECONDS = 1.0       # No new audio from the model for this long before cutting the call
@@ -862,54 +888,18 @@ def ensure_database_exists(reset_runtime_state: bool = False) -> None:
         except sqlite3.OperationalError:
             pass
 
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('wait_seconds', '5')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('auto_block_spam', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_block_threshold', '70')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_cache_days', '7')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_model', 'medium')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_quant', '')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('software_echo_suppression', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'disabled')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'none')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', ?)", (DEFAULT_LANGUAGE,))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
-
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'priority')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_calls', '1')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_days', '30')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_chars', '2500')")
-
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_state', 'running')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_heartbeat', '0')")
-
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('caller_gain', ?)", (str(DEFAULT_CALLER_GAIN),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('noise_gate_base', ?)", (str(DEFAULT_NOISE_GATE_BASE),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_start_sensitivity', 'LOW')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_end_sensitivity', 'HIGH')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', ?)", (str(DEFAULT_VAD_PREFIX_PADDING_MS),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', ?)", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    for setting_key, setting_value in DEFAULTS["settings"].items():
+        c.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (setting_key, str(setting_value)))
     # One-time migration: the new default replaces the value stored by previous versions (INSERT OR IGNORE never overwrites it)
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('protect_initial_greeting', 'true')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('greeting_mode', 'exact')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('paused_calls_to_phone', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('live_long_calls', 'true')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_grace_seconds', '2.0')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('farewell_cancel_min_words', '3')")
-
-    c.execute(f"{runtime_insert} INTO settings VALUES ('daemon_state', 'running')")
+    # Values every start of the daemon sets again (state of the daemon and of the Tor service)
+    for setting_key, setting_value in DEFAULTS["runtime_settings"].items():
+        c.execute(f"{runtime_insert} INTO settings VALUES (?, ?)", (setting_key, str(setting_value)))
     c.execute(f"{runtime_insert} INTO settings VALUES ('daemon_heartbeat', ?)", (str(time.time()),))
 
-    # Remote access through a private Tor onion service (off unless the user enables it in the GUI)
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_enabled', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_gui_port', '8501')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('tor_notify_port', '8502')")
-    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_status', 'off')")
-    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_progress', '0')")
-    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_onion', '')")
-    c.execute(f"{runtime_insert} INTO settings VALUES ('tor_error', '')")
+    migrate_text_model_choice(conn)
 
     conn.commit()
     conn.close()
@@ -1171,6 +1161,177 @@ def increment_runtime_counter(key: str) -> int:
         current = 0
     set_runtime_setting(key, current + 1)
     return current + 1
+
+
+# =============================================================================
+# TEXT MODELS: CATALOG, REQUEST SETTINGS, DAILY COUNTERS AND QUOTA ERRORS
+# =============================================================================
+class ModelUnavailableError(Exception):
+    """The model is blocked until its quota is renewed: no request is sent."""
+
+
+def model_info(model_id: str) -> Dict[str, Any]:
+    """Catalog entry of a text model ({} when the model is not in defaults.json)."""
+    for option in MODEL_CATALOG.get("text", {}).get("options", []):
+        if option.get("id") == model_id:
+            return option
+    return {}
+
+
+def model_family(model_id: str) -> str:
+    """'gemini' or 'gemma'. Gemma answers JSON only when asked in the prompt and has no audio input."""
+    family = str(model_info(model_id).get("family", "")).lower()
+    if family:
+        return family
+    return "gemma" if "gemma" in model_id.lower() else "gemini"
+
+
+def default_text_model() -> str:
+    return str(MODEL_CATALOG.get("text", {}).get("default", ""))
+
+
+def build_text_config(model_id: str, json_schema: Optional[Dict[str, Any]] = None, permissive_safety: bool = False) -> Any:
+    """Request settings of every text-model call. No sampling parameters (temperature, top_p, top_k): Google ignores them
+    and the next models reject them. The thinking level comes from the catalog; models without one get no thinking settings."""
+    options: Dict[str, Any] = {}
+    gemini = model_family(model_id) != "gemma"
+    if gemini and json_schema is not None:
+        options["response_mime_type"] = "application/json"
+        options["response_json_schema"] = json_schema
+    if gemini and permissive_safety:
+        options["safety_settings"] = [types.SafetySetting(category=category, threshold="BLOCK_NONE") for category in SAFETY_CATEGORIES_OFF]
+    thinking_level = model_info(model_id).get("thinking_level")
+    if gemini and thinking_level:
+        options["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+    return types.GenerateContentConfig(**options)
+
+
+def quota_timezone() -> datetime.tzinfo:
+    """Time zone in which Google renews the daily quotas (defaults.json); UTC when the zone data is missing."""
+    try:
+        return ZoneInfo(str(MODEL_CATALOG.get("quota_reset_timezone", "UTC")))
+    except Exception:
+        return datetime.timezone.utc
+
+
+def quota_day_stamp(moment: Optional[float] = None) -> str:
+    return datetime.datetime.fromtimestamp(time.time() if moment is None else moment, quota_timezone()).strftime("%Y%m%d")
+
+
+def next_quota_reset_epoch(moment: Optional[float] = None) -> float:
+    now_local = datetime.datetime.fromtimestamp(time.time() if moment is None else moment, quota_timezone())
+    return (now_local + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+_USAGE_PRUNED_DAY = ""
+
+
+def count_model_request(model_id: str) -> None:
+    """Counts one request of the current quota day for the model (for the Live models: one session). The Web GUI shows the counters."""
+    global _USAGE_PRUNED_DAY
+    if not model_id:
+        return
+    day = quota_day_stamp()
+    increment_runtime_counter(f"{QUOTA_USAGE_KEY_PREFIX}{day}:{model_id}")
+    if _USAGE_PRUNED_DAY != day:
+        _USAGE_PRUNED_DAY = day
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            conn.execute("DELETE FROM settings WHERE key LIKE ? AND key NOT LIKE ?", (QUOTA_USAGE_KEY_PREFIX + "%", f"{QUOTA_USAGE_KEY_PREFIX}{day}:%"))
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            if conn:
+                conn.close()
+
+
+def parse_quota_error(error: BaseException) -> Optional[Dict[str, Any]]:
+    """Facts of a 'quota exceeded' (429) error, or None when the error is something else. Google puts the limit itself in the error."""
+    status = str(getattr(error, "status", "") or "")
+    if getattr(error, "code", None) != 429 and "RESOURCE_EXHAUSTED" not in status:
+        return None
+    payload = getattr(error, "details", None)
+    body = payload.get("error", payload) if isinstance(payload, dict) else {}
+    items = body.get("details", []) if isinstance(body, dict) else []
+    quota_id, limit, retry_seconds = "", "", 0.0
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for violation in item.get("violations", []) or []:
+            if isinstance(violation, dict):
+                quota_id = quota_id or str(violation.get("quotaId", ""))
+                limit = limit or str(violation.get("quotaValue", ""))
+        delay = re.match(r"^\s*([0-9.]+)\s*s\s*$", str(item.get("retryDelay", "")))
+        if delay:
+            retry_seconds = float(delay.group(1))
+    return {"quota_id": quota_id, "limit": limit, "retry_seconds": retry_seconds, "daily": "PerDay" in quota_id}
+
+
+def record_quota_error(model_id: str, error: BaseException) -> Optional[Dict[str, Any]]:
+    """Saves the quota error of a model (until when it is blocked, which limit it hit) for the next requests and for the Web GUI."""
+    facts = parse_quota_error(error)
+    if facts is None:
+        return None
+    now = time.time()
+    wait = facts["retry_seconds"]
+    if facts["daily"] and wait <= 0:
+        wait = next_quota_reset_epoch(now) - now
+    facts.update({"model": model_id, "at": now, "until": now + wait if wait >= QUOTA_BLOCK_MIN_SECONDS else 0.0})
+    set_runtime_setting(QUOTA_STATE_KEY_PREFIX + model_id, json.dumps(facts))
+    return facts
+
+
+def describe_model_error(error: BaseException) -> str:
+    """Short text of a model error for the console (the quota errors of Google are very long)."""
+    facts = parse_quota_error(error)
+    if facts is None:
+        return f"{type(error).__name__}: {error}"
+    limit = f" (limit {facts['limit']})" if facts["limit"] else ""
+    renewed = ""
+    if facts["retry_seconds"] > 0 or facts["daily"]:
+        wait = facts["retry_seconds"] if facts["retry_seconds"] > 0 else next_quota_reset_epoch() - time.time()
+        renewed = f", available again at {datetime.datetime.fromtimestamp(time.time() + wait).strftime('%H:%M')}"
+    return f"{'daily' if facts['daily'] else 'per-minute'} quota exceeded{limit}{renewed}"
+
+
+def model_blocked_until(model_id: str) -> float:
+    raw = get_config(QUOTA_STATE_KEY_PREFIX + model_id, "")
+    try:
+        return float(json.loads(raw).get("until", 0.0)) if raw else 0.0
+    except (ValueError, AttributeError, TypeError):
+        return 0.0
+
+
+def model_is_blocked(model_id: str) -> bool:
+    return model_blocked_until(model_id) > time.time()
+
+
+def generate_text_sync(client: Any, model_id: str, contents: Any, config: Any) -> Any:
+    """The only way the program sends a request to a text model: it is not sent while the model is blocked by a quota error,
+    it is counted for the daily counters, and a quota error is recorded."""
+    if model_is_blocked(model_id):
+        raise ModelUnavailableError(model_id)
+    count_model_request(model_id)
+    try:
+        return client.models.generate_content(model=model_id, contents=contents, config=config)
+    except Exception as error:
+        record_quota_error(model_id, error)
+        raise
+
+
+def migrate_text_model_choice(conn: sqlite3.Connection) -> None:
+    """A saved text model that is no longer in defaults.json is replaced by the default. The old name is kept (key
+    text_model_migrated_from) so the Web GUI can tell the user once."""
+    options = [str(option.get("id", "")) for option in MODEL_CATALOG.get("text", {}).get("options", [])]
+    new_default = default_text_model()
+    if not options or not new_default:
+        return
+    for key, value in conn.execute("SELECT key, value FROM settings WHERE key = 'text_model' OR key LIKE '%\\_text\\_model' ESCAPE '\\'").fetchall():
+        if value not in options:
+            conn.execute("UPDATE settings SET value=? WHERE key=?", (new_default, key))
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('text_model_migrated_from', ?)", (value,))
 
 
 # =============================================================================
@@ -1439,6 +1600,7 @@ class OnlineTranscriber:
             try:
                 async with owner.client_live.aio.live.connect(model=MODEL_TRANSCRIBE_LIVE, config=self._build_config(codes)) as session:
                     self.sessions += 1
+                    count_model_request(MODEL_TRANSCRIBE_LIVE)
                     owner.dbg.log("online_connect", model=MODEL_TRANSCRIBE_LIVE, language_codes=codes, vocabulary=self.vocabulary, session=self.sessions)
                     print(f"{_C_MUTED}[{get_timestamp()}] [Online] Transcription session {self.sessions} open (language: {codes or 'auto'}){_R}", flush=True)
                     self._rx = asyncio.create_task(self._receive(session))
@@ -1456,6 +1618,7 @@ class OnlineTranscriber:
                 raise
             except Exception as e:
                 failures += 1
+                record_quota_error(MODEL_TRANSCRIBE_LIVE, e)
                 owner.dbg.log("online_error", error=repr(e), failures=failures, language_codes=codes)
                 print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Online] Transcription session failed ({failures}/{self.MAX_FAILURES}): {e}{_R}", flush=True)
                 if codes and failures == 1:
@@ -2191,7 +2354,6 @@ def extract_response_text(response, default: str = "{}") -> str:
 class PolicyDecision:
     status: str
     reason: str
-    safe_args: Dict[str, Any] = field(default_factory=dict)
 
 
 class CallPolicyEngine:
@@ -2202,25 +2364,24 @@ class CallPolicyEngine:
 
     def evaluate(self, tool_call: Dict[str, Any], call_json: Dict[str, Any], cut_words: List[str]) -> PolicyDecision:
         name = tool_call.get("name")
-        args = tool_call.get("args", {})
 
         if name == "hangup":
             if self.parent and (getattr(self.parent, "hanging_up", False) or getattr(self.parent, "forced_goodbye_active", False)):
-                return PolicyDecision("allow", "Forced closure sequence active", args)
+                return PolicyDecision("allow", "Forced closure sequence active")
             if self.parent and getattr(self.parent, "on_hold", False):
                 full_history = getattr(self.parent, "accumulated_transcript", "").lower()
                 response_text = call_json.get("response_text", "").lower()
                 if any(p in full_history[-300:] or p in response_text for p in cut_words):
-                    return PolicyDecision("allow", "Legitimate hold interruption with goodbye", args)
+                    return PolicyDecision("allow", "Legitimate hold interruption with goodbye")
                 return PolicyDecision("deny", "Cannot hang up while on hold without prior notice.")
-            return PolicyDecision("allow", "Call closure requested", args)
+            return PolicyDecision("allow", "Call closure requested")
 
         if name == "save_message":
             if call_json.get("private_data_requested"):
                 return PolicyDecision("deny", "Attempting to retrieve private data")
-            return PolicyDecision("allow", "Message saved safely", args)
+            return PolicyDecision("allow", "Message saved safely")
 
-        return PolicyDecision("confirm", "Requires user confirmation", args)
+        return PolicyDecision("confirm", "Requires user confirmation")
 
 
 class PhoneAssistant:
@@ -2281,6 +2442,7 @@ class PhoneAssistant:
         self._in_angle_tag = False
 
         self.hello_question_sent = False
+        self.assistant_turns_done = 0                            # Finished assistant turns (the first one is the greeting)
         self.hangup_triggered = False
         self.hangup_triggered_time = 0.0
         self.hangup_reason = "completed"
@@ -2325,6 +2487,7 @@ class PhoneAssistant:
         self.greeting_phrase = ""                                # Greeting text chosen for this call (number > category > general)
         self.greeting_phrase_source = "global"
         self.passthrough_active = False                          # True while a call is being left to the phone
+        self.spam_filter_active = False                          # True when the SPAM filter mode decides this call (a late SPAM verdict still hangs it up)
         self.greeting_points_pending = False                     # Adaptive greeting: its essential points were not confirmed as said yet
         self.greeting_interrupted_time = 0.0                     # When the caller cut the adaptive greeting (0 = not cut)
         self._caller_spoke_since_intent = False   # a caller turn arrived after the goodbye / hangup request
@@ -2454,7 +2617,8 @@ class PhoneAssistant:
         w_quant = get_config("whisper_quant", "")
         self.whisper_full_model = f"{w_model}{w_quant}"
 
-        self.model_text = get_config("text_model", "gemini-3-flash-preview")
+        self.model_text = get_config("text_model", default_text_model())
+        self.analysis_failed = False                             # True when the text model could not analyze the call (quota, network)
 
         recordings_dir = os.path.join(BASE_DIR, "recordings")
         os.makedirs(recordings_dir, exist_ok=True)
@@ -2684,6 +2848,9 @@ class PhoneAssistant:
                 except Exception:
                     pass
 
+        if model_is_blocked(self.model_text):
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] The text model reached its quota: {self.caller_number} is not checked.{_R}")
+            return False
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[SpamCheck] AI evaluating {self.caller_number} (Normalized: {self.national_number}) across databases...{_R}")
 
         providers_json = get_config("spam_providers", "")
@@ -2704,6 +2871,7 @@ class PhoneAssistant:
 
         highest_score = 0
         best_reason = "No negative reports found"
+        analyzed_any = False   # True once the text model has really analyzed one provider page: only then the result is remembered
 
         async with aiohttp.ClientSession() as http_session:
             for url_template in providers:
@@ -2719,21 +2887,15 @@ class PhoneAssistant:
                         print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] Empty/JS-blocked response ({len(clean_text)} chars) from {url}{_R}")
                         continue
 
-                    is_gemma = "gemma" in self.model_text.lower()
+                    is_gemma = model_family(self.model_text) == "gemma"
                     if is_gemma:
                         prompt = (
                             f"Analyze user comments from a spam-lookup website for number {self.national_number} and output a JSON object.\n\n"
                             f"SCHEMA:\n{{\"is_spam\": boolean, \"risk_score\": integer, \"reason\": string}}\n\n"
                             f"TEXT:\n{clean_text}\n\nJSON:\n"
                         )
-                        config = types.GenerateContentConfig(temperature=0.0)
+                        config = build_text_config(self.model_text)
                     else:
-                        safety_settings = [
-                            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")
-                        ]
                         prompt = (
                             f"Analyze this raw text extracted from a phone number lookup website for the number {self.national_number}.\n\n"
                             f"EVALUATION RULES:\n"
@@ -2745,27 +2907,17 @@ class PhoneAssistant:
                             f"RAW TEXT TO ANALYZE:\n{clean_text}\n\n"
                             f"Based strictly on actual user reports for THIS number, return the JSON."
                         )
-                        config = types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_json_schema=schema,
-                            temperature=0.0,
-                            safety_settings=safety_settings,
-                            thinking_config=types.ThinkingConfig(thinking_budget=0)
-                        )
+                        config = build_text_config(self.model_text, schema, permissive_safety=True)
 
                     buf = io.StringIO()
                     with contextlib.redirect_stderr(buf):
-                        response = await asyncio.to_thread(
-                            self.client_text.models.generate_content,
-                            model=self.model_text,
-                            contents=prompt,
-                            config=config
-                        )
+                        response = await asyncio.to_thread(generate_text_sync, self.client_text, self.model_text, prompt, config)
 
                     text_part = extract_response_text(response, default="{}")
                     cleaned_text = clean_json_text(text_part)
                     try:
                         data = json.loads(cleaned_text)
+                        analyzed_any = True
                     except (json.JSONDecodeError, TypeError):
                         data = {"is_spam": False, "risk_score": 0}
 
@@ -2787,11 +2939,20 @@ class PhoneAssistant:
                         return True
                     else:
                         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[SpamCheck] Clean on {url} (Score: {score}){_R}")
+                except ModelUnavailableError:
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] The text model reached its quota: the number could not be analyzed.{_R}")
+                    break
                 except Exception as e:
-                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] Provider error ({url}): {e}{_R}")
+                    print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] Provider error ({url}): {describe_model_error(e)}{_R}")
+                    if parse_quota_error(e) is not None:
+                        break   # The next provider would hit the same limit
 
         self.network_spam_score = highest_score
-        self._save_spam_cache(cache_key, False, highest_score, best_reason)
+        if analyzed_any:
+            self._save_spam_cache(cache_key, False, highest_score, best_reason)
+        else:
+            # Nothing was analyzed (quota, network, blocked page): "clean" must not be remembered for days
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamCheck] No page could be analyzed: the number is not remembered as clean.{_R}")
         return False
 
     @staticmethod
@@ -3487,8 +3648,7 @@ class PhoneAssistant:
         prompt = header.format(context=context) + question
         started = time.time()
         try:
-            config = types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=schema, temperature=0.0,
-                                                 thinking_config=types.ThinkingConfig(thinking_budget=0))
+            config = build_text_config(self.model_text, schema)
             response = None
             for attempt in (1, 2):
                 remaining = SEMANTIC_VOTE_TIMEOUT - (time.time() - started)
@@ -3496,13 +3656,14 @@ class PhoneAssistant:
                     raise asyncio.TimeoutError()
                 try:
                     response = await asyncio.wait_for(
-                        asyncio.to_thread(self.client_text.models.generate_content, model=self.model_text, contents=prompt, config=config),
+                        asyncio.to_thread(generate_text_sync, self.client_text, self.model_text, prompt, config),
                         timeout=remaining)
                     break
                 except asyncio.TimeoutError:
                     raise
                 except Exception as transient:
-                    if attempt == 2:
+                    # A quota error is not a passing failure: asking again only wastes requests
+                    if attempt == 2 or isinstance(transient, ModelUnavailableError) or parse_quota_error(transient) is not None:
                         raise
                     self.dbg.log("semantic_vote_retry", kind=kind, error=repr(transient))
                     await asyncio.sleep(0.6)
@@ -3511,9 +3672,13 @@ class PhoneAssistant:
             self.dbg.log("semantic_vote", kind=kind, answer=answer, reason=data.get("reason"), ms=int((time.time() - started) * 1000), context=context)
             print(f"{_C_MUTED}[{get_timestamp()}] [Semantic] {kind}: {answer} ({data.get('reason', '')}){_R}", flush=True)
             return True if answer == "yes" else (False if answer == "no" else None)
+        except ModelUnavailableError:
+            self.dbg.log("semantic_vote_skipped", kind=kind, reason="the text model is blocked by its quota")
+            print(f"{_C_MUTED}[{get_timestamp()}] [Semantic] {kind}: skipped (the text model reached its quota){_R}", flush=True)
+            return None
         except Exception as e:
             self.dbg.log("semantic_vote_error", kind=kind, error=repr(e), ms=int((time.time() - started) * 1000))
-            print(f"{_C_MUTED}[{get_timestamp()}] [Semantic] {kind}: no answer ({type(e).__name__}: {e}){_R}", flush=True)
+            print(f"{_C_MUTED}[{get_timestamp()}] [Semantic] {kind}: no answer ({describe_model_error(e)}){_R}", flush=True)
             return None
 
     async def _semantic_resolve_blocked_hold(self) -> None:
@@ -4054,7 +4219,7 @@ class PhoneAssistant:
         except (KeyError, ValueError):
             instruction = raw_instruction
 
-        is_gemma = "gemma" in self.model_text.lower()
+        is_gemma = model_family(self.model_text) == "gemma"
 
         if is_gemma:
             prompt = (
@@ -4062,27 +4227,15 @@ class PhoneAssistant:
                 f"OUTPUT MUST BE STRICTLY A JSON OBJECT CONFORMING TO THIS SCHEMA:\n{json.dumps(OUTPUT_SCHEMA, indent=2)}\n\n"
                 f"TRANSCRIPT:\n{complete_transcript}\n\nJSON:\n"
             )
-            config = types.GenerateContentConfig(temperature=0.0)
+            config = build_text_config(self.model_text)
         else:
-            safety_settings = [
-                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE")
-            ]
             prompt = f"{instruction}\nTRANSCRIPT:\n{complete_transcript}"
-            config = types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=OUTPUT_SCHEMA,
-                temperature=0.0,
-                safety_settings=safety_settings,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)
-            )
+            config = build_text_config(self.model_text, OUTPUT_SCHEMA, permissive_safety=True)
 
         try:
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                response = self.client_text.models.generate_content(model=self.model_text, contents=prompt, config=config)
+                response = generate_text_sync(self.client_text, self.model_text, prompt, config)
 
             text_part = extract_response_text(response, default="{}")
             cleaned_text = clean_json_text(text_part)
@@ -4090,7 +4243,9 @@ class PhoneAssistant:
 
             if "caller_type" in parsed and "risk_score" in parsed:
                 self.last_call_json = parsed
-        except Exception:
+        except Exception as analysis_error:
+            self.analysis_failed = True
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Post-Processing] The call analysis could not be made: {describe_model_error(analysis_error)}{_R}")
             self.last_call_json = {
                 "caller_type": "unknown", "risk_score": 0, "insult_detected": False,
                 "private_data_requested": False, "caller_name": "", "company": "",
@@ -4102,8 +4257,20 @@ class PhoneAssistant:
 
     def _is_farewell(self, text: str, fuzzy: bool = False) -> bool:
         """True when the text holds a real farewell (farewell word neither denied nor merely mentioned).
-        fuzzy=True tolerates recognition errors and is only for caller speech."""
-        return find_farewell(text, self.words_data.get("cut_words", []), self.words_data.get("goodbye_veto_words", []), self.words_data.get("goodbye_meta_words", []), fuzzy and self.fuzzy_keywords)
+        fuzzy=True tolerates recognition errors and is only for caller speech.
+
+        The expressions of words.greeting_farewell_words ("buenas noches") are both a greeting and a farewell. They count as a
+        farewell only after the greeting phase (GREETING_PHASE_TURNS finished assistant turns) and when the text does not go on
+        with a question: "Buenas noches. Soy una asistente... ¿En qué le puedo ayudar?" is a greeting."""
+        veto_words = self.words_data.get("goodbye_veto_words", [])
+        meta_words = self.words_data.get("goodbye_meta_words", [])
+        fuzzy_on = fuzzy and self.fuzzy_keywords
+        if find_farewell(text, self.words_data.get("cut_words", []), veto_words, meta_words, fuzzy_on):
+            return True
+        ambiguous_words = self.words_data.get("greeting_farewell_words", [])
+        if ambiguous_words and self.assistant_turns_done >= GREETING_PHASE_TURNS and not re.search(r"[?¿]", text):
+            return find_farewell(text, ambiguous_words, veto_words, meta_words, fuzzy_on)
+        return False
 
     def _cancel_pending_farewell(self, reason: str) -> None:
         self.dbg.log("farewell", action="cancel", reason=reason, state=self._state_snapshot())
@@ -4296,11 +4463,14 @@ class PhoneAssistant:
         last_error: Optional[BaseException] = None
         for attempt in range(1, LIVE_CONNECT_ATTEMPTS + 1):
             try:
-                return await stack.enter_async_context(self.client_live.aio.live.connect(model=MODEL_LIVE, config=config))
+                live_session = await stack.enter_async_context(self.client_live.aio.live.connect(model=MODEL_LIVE, config=config))
+                count_model_request(MODEL_LIVE)
+                return live_session
             except asyncio.CancelledError:
                 raise
             except Exception as connect_error:
                 last_error = connect_error
+                record_quota_error(MODEL_LIVE, connect_error)
                 print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Live] Could not open the Gemini Live connection (try {attempt} of {LIVE_CONNECT_ATTEMPTS}): {connect_error}{_R}", flush=True)
                 if attempt < LIVE_CONNECT_ATTEMPTS:
                     await asyncio.sleep(LIVE_CONNECT_RETRY_SECONDS)
@@ -4450,13 +4620,15 @@ class PhoneAssistant:
         except Exception:
             return ""
 
-    async def run_phone_passthrough(self, reason: str, contact_match: Optional[Dict[str, Any]] = None) -> None:
+    async def run_phone_passthrough(self, reason: str, contact_match: Optional[Dict[str, Any]] = None, spam_task: Optional["asyncio.Task[bool]"] = None) -> None:
         """The switchboard does NOT answer this call: it keeps ringing on the phone and, when the owner picks it up, its audio
         stays on the phone. The hands-free control link stays up the whole time, so the call can be followed until it ends; only
         the call audio is released: a moment after the call is answered, the audio card of the phone is switched off. That closes
         the audio channel and the phone keeps the sound. (Releasing it while the call still rings does not work: the call is
         then left without sound on the phone.)
-        reason is 'contact' (whitelist rule with 'phone only') or 'paused' (switchboard paused with the option on)."""
+        reason is 'contact' (whitelist rule with 'phone only' or SPAM filter mode), 'paused' (switchboard paused with the option on)
+        or 'spam_filter' (SPAM filter mode, number not in the contact list). With a spam_task the SPAM check runs while the call
+        rings: if the number turns out to be SPAM and nobody has answered yet, the call is hung up."""
         self._post_processed = True   # There is nothing to analyze after this call
         self.running = True
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Passthrough] Call from {self.caller_number} stays on the phone ({reason}). The switchboard does not answer it.{_R}")
@@ -4473,11 +4645,14 @@ class PhoneAssistant:
         next_release_try = 0.0
         next_profile_check = 0.0
         gone_since: Optional[float] = None   # Since when the call is not listed any more
+        spam_verdict_handled = spam_task is None
         try:
             await loop.run_in_executor(None, speakers.engage)
             speakers_silenced = True
             if reason == "contact" and contact_match is not None:
                 self._save_passthrough_record(contact_match)
+            elif reason == "spam_filter":
+                self._save_passthrough_record(None)
 
             # self.running is cleared by the D-Bus listener as soon as oFono reports that the call is gone
             while time.time() < deadline and self.running:
@@ -4491,6 +4666,19 @@ class PhoneAssistant:
                         break
                     continue
                 gone_since = None
+
+                if not spam_verdict_handled and spam_task is not None and spam_task.done():
+                    spam_verdict_handled = True
+                    try:
+                        spam_flagged = bool(spam_task.result())
+                    except Exception:
+                        spam_flagged = False
+                    if spam_flagged and answered_at is None and call_state != "active":
+                        self._reject_spam_call()
+                        continue
+                    if spam_flagged:
+                        answered_message = str(self.assistant_data.get("spam_filter_answered_message", "SPAM suspected (risk {score}), but the call was answered on the phone.")).replace("{score}", str(self.network_spam_score))
+                        self._mark_call_record(self.labels_data.get("spam", "SPAM"), f"⚠️ [{get_timestamp()}]: [SYSTEM]: {answered_message}", answered_message)
 
                 if call_state == "active" and answered_at is None:
                     answered_at = now
@@ -4535,10 +4723,14 @@ class PhoneAssistant:
             self.running = False
             self.passthrough_active = False
 
-    def _save_passthrough_record(self, contact_match: Dict[str, Any]) -> None:
-        """Adds the call left to the phone to the call log."""
+    def _save_passthrough_record(self, contact_match: Optional[Dict[str, Any]]) -> None:
+        """Adds the call left to the phone to the call log (contact_match None: SPAM filter mode, number not in the contact list)."""
         label = self.labels_data.get("passthrough", "📱 ON THE PHONE")
-        message = str(self.assistant_data.get("passthrough_message", "Call left to the phone: the switchboard did not answer it ({pattern}).")).replace("{pattern}", str(contact_match.get("pattern", "")))
+        contact_match = contact_match or {}
+        if contact_match:
+            message = str(self.assistant_data.get("passthrough_message", "Call left to the phone: the switchboard did not answer it ({pattern}).")).replace("{pattern}", str(contact_match.get("pattern", "")))
+        else:
+            message = str(self.assistant_data.get("spam_filter_phone_message", "Call left to the phone: SPAM filter mode, the number is not in the contact list."))
         self.create_call_record_db(initial_tag=label, initial_transcript=f"📱 [{get_timestamp()}]: [SYSTEM]: {message}",
                                    audio_path_val="", base_tag=label, base_client_name="")
         conn = None
@@ -4709,7 +4901,7 @@ class PhoneAssistant:
             if getattr(msg, "tool_call", None):
                 function_responses = []
                 for fc in msg.tool_call.function_calls:
-                    decision = self.policy_engine.evaluate({"name": fc.name, "args": dict(fc.args)}, self.last_call_json, self.words_data.get("cut_words", []))
+                    decision = self.policy_engine.evaluate({"name": fc.name, "args": dict(fc.args)}, self.last_call_json, self.words_data.get("cut_words", []) + self.words_data.get("greeting_farewell_words", []))
                     self.dbg.log("tool_call", name=fc.name, args=dict(fc.args), decision=decision.status, reason=getattr(decision, "reason", ""), state=self._state_snapshot())
                     if decision.status == "allow":
                         if fc.name == "hangup":
@@ -4738,6 +4930,8 @@ class PhoneAssistant:
                 for _event_flag in ("turn_complete", "generation_complete"):
                     if getattr(sc, _event_flag, False):
                         self.dbg.log(_event_flag)
+                if getattr(sc, "turn_complete", False):
+                    self.assistant_turns_done += 1
                 if getattr(sc, "turn_complete", False) and self.greeting_points_pending:
                     await self._check_greeting_points(session)
                 itx = getattr(sc, "input_transcription", None)
@@ -5031,12 +5225,7 @@ class PhoneAssistant:
         try:
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                resp = await asyncio.to_thread(
-                    self.client_text.models.generate_content,
-                    model=self.model_text,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(temperature=0.1)
-                )
+                resp = await asyncio.to_thread(generate_text_sync, self.client_text, self.model_text, prompt, build_text_config(self.model_text))
             return extract_response_text(resp, default=self.accumulated_transcript)
         except Exception:
             return self.accumulated_transcript
@@ -5054,12 +5243,8 @@ class PhoneAssistant:
             prompt = template.replace("{lang}", self.current_lang).replace("{live_transcript}", self.accumulated_transcript)
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
-                resp = await asyncio.to_thread(
-                    self.client_text.models.generate_content,
-                    model=model_to_use,
-                    contents=[types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime), prompt],
-                    config=types.GenerateContentConfig(temperature=0.1)
-                )
+                resp = await asyncio.to_thread(generate_text_sync, self.client_text, model_to_use,
+                                               [types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime), prompt], build_text_config(model_to_use))
             return extract_response_text(resp, default=self.accumulated_transcript)
         except Exception:
             return self.accumulated_transcript
@@ -5146,6 +5331,8 @@ class PhoneAssistant:
         caller_type = self.last_call_json.get("caller_type", "unknown")
         max_spam_score = max(self.last_call_json.get("risk_score", 0), self.network_spam_score)
         call_summary = str(self.last_call_json.get("summary", "") or "").strip()
+        if self.analysis_failed and not call_summary:
+            call_summary = str(self.assistant_data.get("analysis_unavailable_message", "")).strip()
 
         if self.final_transcription_mode == "whisper_final" and os.path.exists(self.client_recording_path):
             print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running Whisper.cpp on caller audio...{_R}")
@@ -5161,11 +5348,12 @@ class PhoneAssistant:
                 final_trans = normalize_end_of_call_labels(await self.correct_transcript_with_whisper(raw_whisper),
                                                            f"Whisper.cpp {self.whisper_full_model} (end of call)")
         elif self.final_transcription_mode == "gemini_final" and os.path.exists(self.client_recording_path):
-            if "gemma" in self.model_text.lower():
-                print(f"{_C_WARN}[Post-Processing] Gemma models do not support native audio parsing. Falling back to gemini-3-flash-preview...{_R}")
+            if model_family(self.model_text) == "gemma":
+                audio_model = next((str(option["id"]) for option in MODEL_CATALOG.get("text", {}).get("options", []) if option.get("audio")), default_text_model())
+                print(f"{_C_WARN}[Post-Processing] Gemma models do not support native audio parsing. Falling back to {audio_model}...{_R}")
                 final_trans = normalize_end_of_call_labels(
-                    await self.correct_transcript_with_gemini_audio(self.client_recording_path, model_override="gemini-3-flash-preview"),
-                    "gemini-3-flash-preview (end of call)")
+                    await self.correct_transcript_with_gemini_audio(self.client_recording_path, model_override=audio_model),
+                    f"{audio_model} (end of call)")
             else:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running {self.model_text} Audio alignment...{_R}")
                 final_trans = normalize_end_of_call_labels(await self.correct_transcript_with_gemini_audio(self.client_recording_path),
@@ -5229,7 +5417,81 @@ class PhoneAssistant:
             blocks.append(f"{header}\n{rule_text}")
         return "\n\n".join(blocks)
 
-    async def run(self) -> None:
+    def _reject_blacklisted_call(self, contact_match: Dict[str, Any]) -> None:
+        """A Blacklist rule matched: the call is logged and rejected."""
+        blocked_tag = contact_match["tag"] or self.labels_data.get("blocked", "🚫 BLACKLISTED")
+        blocked_msg = f"❌ [{get_timestamp()}]: [SYSTEM]: Call automatically rejected by Blacklist rule ({contact_match['pattern']})."
+        self.create_call_record_db(initial_tag=blocked_tag, initial_transcript=blocked_msg, audio_path_val="",
+                                   base_tag=self.labels_data.get("general", "GENERAL"), base_client_name="")
+        if contact_match.get("note"):
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            conn.execute("UPDATE calls SET client_name=?, summary=? WHERE id=?", (contact_match["note"], f"{BLOCKED_SUMMARY_PREFIX} {contact_match['pattern']}", self.call_id))
+            conn.commit()
+            conn.close()
+        self._post_processed = True
+        print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Blacklist] {self.caller_number} matched '{contact_match['pattern']}'. Logged and rejected.{_R}")
+        self.hangup_call()
+
+    def _mark_call_record(self, tag: str, transcript: str, summary: str) -> None:
+        """Rewrites label, transcript and summary of this call's record (SPAM filter mode decisions)."""
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+            conn.execute("UPDATE calls SET tag=?, base_tag=?, transcript=?, summary=?, spam_score=? WHERE id=?",
+                         (tag, tag, transcript, summary, int(self.network_spam_score or 0), self.call_id))
+            conn.commit()
+        except Exception as db_error:
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamFilter] Could not update the call record: {db_error}{_R}")
+        finally:
+            if conn:
+                conn.close()
+        self.accumulated_transcript = transcript
+
+    def _reject_spam_call(self) -> None:
+        """SPAM filter mode: the number was flagged as SPAM. The call is rejected and its record says so."""
+        message = str(self.assistant_data.get("spam_filter_rejected_message", "Call rejected: the SPAM filter flagged the number (risk {score}).")).replace("{score}", str(self.network_spam_score))
+        self._mark_call_record(self.labels_data.get("spam", "SPAM"), f"❌ [{get_timestamp()}]: [SYSTEM]: {message}", message)
+        self._post_processed = True
+        print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[SpamFilter] {self.caller_number} is SPAM (risk {self.network_spam_score}). Logged and rejected.{_R}")
+        self.hangup_call()
+
+    async def _wait_spam_verdict(self, spam_task: "asyncio.Task[bool]") -> bool:
+        """Waits (while the call keeps ringing) for the SPAM verdict. No answer in time counts as 'not SPAM'; the check goes on
+        and, if it ends as SPAM, the call is still hung up later (see monitor_spam)."""
+        deadline = time.time() + SPAM_FILTER_LOOKUP_TIMEOUT_SECONDS
+        while self.running and not spam_task.done() and time.time() < deadline:
+            await asyncio.sleep(0.1)
+        if not spam_task.done():
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamFilter] No SPAM verdict after {SPAM_FILTER_LOOKUP_TIMEOUT_SECONDS:g} s: the call goes on.{_R}")
+            return False
+        try:
+            return bool(spam_task.result())
+        except Exception:
+            return False
+
+    async def run_spam_filter(self) -> None:
+        """SPAM filter mode. Blacklist rules reject the call as always. Every number of the contact list (whitelist) and, by
+        default, every unknown number stays on the phone; the SPAM check runs meanwhile and, if the number is SPAM and the call
+        has not been answered yet, it is hung up. With the setting 'ai' the unknown numbers are answered by the AI instead (after
+        the SPAM verdict). The other settings of the assistant (greetings, categories, memory, whitelist options) do not apply."""
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Caller] Raw: '{self.caller_number}' | Normalized: '{self.national_number}' (SPAM filter mode){_R}")
+        contact_match = match_contact_rule(self.caller_number, self.spam_data)
+        if contact_match:
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[ContactMatch] Matched pattern '{contact_match['pattern']}' ({contact_match['type'].upper()}){_R}")
+            if contact_match["type"] == "blacklist":
+                self._reject_blacklisted_call(contact_match)
+                return
+            await self.run_phone_passthrough("contact", contact_match)
+            return
+        unknown_action = get_config("spam_filter_unknown", SPAM_FILTER_UNKNOWN_CHOICES[0])
+        if unknown_action == "ai":
+            await self.run(spam_filter=True)
+            return
+        self.spam_filter_active = True
+        spam_task = asyncio.create_task(self.check_network_spam(is_whitelisted=False))
+        await self.run_phone_passthrough("spam_filter", spam_task=spam_task)
+
+    async def run(self, spam_filter: bool = False) -> None:
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Caller] Raw: '{self.caller_number}' | Normalized: '{self.national_number}'{_R}")
 
         contact_match = match_contact_rule(self.caller_number, self.spam_data)
@@ -5240,18 +5502,7 @@ class PhoneAssistant:
             )
 
         if contact_match and contact_match["type"] == "blacklist":
-            blocked_tag = contact_match["tag"] or self.labels_data.get("blocked", "🚫 BLACKLISTED")
-            blocked_msg = f"❌ [{get_timestamp()}]: [SYSTEM]: Call automatically rejected by Blacklist rule ({contact_match['pattern']})."
-            self.create_call_record_db(initial_tag=blocked_tag, initial_transcript=blocked_msg, audio_path_val="",
-                                       base_tag=self.labels_data.get("general", "GENERAL"), base_client_name="")
-            if contact_match.get("note"):
-                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                conn.execute("UPDATE calls SET client_name=?, summary=? WHERE id=?", (contact_match["note"], f"{BLOCKED_SUMMARY_PREFIX} {contact_match['pattern']}", self.call_id))
-                conn.commit()
-                conn.close()
-            self._post_processed = True
-            print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Blacklist] {self.caller_number} matched '{contact_match['pattern']}'. Logged and rejected.{_R}")
-            self.hangup_call()
+            self._reject_blacklisted_call(contact_match)
             return
 
         if contact_match and contact_match["type"] == "whitelist" and contact_match.get("phone_passthrough"):
@@ -5267,6 +5518,12 @@ class PhoneAssistant:
         self.recording_buffer_wav = bytearray()
         self.caller_recording_buffer = []
 
+        early_spam_task: Optional["asyncio.Task[bool]"] = None
+        if spam_filter:
+            # SPAM filter mode with unknown numbers left to the AI: the check starts while the call rings
+            self.spam_filter_active = True
+            early_spam_task = asyncio.create_task(self.check_network_spam(is_whitelisted=False))
+
         delay = int(get_config("wait_seconds", "5"))
         if delay > 0 and self.running:
             print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Delay] Waiting {delay}s before answering...{_R}")
@@ -5278,6 +5535,14 @@ class PhoneAssistant:
         if not self.running:
             print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Delay] Call aborted by caller before answering.{_R}")
             return
+
+        if early_spam_task is not None:
+            if await self._wait_spam_verdict(early_spam_task):
+                self._reject_spam_call()
+                return
+            if not self.running:
+                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Delay] Call aborted by caller before answering.{_R}")
+                return
 
         raw_instruction = self.assistant_data.get("system_instruction", "")
         category_rules = self.build_category_rules()
@@ -5401,7 +5666,7 @@ class PhoneAssistant:
             monitor_mode=getattr(self, "monitor_mode", None), python=sys.version.split()[0],
         )
         is_whitelisted = bool(contact_match and contact_match.get("type") == "whitelist")
-        spam_task = asyncio.create_task(self.check_network_spam(is_whitelisted=is_whitelisted))
+        spam_task = early_spam_task or asyncio.create_task(self.check_network_spam(is_whitelisted=is_whitelisted))
         asyncio.create_task(self.monitor_routing_manager())
 
         try:
@@ -5440,7 +5705,7 @@ class PhoneAssistant:
                     while self.running:
                         if spam_task.done():
                             try:
-                                if spam_task.result() and get_config("auto_block_spam", "false") == "true":
+                                if spam_task.result() and (self.spam_filter_active or get_config("auto_block_spam", "false") == "true"):
                                     print(f"\n{_C_WARN}[{get_timestamp()}] [SpamCheck] SPAM confirmed. Terminating call (Auto-Block ON)...{_R}")
                                     self.hangup_reason = "spam"
                                     self.hangup_triggered = True
@@ -5948,6 +6213,22 @@ async def run_cli_spam_test(test_number: str) -> None:
     print(f"{_C_AUDIO}Result: is_spam={is_spam} | risk_score={dummy.network_spam_score}{_R}")
 
 
+def print_models_in_use() -> None:
+    """Tells at start which Google model does what and which plan the user declared (the Web GUI shows the same with the limits)."""
+    text_model = get_config("text_model", default_text_model())
+    plan = get_config("api_plan", "free")
+    print(f"{_C_SERVER}{ICON_INFO}Models: voice of the calls = {MODEL_LIVE} | text (SPAM check, summaries) = {text_model} | API plan declared = {plan}{_R}")
+    if get_config("final_transcription_mode", "disabled") == "online_realtime":
+        print(f"{_C_SERVER}{ICON_INFO}Models: online transcription = {MODEL_TRANSCRIBE_LIVE}{_R}")
+    if plan == "free":
+        print(f"{_C_MUTED}{ICON_INFO}Free plan: daily limits per model apply (see the Models panel of the Web GUI).{_R}")
+    migrated_from = get_config("text_model_migrated_from", "")
+    if migrated_from:
+        print(f"{_C_WARN}{ICON_WARN}The saved text model '{migrated_from}' is no longer offered: '{text_model}' is used now.{_R}")
+    if get_config("spam_filter_mode", "false") == "true":
+        print(f"{_C_WARN}{ICON_INFO}SPAM filter mode is ON: calls stay on the phone except SPAM (unknown numbers: {get_config('spam_filter_unknown', SPAM_FILTER_UNKNOWN_CHOICES[0])}).{_R}")
+
+
 def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
     """Listens for CallAdded and CallRemoved events over D-Bus from oFono."""
     global GLIB_LOOP
@@ -5980,7 +6261,8 @@ def run_dbus_loop(main_loop: asyncio.AbstractEventLoop) -> None:
         print(f"\n{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[D-Bus] Incoming call from: {number}{_R}")
         assistant = PhoneAssistant(dbus_path=path, caller_number=number)
         ACTIVE_ASSISTANT = assistant
-        future = asyncio.run_coroutine_threadsafe(assistant.run(), main_loop)
+        spam_filter_on = get_config("spam_filter_mode", "false") == "true"
+        future = asyncio.run_coroutine_threadsafe(assistant.run_spam_filter() if spam_filter_on else assistant.run(), main_loop)
         ACTIVE_TASKS.add(future)
         future.add_done_callback(ACTIVE_TASKS.discard)
 
@@ -6012,6 +6294,10 @@ if __name__ == "__main__":
 
     if not API_KEY:
         print(f"{_C_ERR}{ICON_ERR}Error: GEMINI_API_KEY environment variable not set.{_R}")
+        sys.exit(1)
+
+    if not MODEL_LIVE or not default_text_model():
+        print(f"{_C_ERR}{ICON_ERR}Error: {DEFAULTS_FILE} is missing or unreadable.{_R}")
         sys.exit(1)
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--test-spam":
@@ -6056,6 +6342,7 @@ if __name__ == "__main__":
     dbus_thread.start()
 
     print(f"{_C_SERVER}{ICON_SERVER}--- BLUETOOTH AI SWITCHBOARD v{APP_VERSION} ---{_R}")
+    print_models_in_use()
     print("Waiting for incoming calls via oFono...\n")
 
     try:

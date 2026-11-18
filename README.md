@@ -1,11 +1,11 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 3.3](https://img.shields.io/badge/Version-3.3-brightgreen.svg)
+![Version: 3.4](https://img.shields.io/badge/Version-3.4-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
 
-Author: Antonio R. | Version: 3.3 | License: GPL 3.0
+Author: Antonio R. | Version: 3.4 | License: GPL 3.0
 
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini 3.8 Live** for conversational AI and optional **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages in a dedicated inbox, maintains configurable context-aware memory with AI summaries for repeat callers, and provides a sleek Web GUI to manage your communications and server state.
 
@@ -21,7 +21,7 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 1. [Overview & Features](#overview)
 2. [Requirements & Compatibility](#requirements)
 3. [Installation](#installation)
-4. [Gemini API Key, Pricing & Privacy](#api-key)
+4. [Gemini API Key, Models, Pricing & Privacy](#api-key)
 5. [Pairing Your Phone (Bluetooth)](#pairing)
 6. [Running the Switchboard & Auto-Start on Boot](#running)
 7. [Accessing the Web GUI from Other Devices](#access)
@@ -31,6 +31,7 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
     * [Bluetooth status & phone battery](#bt-status)
     * [Assistant personality, tuning & languages](#personality-language)
     * [Contact rules, SPAM filtering & call-log labels](#contact-rules)
+    * [SPAM filter mode](#spam-filter-mode)
     * [Call handling: handset takeover, goodbye & transcription modes](#call-handling)
     * [Audio, Echo & Voice Detection Tuning Guide (incl. hold mode)](#audio-tuning-guide)
     * [Debug traces](#debug-traces)
@@ -96,6 +97,8 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
 * **⏱️ Long calls:** the AI conversation is not cut when Google closes its connection after about 10 minutes. No call lasts more than 30 minutes.
 * **👋 Natural greeting:** choose between an exact greeting (for legal notices) and an adaptive one that sounds like a person. The style can be set in general, for each category or for each whitelist number or wildcard.
 * **📱 Calls left to the phone:** mark a whitelist number (or all calls while the switchboard is paused) and the call stays on your phone with its own audio.
+* **🛡️ SPAM filter mode:** every call stays on your phone, with its own audio, except SPAM, which is hung up. Unknown numbers can stay on the phone too or be answered by the AI. Nothing you configured is erased: the options that do nothing meanwhile are greyed out.
+* **🤖 Models panel:** the Web GUI shows which Google model does each task, the plan of your key, the requests made today and the free limits, and warns you when a daily limit is reached.
 * **🛠️ Web GUI maintenance:** start and stop the switchboard, check a number for SPAM from the call log and update Linux from the panel.
 * **💾 Gentle on SD cards / eMMC:** the switchboard writes to disk as little as possible.
 * **📶 Hardware-Agnostic Bluetooth HFP & Auto-Reconnect:** Works with any smartphone via `BlueZ`, `oFono`, and `PipeWire`. Includes an automatic Bluetooth reconnection watchdog and link counters. The Web GUI shows whether the phone is connected, whether its **call profile** (the oFono modem that carries the calls) is ready, and the **phone battery** when the phone reports it.
@@ -290,9 +293,9 @@ pip install google-genai aiohttp curl_cffi streamlit lameenc "protobuf>=5.26.1,<
 ---
 
 <a id="api-key"></a>
-## 🔑 4. Gemini API Key, Pricing & Privacy
+## 🔑 4. Gemini API Key, Models, Pricing & Privacy
 
-This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live`** for real-time, low-latency bidirectional voice communication, and secondary text models (`gemini-3-flash-preview` or the `gemma-4` family) for offline tasks like SPAM evaluation, post-call JSON transcript structuring, and call summary generation.
+This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live`** for real-time, low-latency voice conversation and one **text model** for everything done outside the live conversation: SPAM evaluation, the analysis and summary of each call and, if you choose that transcription mode, the correction of the transcript at the end of the call. The names of all the models, with their reference limits and prices, are in the file `defaults.json` (which also holds the initial values of the settings, shared by the switchboard and the Web GUI): it is the only place to edit if Google renames or retires a model.
 
 ### 1. How to Obtain and Set Your API Key
 1. Go to **[Google AI Studio](https://aistudio.google.com/)**.
@@ -303,22 +306,54 @@ This application relies on the **Google Gemini API**. It uses **`gemini-3.8-live
    source ~/.bashrc
    ```
 
-### 2. Free Tier vs. Paid Tier — Privacy Considerations
-*   **Free Tier:** Google may use conversation data (anonymously) to improve their AI models.
-*   **Paid Tier (Pay-As-You-Go):** Your data is strictly private — Paid API data is *not* used to train Google models. **For a privacy-focused deployment, the Paid Tier is recommended.**
+### 2. Which Models Are Used
+The Web GUI has a **🤖 Models in use** panel (settings column). It shows which model does each task, the requests made today, the free limit (or the price, if your key is a paid one) and whether a limit has been reached. Tell the panel if your key is **free** or **paid**: the program cannot know it, and the limits and the privacy text shown depend on it.
+
+| Task | Model | Can you change it? |
+|---|---|---|
+| Voice of the calls | `gemini-3.8-live` | No |
+| Online transcription of the caller (optional) | `gemini-3.5-transcribe-live` | Only on or off, in *Transcription Mode* |
+| SPAM check, call analysis and summary, end-of-call text | `gemini-3.5-flash-lite` (recommended) or `gemma-4-26b-a4b-it` | Yes, in the panel |
+
+*   **`gemini-3.5-flash-lite`** is fast, understands audio (needed to correct the transcript at the end of the call) and has a paid plan for private use.
+*   **`gemma-4-26b-a4b-it`** has many more free requests per day, but it cannot listen to the recording (no end-of-call correction with Gemini), follows the requested answer format less strictly and **exists only on the free plan**: there is no paid plan to choose, so the free-plan terms always apply (see the next point).
+*   If you saved a model that is no longer offered, the program uses the recommended one and the panel tells you once.
+
+### 3. Free Plan vs. Paid Plan — Privacy & Terms of Use
+*   **Free plan (unpaid quota):** outside the European Economic Area (EEA), Switzerland and the United Kingdom, Google uses what you send (here: caller numbers, transcripts and audio) to improve its products, and human reviewers may read it. Google asks not to send sensitive, confidential or personal information to unpaid services, and phone calls usually contain it.
+*   **Paid plan (a Google Cloud project with billing enabled):** Google does not use your prompts, audio or answers to improve its products. It logs them for a limited time only to detect abuse and to meet legal duties. **For a privacy-focused deployment, the paid plan is recommended.**
+*   **In the EEA, Switzerland and the United Kingdom,** Google's terms apply the data terms of the paid plan to the free quota too, so the free plan does not use your data to improve its products there either.
+
+> ⚠️ **Google's terms for the EEA, Switzerland and the United Kingdom.** The *Gemini API Additional Terms of Service* (effective March 23, 2026, last updated April 28, 2026) say: *you may use only Paid Services when making API Clients available to users in the European Economic Area, Switzerland, or the United Kingdom.* If you let other people in those regions use your switchboard (clients, employees, other households), use a key with **billing enabled**. Whether your own use counts as "making an API client available to users" is for you to judge, not for this README to decide. The terms also say that the API is meant for developers building for professional or business purposes (not consumer use) and that users must be 18 or older. This is not legal advice and Google can change its terms: read them at [ai.google.dev/gemini-api/terms](https://ai.google.dev/gemini-api/terms) and check them again from time to time.
+
+### 4. Free Limits and What Happens When One Is Reached
+Google no longer publishes the free limits per model in its documentation: the real ones for your project are in **[AI Studio → Rate limits](https://aistudio.google.com/rate-limit)**, and Google changes them without notice. The values read on 2026-11-17 and kept in `defaults.json` as a reference (the panel shows them with their date) are:
+
+| Model | Free limit (reference) |
+|---|---|
+| `gemini-3.8-live` | no daily request limit; ~65,000 tokens per minute |
+| `gemini-3.5-transcribe-live` | no daily request limit; ~20,000 tokens per minute |
+| `gemini-3.5-flash-lite` | 500 requests per day, 15 per minute, ~250,000 tokens per minute |
+| `gemma-4-26b-a4b-it` | 14,400 requests per day, 30 per minute, ~16,000 tokens per minute |
+
+*   Each model has its own counter. Daily limits renew at **midnight Pacific time** (the panel shows the hour in your time zone). Note that `gemma-4-26b-a4b-it` has a tight per-minute token limit (~16,000 tokens/min), so checking several SPAM lookup pages in a row can hit the per-minute limit briefly even when plenty of daily requests remain.
+*   A call can use from a few to about thirty text-model requests (one per SPAM provider checked, up to 12 quick decisions, one analysis). Numbers already checked are remembered for days, so they cost nothing.
+*   **When the text model reaches its limit the voice of the calls keeps working.** The program stops asking that model until it is renewed, instead of insisting: new numbers are not checked for SPAM and **are not remembered as clean**; the quick decisions (such as whether a goodbye was meant) use the basic rules only; and the call is saved without summary or tag, with a note that the analysis was not available. The panel shows the model as blocked and the hour at which it is back, and the console of the daemon says the same.
+*   The requests are counted by this program, so the panel can differ a little from AI Studio.
 
 <a id="pricing"></a>
-### 3. Approximate Pricing (Pay-As-You-Go)
+### 5. Approximate Pricing (Pay-As-You-Go)
 *   **Real-Time Voice Calls (`gemini-3.8-live`):**
-    *   *Audio Input:* $3.00 / 1M tokens (~$0.005 per minute of caller audio).
+    *   *Audio Input:* $3.00 / 1M tokens (~$0.0045 per minute of connected call audio, silence included; Google rounds this figure to ~$0.005/min).
     *   *Audio Output:* $12.00 / 1M tokens (~$0.018 per minute of assistant speech).
-    *   *(A typical 2-minute phone call costs around $0.04).*
+    *   *(A typical short 2-minute phone call costs around $0.04–$0.06; longer calls with many turns cost more because the Live API re-processes the accumulated session context on each turn and also bills small text/instruction tokens).*
 *   **Online Transcription (`gemini-3.5-transcribe-live`, optional):** only the caller's speech is sent.
     *   *Audio Input:* $3.50 / 1M tokens (~$0.005 per minute of speech sent).
     *   *Text Output:* $21.00 / 1M tokens (~$0.004 per minute).
     *   *About $0.009 per minute of speech sent, according to the public pricing information; check Google's pricing page for the current figures.*
-*   **Text Processing, Summaries & SPAM (`gemini-3-flash-preview`):**
-    *   Used silently in the background for SPAM checking and parsing call transcripts/summaries (fractions of a cent per call).
+*   **Text Processing, Summaries & SPAM (`gemini-3.5-flash-lite`):** $0.30 / 1M tokens of input (text or audio) and $2.50 / 1M tokens of output, used silently in the background (usually well under one cent per call). `gemma-4-26b-a4b-it` has no paid plan.
+
+Prices change: check [Google's pricing page](https://ai.google.dev/gemini-api/docs/pricing) for the current figures.
 
 
 ---
@@ -753,8 +788,9 @@ The battery is read from BlueZ when the phone reports an exact percentage, other
 *   **Owner & Assistant Fields:** *Owner type* changes one word of the instructions ("a private / professional / business mobile number of …"). *Activity or situation description* is added to the instructions as it is, so the assistant knows who you are and how to treat callers. *Expected types of calls* is added right after it under its own heading and tells which calls are normal and what to do with each one. *Extra instructions / personality* goes at the very end and weighs the most. Example for a private person: activity *"This is my personal mobile. I work in an office from 8 to 3 and cannot answer then. Take the message and a number to call back."*, expected calls *"Family and friends, couriers, medical appointments, the garage, the bank. Salespeople and surveys: say goodbye politely and give no data."* Example for a small business: activity *"Car repair shop open Monday to Friday, 9 to 2 and 4 to 7. The owner is working and cannot answer. Never give prices over the phone."*, expected calls *"Customers asking for an appointment (note plate, model and problem), customers asking if their car is ready, parts suppliers, insurers. A breakdown on the road is urgent: note it as urgent."* Do not write surnames, addresses or other private data you do not want the assistant to know.
 *   **Category Instructions:** every category (Doctors, Lawyers, Mechanic/Dentist, Couriers…) has an editable *instructions* text. The texts of all categories are **always** added to the assistant's instructions when a call starts; the keywords of a category do not decide that (they still extend the attention time and choose the memory). You can write `{boss_name}` and `{assistant_name}` in them. The default **Couriers** category carries the rule that the assistant says the owner is not available and never allows leaving the package with a neighbour. To allow it (with a neighbour or at a known nearby shop), edit that text. The workshop/business rule is in the *Mechanic/Dentist* category. *Load Defaults* restores the default texts.
 *   **Localization:** Duplicate the `en-US` or `es-ES` folder inside the `languages` directory and translate the text values of its three files (`assistant.json`, `gui.json` and `spam.json`). **Do not change the keys**, and keep every `{placeholder}` (such as `{boss_name}`, `{category_rules}` or `{identification_rule}`) exactly as it is. Always copy **all** the keys of the English or Spanish files: missing keys can cause incomplete texts or unexpected behavior. For a new language also adapt:
-    * `assistant.json`: the voice and accent profile at the top of `system_instruction`, `speech_language_code`, `voice_names` and the word lists inside `words` (for example `cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). The keys of `owner_type_mappings` and `role_mappings` must be the same words as `owner_types` and `gender_types` in `gui.json` (the first gender is the female one).
+    * `assistant.json`: the voice and accent profile at the top of `system_instruction`, `speech_language_code`, `voice_names` and the word lists inside `words` (for example `cut_words`, `goodbye_veto_words`, `goodbye_meta_words`, `assistant_placeholder_phrases`). `greeting_farewell_words` holds the expressions that are both a greeting and a farewell (such as “buenas noches” or “good night”): they count as a farewell only after the assistant's greeting and when the sentence does not go on with a question, so a greeting is never taken for a goodbye. The keys of `owner_type_mappings` and `role_mappings` must be the same words as `owner_types` and `gender_types` in `gui.json` (the first gender is the female one).
     * `spam.json`: `home_country_code` and `home_national_length` (numbering plan of your country) and `providers`, the SPAM lookup URLs, which accept the placeholders `{number}`, `{national}` (number without country code) and `{e164}` (full international number).
+    * `gui.json`: in `ui_text_model_notes` the keys are model names taken from `defaults.json` (translate only the sentences). `defaults.json` itself is not translated and is shared by every language.
 *   **Known limits with other languages:** (1) The noise filter of the daemon (`is_valid_text`) discards text written in Chinese, Japanese or Korean characters as if it were Bluetooth static, so a caller speaking those languages gets no answer. (2) Arabic and Hebrew (right to left) are stored and processed correctly, but many Linux terminals and the Web GUI logs can show mixed text misaligned.
 
 #### Recommended Operating Profile
@@ -797,6 +833,25 @@ Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Heb
 * **🎨 Custom Tag Icons:** Every custom tag of a contact rule has an icon (color) chosen from a dropdown next to the tag text, so tags are easy to tell apart in the call log. New tags start with 🟣, a color the standard labels do not use; change it at any time or choose *No icon*. The icons offered are listed under `contact_tag_icons` in the language file (`gui.json`), and the icon is stored as the first character of the tag, so no database change is needed.
 * **🧭 Contacts & Wildcard Rules Layout:** Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. Example: 626288* blocks or whitelists every number that starts with 626288. If several rules match, the exact number wins, then the most specific wildcard. The web GUI shows the list of rules first, with the form to add a new rule below it.
 
+<a id="spam-filter-mode"></a>
+#### 🛡️ SPAM Filter Mode (every call stays on the phone except SPAM)
+
+Switch it on in the Web GUI (settings column, *SPAM filter mode*). The switchboard then works as a SPAM filter only:
+
+*   **Blacklist** rules reject the call, as always.
+*   **Whitelist** numbers (contacts) stay on the phone: it rings and, when you answer, the sound stays on the phone.
+*   **Unknown numbers** (not in your contact list, including hidden numbers) are your choice: *Leave them on the phone* (default) or *Let the AI answer them*.
+*   **SPAM** is hung up and logged with the SPAM label.
+
+The SPAM check starts when the call rings, so nothing is delayed: if the number turns out to be SPAM and you have not answered yet, the call is hung up and your phone stops ringing. If you already answered, the call is left alone and only logged as suspected SPAM. A number already checked in the last days is decided at once. If you chose that the AI answers unknown numbers, it answers only after the SPAM verdict (up to a few seconds more than the usual waiting time). If the text model has no requests left, numbers cannot be checked and they go through as unknown.
+
+**What stops applying while the mode is on** (the Web GUI shows it and nothing is erased):
+*   The per-contact options of the whitelist (instructions, greeting, memory and *Leave these calls to the phone*) are disabled: every whitelist number stays on the phone anyway.
+*   *Automatically hang up confirmed SPAM* is disabled and always on.
+*   If the AI answers nobody, the options of the AI are greyed out: wait before answering, call memory and categories, priority keywords, transcription, speaker monitoring, audio tuning, owner and identity. If the AI answers unknown numbers, they stay active.
+*   Everything keeps its stored value. When you switch the mode off, every option works again exactly as you left it.
+*   The **Pause** has priority: while the switchboard is paused, calls are handled as the pause says, without the SPAM filter.
+
 #### 🛡️ Optional CLI SPAM Test
 
 You can also test any phone number against your configured SPAM providers from the terminal.
@@ -826,14 +881,14 @@ When Gemini says goodbye or calls its hang-up tool, the switchboard treats it as
 When a hang-up is cancelled or ignored, the switchboard also **answers Gemini's hang-up tool call** ("the call was not hung up") and sends a short instruction (`hangup_cancelled` in `assistant.json`) so that the secretary keeps attending the caller instead of staying silent. If the caller's closing words are not recognized as polite, the safe side is a call that stays open until the inactivity timer ends it.
 
 <details>
-<summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini Flash 3) change</summary>
+<summary>🧪 <b>Advanced:</b> what the optional transcription modes (Whisper.cpp / Gemini) change</summary>
 
 &nbsp;
 
 None of them changes the live decisions. The switchboard's rules for hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking (and the AI itself listens to the audio, not to any transcript). The Whisper text arrives later, so it cannot take part in those decisions. The only small exception is a safety rule: when the AI tries to hang up during a hold, the switchboard looks for a goodbye word in the last part of the transcript, and in real-time mode that part can already include Whisper's version.
 * **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
 * **Online (`gemini-3.5-transcribe-live`):** the caller's speech is sent to Google while the call goes on and its text is shown next to Gemini's own. It only receives the speech that passed the noise gate and the echo suppression, and it does not need any local processing, so it is the option for small boards where Whisper.cpp is too heavy.
-* **Whisper.cpp at end of call** and **Gemini Flash 3 at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
+* **Whisper.cpp at end of call** and **Gemini at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
 
 </details>
 
@@ -1015,6 +1070,7 @@ No setting can restore what never arrived: a call from a quiet place with good s
 ├── phone_assistant.py          # Main daemon (handles HFP, D-Bus, and Gemini 3.8 Live)
 ├── my_gui.sh                   # Main GUI Launcher Script (Desktop and Headless/LAN aware)
 ├── gui.py                      # Web Control Panel (Streamlit GUI interface)
+├── defaults.json               # Initial values of the settings (shared by the daemon and the Web GUI) and the Google models used, with their reference limits and prices
 ├── install_system_deps.sh      # Automated system & Python dependency installer (--with-whisper optional)
 ├── switchboard.db              # SQLite Database (Auto-generated & migrated on launch)
 ├── requirements.txt            # Python package dependencies

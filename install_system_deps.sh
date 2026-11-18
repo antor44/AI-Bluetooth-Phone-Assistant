@@ -11,7 +11,7 @@
 # Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 3.3
+# Version: 3.4
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.
@@ -411,10 +411,10 @@ fi
 step "STEP 8/8 — Python pip dependencies"
 
 PIP_PACKAGES=(
-    "google-genai"
+    "google-genai>=1.56.0"   # 1.56 is the first version with the thinking level "minimal" used by the text model requests
     "aiohttp"
     "curl_cffi"
-    "streamlit"
+    "streamlit>=1.39.0"      # 1.39 adds the container keys used to grey out the options that do nothing in SPAM filter mode
     "protobuf>=5.26.1,<7.0.0"
 )
 

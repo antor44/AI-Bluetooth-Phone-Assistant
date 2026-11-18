@@ -1,0 +1,113 @@
+{
+  "about": "Initial values shared by the switchboard (phone_assistant.py) and the Web GUI (gui.py): whichever starts first creates the database with them, and a value already stored is never overwritten. It also names the Google models used. Values are text, as they are stored in the database.",
+  "settings": {
+    "wait_seconds": "5",
+    "auto_block_spam": "false",
+    "spam_block_threshold": "70",
+    "spam_cache_days": "7",
+    "whisper_model": "medium",
+    "whisper_quant": "",
+    "software_echo_suppression": "false",
+    "final_transcription_mode": "disabled",
+    "show_filtered_in_transcript": "true",
+    "monitor_mode": "none",
+    "language": "en-US",
+    "allow_pc_mic": "false",
+    "memory_mode": "priority",
+    "memory_max_calls": "1",
+    "memory_max_days": "30",
+    "memory_max_chars": "2500",
+    "daemon_state": "running",
+    "daemon_heartbeat": "0",
+    "caller_gain": "1.5",
+    "noise_gate_base": "55",
+    "vad_start_sensitivity": "LOW",
+    "vad_end_sensitivity": "HIGH",
+    "vad_prefix_padding_ms": "450",
+    "vad_silence_duration_ms": "600",
+    "protect_initial_greeting": "true",
+    "greeting_mode": "exact",
+    "paused_calls_to_phone": "false",
+    "live_long_calls": "true",
+    "farewell_grace_seconds": "2.0",
+    "farewell_cancel_min_words": "3",
+    "tor_enabled": "false",
+    "tor_gui_port": "8501",
+    "tor_notify_port": "8502",
+    "api_plan": "free",
+    "spam_filter_mode": "false",
+    "spam_filter_unknown": "phone"
+  },
+  "runtime_settings": {
+    "daemon_state": "running",
+    "tor_status": "off",
+    "tor_progress": "0",
+    "tor_onion": "",
+    "tor_error": ""
+  },
+  "restored_by_language_defaults": [
+    "wait_seconds",
+    "auto_block_spam",
+    "spam_block_threshold",
+    "spam_cache_days",
+    "caller_gain",
+    "noise_gate_base",
+    "vad_start_sensitivity",
+    "vad_end_sensitivity",
+    "vad_prefix_padding_ms",
+    "vad_silence_duration_ms",
+    "protect_initial_greeting",
+    "greeting_mode"
+  ],
+  "models": {
+    "catalog_checked": "2026-11-17",
+    "limits_note": "Reference values read from Google AI Studio and the Gemini API pricing page on the date above. Google changes them without notice and no longer publishes the free limits per model: the real ones are in AI Studio (https://aistudio.google.com/rate-limit).",
+    "limits_url": "https://aistudio.google.com/rate-limit",
+    "terms_url": "https://ai.google.dev/gemini-api/terms",
+    "quota_reset_timezone": "America/Los_Angeles",
+    "live": {
+      "model": "gemini-3.8-live",
+      "free_rpm": null,
+      "free_rpd": null,
+      "free_tpm": 65000,
+      "price_audio_in_per_min": 0.0045,
+      "price_audio_out_per_min": 0.018
+    },
+    "online_transcription": {
+      "model": "gemini-3.5-transcribe-live",
+      "free_rpm": null,
+      "free_rpd": null,
+      "free_tpm": 20000,
+      "price_per_min": 0.009
+    },
+    "text": {
+      "default": "gemini-3.5-flash-lite",
+      "options": [
+        {
+          "id": "gemini-3.5-flash-lite",
+          "family": "gemini",
+          "audio": true,
+          "paid_plan": true,
+          "thinking_level": "minimal",
+          "free_rpm": 15,
+          "free_rpd": 500,
+          "free_tpm": 250000,
+          "price_in_per_million": 0.3,
+          "price_out_per_million": 2.5
+        },
+        {
+          "id": "gemma-4-26b-a4b-it",
+          "family": "gemma",
+          "audio": false,
+          "paid_plan": false,
+          "thinking_level": null,
+          "free_rpm": 30,
+          "free_rpd": 14400,
+          "free_tpm": 16000,
+          "price_in_per_million": null,
+          "price_out_per_million": null
+        }
+      ]
+    }
+  }
+}

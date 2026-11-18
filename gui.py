@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 3.3
+Version: 3.4
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -51,19 +51,147 @@ try:
 except ImportError:
     curl_requests = None
 
+from zoneinfo import ZoneInfo
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
 DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
 BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
 BATTERY_UNKNOWN = -1                     # Value published by the daemon when the phone does not report its battery
-DEFAULT_CALLER_GAIN = 1.5                 # Default caller microphone gain (x)
-DEFAULT_NOISE_GATE_BASE = 55             # Default base noise gate (RMS)
-DEFAULT_VAD_PREFIX_PADDING_MS = 450      # Default VAD prefix padding (ms)
-DEFAULT_VAD_SILENCE_DURATION_MS = 600  # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
-DEFAULT_LANGUAGE = "en-US"  # Language of a fresh install, until another one is selected in the Web GUI
+DEFAULTS_FILE = os.path.join(BASE_DIR, "defaults.json")   # Initial values of the settings and names of the Google models: shared with phone_assistant.py, so whichever starts first creates the same database
+
+
+def load_defaults() -> Dict[str, Any]:
+    """Reads defaults.json. phone_assistant.py keeps a copy of this helper: keep them in sync."""
+    try:
+        with open(DEFAULTS_FILE, "r", encoding="utf-8") as defaults_file:
+            data = json.load(defaults_file)
+        if isinstance(data, dict) and data.get("settings") and data.get("models"):
+            return data
+    except (OSError, ValueError):
+        pass
+    st.error(f"{DEFAULTS_FILE} is missing or unreadable (it holds the initial settings and the names of the Google models).")
+    st.stop()
+    return {}
+
+
+DEFAULTS = load_defaults()
+DEFAULT_LANGUAGE = DEFAULTS["settings"]["language"]  # Language of a fresh install, until another one is selected in the Web GUI
+DEFAULT_CALLER_GAIN = float(DEFAULTS["settings"]["caller_gain"])                 # Default caller microphone gain (x)
+DEFAULT_NOISE_GATE_BASE = int(DEFAULTS["settings"]["noise_gate_base"])             # Default base noise gate (RMS)
+DEFAULT_VAD_PREFIX_PADDING_MS = int(DEFAULTS["settings"]["vad_prefix_padding_ms"])      # Default VAD prefix padding (ms)
+DEFAULT_VAD_SILENCE_DURATION_MS = int(DEFAULTS["settings"]["vad_silence_duration_ms"])  # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
 LANG_DIR = os.path.join(BASE_DIR, "languages")
+QUOTA_USAGE_KEY_PREFIX = "model_usage:"   # Settings key model_usage:<quota day>:<model> = requests made that day (written by the daemon)
+QUOTA_STATE_KEY_PREFIX = "model_quota:"   # Settings key model_quota:<model> = JSON with the last quota error of that model (written by the daemon)
+QUOTA_BLOCK_MIN_SECONDS = 5.0             # A quota error that asks for a shorter wait than this does not block the model
+SPAM_FILTER_UNKNOWN_CHOICES = ("phone", "ai")   # What the SPAM filter mode does with a number that is not in the contact list
+API_PLAN_CHOICES = ("free", "paid")       # What the user says about the Google API key
+SAFETY_CATEGORIES_OFF = ("HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")
+
+
+MODEL_CATALOG = DEFAULTS["models"]
+
+
+def model_info(model_id: str) -> Dict[str, Any]:
+    """Catalog entry of a text model ({} when the model is not in defaults.json)."""
+    for option in MODEL_CATALOG.get("text", {}).get("options", []):
+        if option.get("id") == model_id:
+            return option
+    return {}
+
+
+def model_family(model_id: str) -> str:
+    """'gemini' or 'gemma'. Gemma answers JSON only when asked in the prompt and has no audio input."""
+    family = str(model_info(model_id).get("family", "")).lower()
+    if family:
+        return family
+    return "gemma" if "gemma" in model_id.lower() else "gemini"
+
+
+def default_text_model() -> str:
+    return str(MODEL_CATALOG.get("text", {}).get("default", ""))
+
+
+def build_text_config(model_id: str, json_schema: Optional[Dict[str, Any]] = None) -> Any:
+    """Request settings of a text-model call: no sampling parameters (Google ignores them and the next models reject them)
+    and the thinking level of the catalog."""
+    options: Dict[str, Any] = {}
+    gemini = model_family(model_id) != "gemma"
+    if gemini and json_schema is not None:
+        options["response_mime_type"] = "application/json"
+        options["response_json_schema"] = json_schema
+    thinking_level = model_info(model_id).get("thinking_level")
+    if gemini and thinking_level:
+        options["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
+    return types.GenerateContentConfig(**options)
+
+
+def quota_timezone() -> datetime.tzinfo:
+    """Time zone in which Google renews the daily quotas (defaults.json); UTC when the zone data is missing."""
+    try:
+        return ZoneInfo(str(MODEL_CATALOG.get("quota_reset_timezone", "UTC")))
+    except Exception:
+        return datetime.timezone.utc
+
+
+def quota_day_stamp(moment: Optional[float] = None) -> str:
+    return datetime.datetime.fromtimestamp(time.time() if moment is None else moment, quota_timezone()).strftime("%Y%m%d")
+
+
+def next_quota_reset_epoch(moment: Optional[float] = None) -> float:
+    now_local = datetime.datetime.fromtimestamp(time.time() if moment is None else moment, quota_timezone())
+    return (now_local + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def parse_quota_error(error: BaseException) -> Optional[Dict[str, Any]]:
+    """Facts of a 'quota exceeded' (429) error, or None when the error is something else."""
+    status = str(getattr(error, "status", "") or "")
+    if getattr(error, "code", None) != 429 and "RESOURCE_EXHAUSTED" not in status:
+        return None
+    payload = getattr(error, "details", None)
+    body = payload.get("error", payload) if isinstance(payload, dict) else {}
+    items = body.get("details", []) if isinstance(body, dict) else []
+    quota_id, limit, retry_seconds = "", "", 0.0
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for violation in item.get("violations", []) or []:
+            if isinstance(violation, dict):
+                quota_id = quota_id or str(violation.get("quotaId", ""))
+                limit = limit or str(violation.get("quotaValue", ""))
+        delay = re.match(r"^\s*([0-9.]+)\s*s\s*$", str(item.get("retryDelay", "")))
+        if delay:
+            retry_seconds = float(delay.group(1))
+    return {"quota_id": quota_id, "limit": limit, "retry_seconds": retry_seconds, "daily": "PerDay" in quota_id}
+
+
+def describe_model_error(error: BaseException) -> str:
+    """Short text of a model error (the quota errors of Google are very long)."""
+    facts = parse_quota_error(error)
+    if facts is None:
+        return f"{type(error).__name__}: {error}"
+    limit = f" (limit {facts['limit']})" if facts["limit"] else ""
+    renewed = ""
+    if facts["retry_seconds"] > 0 or facts["daily"]:
+        wait = facts["retry_seconds"] if facts["retry_seconds"] > 0 else next_quota_reset_epoch() - time.time()
+        renewed = f", available again at {datetime.datetime.fromtimestamp(time.time() + wait).strftime('%H:%M')}"
+    return f"{'daily' if facts['daily'] else 'per-minute'} quota exceeded{limit}{renewed}"
+
+
+def migrate_text_model_choice(conn: sqlite3.Connection) -> None:
+    """A saved text model that is no longer in defaults.json is replaced by the default. The old name is kept (key
+    text_model_migrated_from) so the Web GUI can tell the user once."""
+    options = [str(option.get("id", "")) for option in MODEL_CATALOG.get("text", {}).get("options", [])]
+    new_default = default_text_model()
+    if not options or not new_default:
+        return
+    for key, value in conn.execute("SELECT key, value FROM settings WHERE key = 'text_model' OR key LIKE '%\\_text\\_model' ESCAPE '\\'").fetchall():
+        if value not in options:
+            conn.execute("UPDATE settings SET value=? WHERE key=?", (new_default, key))
+            conn.execute("INSERT OR REPLACE INTO settings VALUES ('text_model_migrated_from', ?)", (value,))
 CONTACT_TAG_HELP_DEFAULT = ("Shown on every call of this number or pattern, past calls included. If you clear it or delete the rule, "
                             "those calls go back to their previous classification (or the one you chose by hand in the call log).")
 # Fallback icons offered for custom tags (the language file key "contact_tag_icons" overrides them). The first one is the
@@ -473,7 +601,6 @@ def evaluate_spam_text_with_ai(clean_text: str, raw_number: str, model_name: str
         "required": ["is_spam", "risk_score", "reason"]
     }
 
-    is_gemma = "gemma" in model_name.lower()
     prompt = (
         f"Analyze this text extracted from a phone lookup website for number {raw_number}.\n"
         f"1. Ignore website menus or boilerplate.\n"
@@ -484,21 +611,18 @@ def evaluate_spam_text_with_ai(clean_text: str, raw_number: str, model_name: str
     )
 
     try:
-        if is_gemma:
-            config = types.GenerateContentConfig(temperature=0.0)
-        else:
-            config = types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=schema,
-                temperature=0.0,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)
-            )
-        response = client.models.generate_content(model=model_name, contents=prompt, config=config)
+        config = build_text_config(model_name, schema)
+        count_model_request(model_name)
+        try:
+            response = client.models.generate_content(model=model_name, contents=prompt, config=config)
+        except Exception as request_error:
+            record_quota_error(model_name, request_error)
+            raise
         raw_out = getattr(response, "text", "") or "{}"
         m = re.search(r"\{.*\}", raw_out, re.DOTALL)
         return json.loads(m.group(0)) if m else {"is_spam": False, "risk_score": 0, "reason": "Could not parse AI response."}
     except Exception as e:
-        return {"is_spam": False, "risk_score": 0, "reason": f"AI evaluation error: {e}"}
+        return {"is_spam": False, "risk_score": 0, "reason": f"AI evaluation error: {describe_model_error(e)}"}
 
 
 def parse_model_name(model_name: str) -> Tuple[str, str]:
@@ -797,41 +921,14 @@ def init_db() -> None:
         except sqlite3.OperationalError:
             pass
 
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('wait_seconds', '5')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('auto_block_spam', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_block_threshold', '70')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('spam_cache_days', '7')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_model', 'medium')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('whisper_quant', '')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('software_echo_suppression', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('final_transcription_mode', 'disabled')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('show_filtered_in_transcript', 'true')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('monitor_mode', 'none')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('language', ?)", (DEFAULT_LANGUAGE,))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('allow_pc_mic', 'false')")
-
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_mode', 'priority')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_calls', '1')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_days', '30')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('memory_max_chars', '2500')")
-
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_state', 'running')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('daemon_heartbeat', '0')")
-
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('caller_gain', ?)", (str(DEFAULT_CALLER_GAIN),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('noise_gate_base', ?)", (str(DEFAULT_NOISE_GATE_BASE),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_start_sensitivity', 'LOW')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_end_sensitivity', 'HIGH')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_prefix_padding_ms', ?)", (str(DEFAULT_VAD_PREFIX_PADDING_MS),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_duration_ms', ?)", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    for setting_key, setting_value in DEFAULTS["settings"].items():
+        c.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (setting_key, str(setting_value)))
     # One-time migration: the new default replaces the value stored by previous versions (INSERT OR IGNORE never overwrites it)
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('protect_initial_greeting', 'true')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('greeting_mode', 'exact')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('paused_calls_to_phone', 'false')")
-    c.execute("INSERT OR IGNORE INTO settings VALUES ('live_long_calls', 'true')")
+
+    migrate_text_model_choice(conn)
 
     conn.commit()
     conn.close()
@@ -920,6 +1017,44 @@ def set_config(key: str, value: Any) -> None:
     conn.close()
 
 
+def count_model_request(model_id: str) -> None:
+    """Counts one request of the current quota day (the daemon counts its own; both are shown in the Models panel)."""
+    key = f"{QUOTA_USAGE_KEY_PREFIX}{quota_day_stamp()}:{model_id}"
+    try:
+        set_config(key, int(get_config(key, "0")) + 1)
+    except ValueError:
+        set_config(key, 1)
+
+
+def record_quota_error(model_id: str, error: BaseException) -> None:
+    """Saves the quota error of a model so the Models panel (and the daemon) know it is blocked until the quota is renewed."""
+    facts = parse_quota_error(error)
+    if facts is None:
+        return
+    now = time.time()
+    wait = facts["retry_seconds"]
+    if facts["daily"] and wait <= 0:
+        wait = next_quota_reset_epoch(now) - now
+    facts.update({"model": model_id, "at": now, "until": now + wait if wait >= QUOTA_BLOCK_MIN_SECONDS else 0.0})
+    set_config(QUOTA_STATE_KEY_PREFIX + model_id, json.dumps(facts))
+
+
+def read_model_usage_today(model_id: str) -> int:
+    try:
+        return int(get_config(f"{QUOTA_USAGE_KEY_PREFIX}{quota_day_stamp()}:{model_id}", "0"))
+    except ValueError:
+        return 0
+
+
+def read_model_quota_state(model_id: str) -> Dict[str, Any]:
+    """Last quota error of a model ({} when it never hit its limit)."""
+    try:
+        state = json.loads(get_config(QUOTA_STATE_KEY_PREFIX + model_id, "") or "{}")
+        return state if isinstance(state, dict) else {}
+    except ValueError:
+        return {}
+
+
 def db_slider(label: str, config_key: str, widget_key: str, default_value: str, cast, **slider_kwargs) -> Any:
     """Slider bound to a database setting through a stable widget key.
 
@@ -952,6 +1087,27 @@ def db_checkbox(label: str, config_key: str, widget_key: str, default_value: boo
             set_config(config_key, "true" if st.session_state[widget_key] else "false")
 
     return st.checkbox(label, key=widget_key, on_change=_save_value)
+
+
+def db_choice(label: str, options: Any, config_key: str, widget_key: str, default_value: str, widget: str = "radio",
+              format_func: Any = None, on_save: Any = None, **widget_kwargs: Any) -> str:
+    """Radio or selectbox bound to a database setting through a stable widget key (same pattern as db_checkbox and db_slider):
+    the stored value is loaded when the browser session starts (or when it is no longer one of the options) and the new one is
+    written inside the on_change callback, before the page reruns. on_save(value) runs after the value is saved."""
+    options = list(options)
+    if st.session_state.get(widget_key) not in options:
+        stored = get_config(config_key, default_value)
+        st.session_state[widget_key] = stored if stored in options else default_value
+
+    def _save_value() -> None:
+        value = st.session_state.get(widget_key)
+        if value in options:
+            set_config(config_key, value)
+            if on_save is not None:
+                on_save(value)
+
+    control = st.radio if widget == "radio" else st.selectbox
+    return control(label, options, key=widget_key, format_func=format_func or str, on_change=_save_value, **widget_kwargs)
 
 
 ONION_DIR = os.path.join(BASE_DIR, "onion_data")
@@ -1340,20 +1496,7 @@ def apply_language_defaults(lang_code: str) -> None:
             db_key = f"{lang_code}_{key}"
             str_val = json.dumps(val, ensure_ascii=False) if isinstance(val, (list, dict)) else str(val)
             conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (db_key, str_val))
-    for g_key, g_val in [
-        ("wait_seconds", "5"),
-        ("auto_block_spam", "false"),
-        ("spam_block_threshold", "70"),
-        ("spam_cache_days", "7"),
-        ("caller_gain", str(DEFAULT_CALLER_GAIN)),
-        ("noise_gate_base", str(DEFAULT_NOISE_GATE_BASE)),
-        ("vad_start_sensitivity", "LOW"),
-        ("vad_end_sensitivity", "HIGH"),
-        ("vad_prefix_padding_ms", str(DEFAULT_VAD_PREFIX_PADDING_MS)),
-        ("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)),
-        ("protect_initial_greeting", "true"),
-        ("greeting_mode", "exact")
-    ]:
+    for g_key, g_val in [(restored_key, str(DEFAULTS["settings"][restored_key])) for restored_key in DEFAULTS["restored_by_language_defaults"]]:
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (g_key, g_val))
     # Restore the default greeting (legal notice) and default SPAM provider URLs of the selected language
     default_greeting = gui_data.get("default_legal_warning", "")
@@ -1708,7 +1851,7 @@ def contact_tag_widgets(key_prefix: str, tag_db: str = "") -> str:
 CONTACT_GREETING_MODES = ["", "adaptive", "exact"]   # Greeting style of a whitelist rule: empty = the general setting (daemon: GREETING_MODES)
 
 
-def contact_greeting_mode_widget(key: str, current_mode: str = "", label_key: str = "ui_form_greeting_mode", help_key: str = "ui_form_greeting_mode_help") -> str:
+def contact_greeting_mode_widget(key: str, current_mode: str = "", label_key: str = "ui_form_greeting_mode", help_key: str = "ui_form_greeting_mode_help", disabled: bool = False) -> str:
     """Selector of the greeting style of one contact rule or category. Returns "", "adaptive" or "exact"."""
     labels = trans.get("ui_form_greeting_mode_options", {"": "Use the general setting", "adaptive": "Adaptive (natural, adapts to the caller)", "exact": "Exact (word for word)"})
     current_mode = current_mode if current_mode in CONTACT_GREETING_MODES else ""
@@ -1718,11 +1861,12 @@ def contact_greeting_mode_widget(key: str, current_mode: str = "", label_key: st
         index=CONTACT_GREETING_MODES.index(current_mode),
         format_func=lambda opt: labels.get(opt, opt),
         key=key,
-        help=trans.get(help_key, "Overrides the general greeting style for this number or wildcard rule.")
+        help=trans.get(help_key, "Overrides the general greeting style for this number or wildcard rule."),
+        disabled=disabled
     )
 
 
-def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=None, mem_days=None):
+def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=None, mem_days=None, disabled: bool = False):
     """Renders the per-number memory controls and returns (mem_mode, mem_calls, mem_days) ready for the database."""
     labels = trans.get("ui_contact_memory_opts_labels", {
         "inherit": "Inherit (category / default)",
@@ -1740,7 +1884,8 @@ def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=Non
         trans.get("ui_contact_memory_label", "Memory for this number:"),
         CONTACT_MEMORY_MODES,
         format_func=lambda x: labels.get(x, x),
-        key=mode_key
+        key=mode_key,
+        disabled=disabled
     )
     mc1, mc2 = st.columns(2)
     with mc1:
@@ -1752,7 +1897,7 @@ def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=Non
             st.session_state[calls_sync_key] = calls_default
         calls_val = st.number_input(
             trans.get("ui_contact_memory_calls", "Calls to remember:"),
-            min_value=1, max_value=20, step=1, key=calls_key
+            min_value=1, max_value=20, step=1, key=calls_key, disabled=disabled
         )
     with mc2:
         days_default = int(mem_days or 30)
@@ -1763,12 +1908,131 @@ def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=Non
             st.session_state[days_sync_key] = days_default
         days_val = st.number_input(
             trans.get("ui_contact_memory_days", "Max age (days):"),
-            min_value=1, max_value=365, step=1, key=days_key
+            min_value=1, max_value=365, step=1, key=days_key, disabled=disabled
         )
     if chosen == "custom":
         return "custom", int(calls_val), int(days_val)
     return ("none" if chosen == "none" else ""), None, None
 
+
+spam_filter_on = get_config("spam_filter_mode", "false") == "true"
+spam_filter_unknown = get_config("spam_filter_unknown", SPAM_FILTER_UNKNOWN_CHOICES[0])
+spam_filter_ai = spam_filter_on and spam_filter_unknown == "ai"
+ai_options_inactive = spam_filter_on and not spam_filter_ai   # In SPAM filter mode the AI answers nobody (or only unknown numbers): its options do nothing
+
+
+def format_local_time(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
+def describe_free_limit(info: Dict[str, Any]) -> str:
+    """Free-plan limits of one model, as read from the catalog."""
+    parts = []
+    if info.get("free_rpd"):
+        parts.append(trans.get("ui_limit_per_day", "{n} requests/day").format(n=f"{int(info['free_rpd']):,}"))
+    else:
+        parts.append(trans.get("ui_limit_no_daily", "no daily request limit"))
+    if info.get("free_rpm"):
+        parts.append(trans.get("ui_limit_per_minute", "{n}/min").format(n=f"{int(info['free_rpm']):,}"))
+    if info.get("free_tpm"):
+        parts.append(trans.get("ui_limit_tokens_per_minute", "~{n} tokens/min").format(n=f"{int(info['free_tpm']):,}"))
+    return ", ".join(parts)
+
+
+def describe_paid_price(info: Dict[str, Any], kind: str) -> str:
+    """Price of one model on the paid plan, as read from the catalog (kind: text, live, online)."""
+    if kind == "text":
+        if info.get("price_in_per_million") is None:
+            return trans.get("ui_price_no_paid_plan", "no paid plan exists")
+        return trans.get("ui_price_text", "${price_in} in / ${price_out} out per million tokens").format(price_in=info["price_in_per_million"], price_out=info["price_out_per_million"])
+    if kind == "live":
+        return trans.get("ui_price_live", "${price_in}/min of call audio + ${price_out}/min of assistant voice").format(price_in=info.get("price_audio_in_per_min", ""), price_out=info.get("price_audio_out_per_min", ""))
+    return trans.get("ui_price_online", "~${price}/min").format(price=info.get("price_per_min", ""))
+
+
+def model_status_text(model_id: str) -> str:
+    state = read_model_quota_state(model_id)
+    until = float(state.get("until", 0) or 0)
+    if until > time.time():
+        return "⛔ " + trans.get("ui_status_blocked", "limit reached, back at {time}").format(time=format_local_time(until))
+    if state and quota_day_stamp(float(state.get("at", 0) or 0)) == quota_day_stamp():
+        return "⚠️ " + trans.get("ui_status_limit_hit_today", "limit hit today at {time}").format(time=format_local_time(float(state["at"])))
+    return "✅ " + trans.get("ui_status_ok", "ok")
+
+
+def render_models_panel() -> None:
+    """Which Google model does each task, the plan of the API key, today's requests, the limits that go with the plan and the quota state."""
+    plan_labels = trans.get("ui_api_plan_opts", {"free": "Free (no billing)", "paid": "Paid (billing enabled)"})
+    chosen_plan = db_choice(
+        trans.get("ui_api_plan_label", "My Google API key is:"), API_PLAN_CHOICES, "api_plan", "api_plan_radio", API_PLAN_CHOICES[0],
+        format_func=lambda option: plan_labels.get(option, option), horizontal=True,
+        help=trans.get("ui_api_plan_help", "The program cannot know it: say it here so this panel shows the limits and the privacy terms that go with your key. It changes nothing else.")
+    )
+    free_plan = chosen_plan == "free"
+
+    options = [str(option.get("id", "")) for option in MODEL_CATALOG.get("text", {}).get("options", [])]
+    if not options or not MODEL_CATALOG.get("live", {}).get("model"):
+        st.error(trans.get("ui_models_catalog_missing", "defaults.json is missing or unreadable: the models cannot be shown."))
+        return
+
+    migrated_from = get_config("text_model_migrated_from", "")
+    if migrated_from:
+        st.warning(trans.get("ui_text_model_migrated", "The text model '{old}' is no longer offered. '{new}' is used now.").format(old=migrated_from, new=get_config("text_model", default_text_model())))
+        if st.button(trans.get("ui_dismiss", "Got it"), key="btn_dismiss_model_migration"):
+            set_config("text_model_migrated_from", "")
+            st.rerun()
+
+    def _after_text_model_saved(saved_model: str) -> None:
+        if model_family(saved_model) == "gemma" and get_config("final_transcription_mode", "disabled") == "gemini_final":
+            set_config("final_transcription_mode", "disabled")   # Gemma cannot listen to the recording
+
+    chosen_model = db_choice(trans.get("ui_text_model_label", "Text model (SPAM check, summaries, end-of-call text):"), options, "text_model",
+                             "text_model_select", default_text_model(), widget="selectbox", on_save=_after_text_model_saved)
+    st.caption(trans.get("ui_text_model_notes", {}).get(chosen_model, ""))
+    if not model_info(chosen_model).get("paid_plan", True):
+        st.warning(trans.get("ui_model_free_only_warning", "This model exists only on the free plan of the Gemini API: there is no paid plan to choose, so the terms of the free plan always apply (see Privacy below)."))
+
+    live_info = MODEL_CATALOG.get("live", {})
+    online_info = MODEL_CATALOG.get("online_transcription", {})
+    rows = [(trans.get("ui_role_live", "Voice of the calls"), str(live_info.get("model", "")), live_info, "live"),
+            (trans.get("ui_role_text", "Text analysis"), chosen_model, model_info(chosen_model), "text")]
+    if get_config("final_transcription_mode", "disabled") == "online_realtime":
+        rows.insert(1, (trans.get("ui_role_online", "Online transcription"), str(online_info.get("model", "")), online_info, "online"))
+    table = []
+    for role, model_id, info, kind in rows:
+        table.append({
+            trans.get("ui_col_task", "Task"): role,
+            trans.get("ui_col_model", "Model"): model_id,
+            trans.get("ui_col_used_today", "Used today"): read_model_usage_today(model_id),
+            trans.get("ui_col_limit_free", "Free limit") if free_plan else trans.get("ui_col_price_paid", "Price (paid)"): describe_free_limit(info) if free_plan else describe_paid_price(info, kind),
+            trans.get("ui_col_status", "Status"): model_status_text(model_id),
+        })
+    st.table(table)
+    st.caption(trans.get("ui_models_reference_note", "Limits and prices are reference values read on {date}. Google changes them without notice and no longer publishes the free limits per model: the real ones are in AI Studio ({url}). The calls and the Live sessions are counted by this program.").format(date=MODEL_CATALOG.get("catalog_checked", ""), url=MODEL_CATALOG.get("limits_url", "")))
+    if free_plan:
+        st.caption(trans.get("ui_quota_reset_note", "Daily limits renew at midnight Pacific time ({time} here).").format(time=format_local_time(next_quota_reset_epoch())))
+    with st.expander(trans.get("ui_privacy_title", "🔒 Privacy and terms of use")):
+        st.markdown(trans.get("ui_privacy_free_text" if free_plan else "ui_privacy_paid_text", "Free plan: Google may use what you send to improve its products. Paid plan: it does not.") + "\n\n" + trans.get("ui_privacy_eu_text", "") + f"\n\n[{MODEL_CATALOG.get('terms_url', '')}]({MODEL_CATALOG.get('terms_url', '')})")
+
+
+def render_spam_filter_panel() -> None:
+    """Switch and options of the SPAM filter mode (what it changes is explained in the texts and shown in the rest of the panel)."""
+    st.subheader(trans.get("ui_spam_filter_title", "🛡️ SPAM filter mode"))
+    db_checkbox(trans.get("ui_spam_filter_label", "Turn on the SPAM filter mode"), "spam_filter_mode", "chk_spam_filter_mode", False)
+    st.caption(trans.get("ui_spam_filter_help", "Every call stays on the phone, with its own audio, except SPAM, which is hung up. The AI does not answer anybody. Nothing you configured is erased: the options that do nothing meanwhile are greyed out and come back as they were when you turn the mode off."))
+    labels = trans.get("ui_spam_filter_unknown_opts", {"phone": "Leave them on the phone", "ai": "Let the AI answer them"})
+    db_choice(
+        trans.get("ui_spam_filter_unknown_label", "Numbers that are not in your contact list (and are not SPAM):"),
+        SPAM_FILTER_UNKNOWN_CHOICES, "spam_filter_unknown", "spam_filter_unknown_radio", SPAM_FILTER_UNKNOWN_CHOICES[0],
+        format_func=lambda option: labels.get(option, option)
+    )
+    if spam_filter_on:
+        st.info(trans.get("ui_spam_filter_active_ai" if spam_filter_ai else "ui_spam_filter_active_phone", "SPAM filter mode is on."))
+
+
+if spam_filter_on:
+    st.warning(trans.get("ui_spam_filter_banner", "🛡️ SPAM filter mode is ON: calls stay on the phone except SPAM. Greyed-out options do nothing until you turn it off; their values are kept.").format(
+        unknown=trans.get("ui_spam_filter_unknown_opts", {"phone": "Leave them on the phone", "ai": "Let the AI answer them"}).get(spam_filter_unknown, spam_filter_unknown)))
 
 col1, col2, col3 = st.columns([1.45, 1.15, 1.25])
 
@@ -2147,6 +2411,8 @@ with col2:
     st.write("---")
 
     st.subheader(trans.get("ui_managed_contacts", "Managed contacts & wildcard rules:"))
+    if spam_filter_on:
+        st.info(trans.get("ui_spam_filter_contacts_note", "SPAM filter mode is on: every number of the whitelist stays on the phone and the blacklist still rejects. The instructions, greeting, memory and phone options of each rule are kept but not used until you turn the mode off."))
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode FROM contacts ORDER BY number ASC").fetchall()
     conn.close()
@@ -2190,21 +2456,24 @@ with col2:
                 edit_prompt = st.text_area(
                     trans.get("ui_form_prompt", "Custom Instructions:"),
                     value=c_prompt or "",
-                    key=f"edit_c_prompt_{ckey}"
+                    key=f"edit_c_prompt_{ckey}",
+                    disabled=spam_filter_on
                 )
                 edit_greeting = st.text_area(
                     trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"),
                     value=c_greeting or "",
-                    key=f"edit_c_greeting_{ckey}"
+                    key=f"edit_c_greeting_{ckey}",
+                    disabled=spam_filter_on
                 )
-                edit_greeting_mode = contact_greeting_mode_widget(f"edit_c_gm_{ckey}", c_greeting_mode or "")
+                edit_greeting_mode = contact_greeting_mode_widget(f"edit_c_gm_{ckey}", c_greeting_mode or "", disabled=spam_filter_on)
                 edit_passthrough = st.checkbox(
                     trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
                     value=bool(c_passthrough),
                     key=f"edit_c_pt_{ckey}",
+                    disabled=spam_filter_on,
                     help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
                 )
-                edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{ckey}", c_mem_mode, c_mem_calls, c_mem_days)
+                edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{ckey}", c_mem_mode, c_mem_calls, c_mem_days, disabled=spam_filter_on)
                 eb1, eb2 = st.columns(2)
                 with eb1:
                     if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{ckey}", use_container_width=True):
@@ -2251,14 +2520,15 @@ with col2:
         contact_type = st.selectbox(trans.get("ui_form_category", "Action:"), ["whitelist", "blacklist"])
         contact_tag = contact_tag_widgets("new_contact")
         contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="", help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT))
-        prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"))
-        new_greeting_c = st.text_area(trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"))
-        new_greeting_mode = contact_greeting_mode_widget("new_contact_gm")
+        prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"), disabled=spam_filter_on)
+        new_greeting_c = st.text_area(trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"), disabled=spam_filter_on)
+        new_greeting_mode = contact_greeting_mode_widget("new_contact_gm", disabled=spam_filter_on)
         new_passthrough = st.checkbox(
             trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
+            disabled=spam_filter_on,
             help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
         )
-        new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact")
+        new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact", disabled=spam_filter_on)
         submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
 
         if submit and phone_num.strip():
@@ -2409,6 +2679,11 @@ with col3:
 
     st.write("---")
 
+    # --- SPAM FILTER MODE ---
+    render_spam_filter_panel()
+
+    st.write("---")
+
     # --- LINUX SYSTEM UPDATE (apt update + upgrade, with live output) ---
     st.markdown(f"**🛠️ {trans.get('ui_update_title', 'Linux system update')}**")
     render_system_update_panel()
@@ -2530,15 +2805,22 @@ with col3:
     db_slider(
         trans.get("wait_seconds_label", "Wait before answer:"),
         "wait_seconds", "slider_wait_seconds", "5", int,
-        min_value=0, max_value=15
+        min_value=0, max_value=15, disabled=ai_options_inactive
     )
+
+    # --- MODELS IN USE ---
+    st.write("---")
+    st.subheader(trans.get("ui_models_title", "🤖 Models in use"))
+    render_models_panel()
 
     # --- NETWORK SPAM PROTECTION, CACHE & LIVE AI TESTER ---
     st.write("---")
     st.subheader(trans.get("ui_spam_title", "🛡️ Network SPAM Protection"))
     current_spam = get_config("auto_block_spam", "false") == "true"
-    block_spam_chk = st.checkbox(trans.get("auto_block_spam_label", "Auto hang up Spam"), value=current_spam)
-    if block_spam_chk != current_spam:
+    block_spam_chk = st.checkbox(trans.get("auto_block_spam_label", "Auto hang up Spam"), value=current_spam, disabled=spam_filter_on)
+    if spam_filter_on:
+        st.caption(trans.get("ui_spam_filter_autoblock_note", "Always on while the SPAM filter mode is on. Your choice is kept."))
+    elif block_spam_chk != current_spam:
         set_config("auto_block_spam", "true" if block_spam_chk else "false")
 
     db_slider(
@@ -2594,7 +2876,7 @@ with col3:
     with st.expander(trans.get("ui_spam_test_expander", "🔍 Test Phone Number Against SPAM Providers"), expanded=bool(st.session_state.get("spam_test_expanded", False))):
         test_num_inp = st.text_input(trans.get("ui_spam_test_input", "Phone number to test:"), key="spam_test_num_inp")
         if st.button(trans.get("ui_spam_test_btn", "Run SPAM Test"), key="btn_run_spam_test") and test_num_inp.strip():
-            active_text_model = get_config("text_model", "gemini-3-flash-preview")
+            active_text_model = get_config("text_model", default_text_model())
             for tpl in spam_urls_list:
                 formatted_url = format_spam_test_url(tpl, test_num_inp.strip(), spam_data)
                 try:
@@ -2615,6 +2897,16 @@ with col3:
                         st.error(trans.get("ui_spam_test_http_error", "HTTP {status} — {url}").format(status=status_code, url=formatted_url))
                 except Exception as e:
                     st.error(trans.get("ui_spam_test_failed", "Failed: {url} -> {error}").format(url=formatted_url, error=e))
+
+    # --- OPTIONS THAT ONLY CONCERN CALLS ANSWERED BY THE AI: greyed out (not changed) while the SPAM filter mode leaves the AI without calls ---
+    if ai_options_inactive:
+        st.markdown("<style>div[class*='st-key-ai_options_zone']{opacity:0.4;pointer-events:none;filter:grayscale(1);}</style>", unsafe_allow_html=True)
+        st.info(trans.get("ui_spam_filter_inactive_note", "🛡️ SPAM filter mode is on and the AI answers nobody, so the options below do nothing now. They keep their values and work again when you turn the mode off or let the AI answer the unknown numbers."))
+        try:
+            ai_options_zone = st.container(key="ai_options_zone")
+        except TypeError:   # Streamlit without container keys: the options stay usable, only the note above is shown
+            ai_options_zone = st.container()
+        ai_options_zone.__enter__()
 
     # --- CONFIGURABLE CONTEXT MEMORY & SUMMARIES ---
     st.write("---")
@@ -2779,16 +3071,7 @@ with col3:
     st.subheader(trans.get("transcription_mode_title", "🎙️ Transcription Mode"))
     st.caption(trans.get("gemini_live_trans_note", "ℹ️ Gemini 3.8 Live already transcribes calls natively in real time. Local Whisper.cpp is optional."))
 
-    current_model = get_config("text_model", "gemini-3-flash-preview")
-    model_opts = trans.get("text_model_opts", ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"])
-    idx_model = model_opts.index(current_model) if current_model in model_opts else 0
-    new_model = st.selectbox(trans.get("ui_text_model_label", "Text Model:"), model_opts, index=idx_model)
-    if new_model != current_model:
-        set_config("text_model", new_model)
-        if "gemma" in new_model.lower():
-            if get_config("final_transcription_mode", "disabled") == "gemini_final":
-                set_config("final_transcription_mode", "disabled")
-        st.rerun()
+    current_model = get_config("text_model", default_text_model())
 
     whisper_bin_path = find_whisper_bin()
     whisper_installed = bool(whisper_bin_path)
@@ -2799,7 +3082,7 @@ with col3:
     trans_mode_opts.append("online_realtime")       # Gemini 3.5 Transcribe Live: needs no local software
     if whisper_installed:
         trans_mode_opts.append("whisper_final")
-    if "gemma" not in current_model.lower():
+    if model_family(current_model) != "gemma":
         trans_mode_opts.append("gemini_final")
 
     trans_mode_labels = trans.get("trans_mode_opts_labels", {
@@ -2807,7 +3090,7 @@ with col3:
         "realtime": "Real-time (Whisper.cpp)",
         "online_realtime": "Online real-time (Gemini 3.5 Transcribe Live)",
         "whisper_final": "Whisper.cpp at end of call",
-        "gemini_final": "Gemini Flash 3 at end of call"
+        "gemini_final": "Gemini at end of call"
     })
 
     current_trans_mode = get_config("final_transcription_mode", "disabled")
@@ -3088,3 +3371,6 @@ with col3:
     new_extra = st.text_area(trans.get("ui_extra_prompt", "Personality & Extra Instructions:"), value=current_extra)
     if new_extra != current_extra:
         set_config("extra_prompt", new_extra.strip())
+
+if ai_options_inactive:
+    ai_options_zone.__exit__(None, None, None)
