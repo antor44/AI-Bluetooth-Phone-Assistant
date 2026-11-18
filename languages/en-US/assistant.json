@@ -15,6 +15,10 @@
   "ui_saved_message": "Message from {name}: {message}",
   "ui_in_progress": "🟢 IN PROGRESS",
   "passthrough_message": "Call left to the phone: the switchboard did not answer it ({pattern}).",
+  "spam_filter_rejected_message": "Call rejected: the SPAM filter mode flagged the number (risk {score}/100).",
+  "spam_filter_answered_message": "SPAM suspected (risk {score}/100), but the call was already answered on the phone.",
+  "spam_filter_phone_message": "Call left to the phone: SPAM filter mode, the number is not in the contact list.",
+  "analysis_unavailable_message": "The call analysis could not be made (the text model was not available). The transcript is saved.",
 
   "owner_type_mappings": {
     "private": "private/personal",
@@ -29,7 +33,6 @@
   "inline_prompts": {
     "greeting": "[SYSTEM: Start the call with a formal greeting. Introduce yourself as {assistant_name}. DO NOT mention your boss ({boss_name}) at the start. Ask who is calling and the reason for the call. Keep speaking in your standard English accent and your usual voice.]",
     "greeting_exact": "[SYSTEM: Start the call by saying EXACTLY this phrase, word by word, without adding anything else: '{phrase}'. Keep speaking in your standard English accent and your usual voice.]",
-    "cutoff_correction": "[SYSTEM: You were cut off mid-sentence. Continue naturally from where you left off. Keep speaking in your standard English accent and your usual voice.]",
     "hold_reminder": "[SYSTEM: You are on hold, but the current inactivity limit is {wait_seconds} seconds. Politely let the caller know you cannot hold indefinitely. Keep speaking in your standard English accent and your usual voice.]",
     "hello_question": "[SYSTEM: The caller is silent. Ask politely if they are still there, e.g. 'Hello? Are you still there?' Keep speaking in your standard English accent and your usual voice.]",
     "hangup_cancelled": "[SYSTEM: The call was NOT hung up: the caller has not finished. Do not stay silent: briefly and naturally keep attending the caller and wait for what they say. Keep speaking in your standard English accent and your usual voice.]",
@@ -51,14 +54,11 @@
   "output_schema_instruction": "Analyze the following complete call transcript and classify it retrospectively.\nSTRICT CLASSIFICATION AND EXTRACTION RULES:\n- 'caller_type': Classify strictly as 'spam' if the caller offers suspicious financial products, trading, cryptocurrency, unrealistic returns (e.g. doubling money, guaranteed 100% monthly gains, Forex loops), suspicious surveys, or highly aggressive cold calls. Classify as 'commercial' for standard legitimate telemarketing. Classify as 'work' for a real business or employment matter for {boss_name}. Classify as 'friend_family' for personal calls from friends or family.\n- 'risk_score': Assign 80–100 if a financial scam, high-yield investment pitch, trading scheme, or refusal to identify is clearly detected. Assign 0–20 for clearly friendly or trusted calls.\n- 'caller_name': Extract ONLY the first name of the external caller. NEVER extract the name of {boss_name} or {assistant_name} by mistake. If the caller does not state their name, return an empty string.\n- 'company': Extract the name of the company, hospital, or organisation. If none, return an empty string. Ignore noise or hallucinated words.\n- 'summary': Write a concise summary (40 to 70 words in English) of who called, what they wanted, and any message, appointment, or outcome.\n- FILTERING: Ignore all background noise, TV audio, or conversations unrelated to the main call.",
 
   "words": {
-    "excluded_capital": ["hello", "hi", "hey", "good", "morning", "afternoon", "evening", "night", "yes", "no", "is", "are", "was", "were", "want", "would", "like", "can", "could", "should", "speak", "talking", "calling", "call", "how", "what", "who", "where", "when", "why", "by", "for", "but", "with", "without", "this", "that", "these", "those", "he", "she", "they", "it", "you", "we", "i", "my", "your", "their", "his", "her", "our", "to", "from", "at", "on", "in", "of", "please", "excuse", "sorry", "thanks", "thank", "okay", "ok", "right", "well", "fine", "do", "does", "did", "have", "has", "had", "keep", "stay", "still", "here", "there", "about", "above", "below", "also", "just", "so", "then", "now", "up", "down", "out", "off", "over", "under", "again"],
-    "stopwords": ["Of", "From", "The", "A", "An", "By", "With", "Without", "That", "As", "And", "Or", "But", "of", "from", "the", "a", "an", "by", "with", "without", "that", "as", "and", "or", "but"],
     "foreign_noise": ["hola", "buenos", "días", "buenas", "ciao", "merci", "bonjour", "bitte", "danke", "oui", "nyet", "dammi", "prima", "dopo", "grazie", "bitmaana", "nagorgay", "tá", "aí", "ouve", "hmm", "mhm", "ja", "nein", "hai", "iie", "muchas", "molto", "buon", "bien", "mal", "des", "der", "das", "si", "sí", "vale", "pues", "pero", "para", "como", "cuando", "cinco", "pergunta", "morgen", "vom", "und", "ich", "nicht", "ist", "guten", "gut", "sehr", "mit", "zu", "auf", "aber", "oder", "wie", "tschüss", "wiedersehen"],
     "transcription_noise": ["attention", "background noise", "static", "whispering", "sigh", "music playing", "applause"],
     "goodbye_veto_words": ["not", "never", "cannot", "can't", "won't", "don't", "doesn't", "didn't", "wouldn't", "shouldn't", "unless", "if"],
     "goodbye_meta_words": ["word", "words", "phrase", "phrases", "term", "terms", "expression", "expressions", "command", "commands", "example", "examples", "instance", "context", "explanation", "explain", "explaining", "as part", "mention", "mentioning", "mentioned", "ignore", "ignoring", "programmed", "prematurely", "list", "listing", "recognize", "recognise", "detect", "identify", "test", "testing", "tested", "simulate", "simulation", "demo", "demonstrate", "trial"],
     "assistant_placeholder_phrases": ["nothing", "silence", "nothing said"],
-    "negations": ["no", "neither", "nothing", "never", "none", "not", "nope", "nah"],
     "cut_words": [
       "goodbye", "good bye", "bye", "bye bye", "bye for now", "bye then",
       "see you", "see you soon", "see you later", "see you then",
@@ -75,6 +75,7 @@
       "hang up", "hanging up", "disconnect", "end the call",
       "toodles", "ttyl"
     ],
+    "greeting_farewell_words": ["good night", "good day"],
     "hold_words": [
       "on hold", "hold on", "hold please", "please hold", "hold the line",
       "hold for",

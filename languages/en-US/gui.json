@@ -51,7 +51,62 @@
 
   "ui_initial_greeting": "Initial Greeting (Legal Notice):",
   "ui_extra_prompt": "Personality & Extra Instructions:",
-  "ui_text_model_label": "Text Model (Analysis & SPAM):",
+  "ui_text_model_label": "Text model (SPAM check, summaries, end-of-call text):",
+  "ui_models_title": "🤖 Models in use",
+  "ui_api_plan_label": "My Google API key is:",
+  "ui_api_plan_help": "The program cannot know it: say it here so this panel shows the limits and the privacy terms that go with your key. It changes nothing else.",
+  "ui_api_plan_opts": {
+    "free": "Free (no billing)",
+    "paid": "Paid (billing enabled)"
+  },
+  "ui_models_catalog_missing": "defaults.json is missing or unreadable: the models cannot be shown.",
+  "ui_text_model_migrated": "The text model '{old}' is no longer offered. '{new}' is used now.",
+  "ui_dismiss": "Got it",
+  "ui_text_model_notes": {
+    "gemini-3.5-flash-lite": "Recommended. Fast, understands audio (it can correct the transcript at the end of the call) and has a paid plan for private use.",
+    "gemma-4-26b-a4b-it": "Many more free requests per day, but it cannot listen to the recording (no end-of-call correction), follows the requested answer format less strictly and exists only on the free plan."
+  },
+  "ui_model_free_only_warning": "This model exists only on the free plan of the Gemini API: there is no paid plan to choose, so the terms of the free plan always apply (see Privacy below).",
+  "ui_role_live": "Voice of the calls",
+  "ui_role_text": "Text analysis",
+  "ui_role_online": "Online transcription",
+  "ui_col_task": "Task",
+  "ui_col_model": "Model",
+  "ui_col_used_today": "Used today",
+  "ui_col_limit_free": "Free limit",
+  "ui_col_price_paid": "Price (paid)",
+  "ui_col_status": "Status",
+  "ui_limit_per_day": "{n} requests/day",
+  "ui_limit_no_daily": "no daily request limit",
+  "ui_limit_per_minute": "{n}/min",
+  "ui_limit_tokens_per_minute": "~{n} tokens/min",
+  "ui_price_no_paid_plan": "no paid plan exists",
+  "ui_price_text": "${price_in} in / ${price_out} out per million tokens",
+  "ui_price_live": "${price_in}/min of call audio + ${price_out}/min of assistant voice",
+  "ui_price_online": "~${price}/min",
+  "ui_status_blocked": "limit reached, back at {time}",
+  "ui_status_limit_hit_today": "limit hit today at {time}",
+  "ui_status_ok": "ok",
+  "ui_models_reference_note": "Limits and prices are reference values read on {date}. Google changes them without notice and no longer publishes the free limits per model: the real ones are in AI Studio ({url}). Requests are counted by this program (for the voice models, one per call).",
+  "ui_quota_reset_note": "Daily limits renew at midnight Pacific time ({time} here).",
+  "ui_privacy_title": "🔒 Privacy and terms of use",
+  "ui_privacy_free_text": "**Free plan (unpaid quota).** Outside the European Economic Area, Switzerland and the United Kingdom, Google may use what the program sends (caller numbers, transcripts, audio) to improve its products, and human reviewers may read it. Google asks not to send sensitive, confidential or personal information to unpaid services, and phone calls usually contain it. Inside those three regions the data terms of the paid plan also apply to the free quota: Google does not use the data to improve its products.",
+  "ui_privacy_paid_text": "**Paid plan.** Google does not use your prompts, audio or answers to improve its products. It keeps them for a limited time only to detect abuse and to meet legal duties.",
+  "ui_privacy_eu_text": "**European Economic Area, Switzerland and United Kingdom.** Google's terms say that only paid services may be used when you make an application available to users in those regions. If you give this switchboard to other people there (clients, employees), use a key with billing enabled. Whether your own use counts is for you to check: the terms are Google's and may change (link below). This is not legal advice.",
+  "ui_spam_filter_title": "🛡️ SPAM filter mode",
+  "ui_spam_filter_label": "Turn on the SPAM filter mode",
+  "ui_spam_filter_help": "Every call stays on the phone, with its own audio, except SPAM, which is hung up. Blacklist rules still reject. Nothing you configured is erased: the options that do nothing meanwhile are greyed out and come back as they were when you turn the mode off. If the switchboard is paused, the pause goes first.",
+  "ui_spam_filter_unknown_label": "Numbers that are not in your contact list (and are not SPAM):",
+  "ui_spam_filter_unknown_opts": {
+    "phone": "Leave them on the phone",
+    "ai": "Let the AI answer them"
+  },
+  "ui_spam_filter_active_phone": "🛡️ Active: every call rings on the phone. The SPAM check runs while it rings and a SPAM call is hung up if you have not answered yet. The AI answers nobody.",
+  "ui_spam_filter_active_ai": "🛡️ Active: the numbers of your whitelist stay on the phone, SPAM is hung up and the AI answers only the unknown numbers, after the SPAM check (it can take a few seconds more to answer).",
+  "ui_spam_filter_banner": "🛡️ SPAM filter mode is ON — unknown numbers: {unknown}. Greyed-out options do nothing until you turn it off; their values are kept.",
+  "ui_spam_filter_contacts_note": "SPAM filter mode is on: every number of the whitelist stays on the phone and the blacklist still rejects. The instructions, greeting, memory and phone options of each rule are kept but not used until you turn the mode off.",
+  "ui_spam_filter_autoblock_note": "Always on while the SPAM filter mode is on. Your choice is kept.",
+  "ui_spam_filter_inactive_note": "🛡️ SPAM filter mode is on and the AI answers nobody, so the options below do nothing now. They keep their values and work again when you turn the mode off or let the AI answer the unknown numbers.",
   "default_legal_warning": "Hello. I am an artificial intelligence and this call is being recorded for security purposes. How may I help you?",
 
   "memory_title": "🧠 Call Memory & Category Rules",
@@ -303,7 +358,7 @@
     "realtime": "Real-time (Whisper.cpp)",
     "online_realtime": "Online real-time (Gemini 3.5 Transcribe Live)",
     "whisper_final": "Whisper.cpp at end of call",
-    "gemini_final": "Gemini Flash 3 at end of call"
+    "gemini_final": "Gemini at end of call"
   },
 
   "tags": [
@@ -317,7 +372,6 @@
 
   "owner_types": ["private", "professional", "business"],
   "gender_types": ["female", "male"],
-  "text_model_opts": ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
 
   "defaults": {
     "assistant_name": "Sarah",
