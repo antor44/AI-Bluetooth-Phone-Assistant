@@ -51,7 +51,62 @@
 
   "ui_initial_greeting": "Saludo Inicial (Aviso Legal):",
   "ui_extra_prompt": "Personalidad e Instrucciones Extra:",
-  "ui_text_model_label": "Modelo de Texto (Análisis y SPAM):",
+  "ui_text_model_label": "Modelo de texto (análisis SPAM, resúmenes, texto al final de la llamada):",
+  "ui_models_title": "🤖 Modelos en uso",
+  "ui_api_plan_label": "Mi clave de la API de Google es:",
+  "ui_api_plan_help": "El programa no puede saberlo: indícalo aquí para que este panel muestre los límites y las condiciones de privacidad que corresponden a tu clave. No cambia nada más.",
+  "ui_api_plan_opts": {
+    "free": "Gratuita (sin facturación)",
+    "paid": "De pago (facturación activada)"
+  },
+  "ui_models_catalog_missing": "Falta defaults.json o no se puede leer: no se pueden mostrar los modelos.",
+  "ui_text_model_migrated": "El modelo de texto '{old}' ya no se ofrece. Ahora se usa '{new}'.",
+  "ui_dismiss": "Entendido",
+  "ui_text_model_notes": {
+    "gemini-3.5-flash-lite": "Recomendado. Rápido, entiende audio (puede corregir la transcripción al final de la llamada) y tiene plan de pago para uso privado.",
+    "gemma-4-26b-a4b-it": "Muchas más peticiones gratis al día, pero no puede escuchar la grabación (sin corrección al final de la llamada), sigue con menos rigor el formato de respuesta pedido y existe solo en el plan gratuito."
+  },
+  "ui_model_free_only_warning": "Este modelo existe solo en el plan gratuito de la API de Gemini: no hay plan de pago que elegir, así que siempre se aplican las condiciones del plan gratuito (ver Privacidad más abajo).",
+  "ui_role_live": "Voz de las llamadas",
+  "ui_role_text": "Análisis de texto",
+  "ui_role_online": "Transcripción online",
+  "ui_col_task": "Tarea",
+  "ui_col_model": "Modelo",
+  "ui_col_used_today": "Usado hoy",
+  "ui_col_limit_free": "Límite gratuito",
+  "ui_col_price_paid": "Precio (de pago)",
+  "ui_col_status": "Estado",
+  "ui_limit_per_day": "{n} peticiones/día",
+  "ui_limit_no_daily": "sin límite diario de peticiones",
+  "ui_limit_per_minute": "{n}/min",
+  "ui_limit_tokens_per_minute": "~{n} tokens/min",
+  "ui_price_no_paid_plan": "no existe plan de pago",
+  "ui_price_text": "{price_in} $ de entrada / {price_out} $ de salida por millón de tokens",
+  "ui_price_live": "{price_in} $/min de audio de llamada + {price_out} $/min de voz del asistente",
+  "ui_price_online": "~{price} $/min",
+  "ui_status_blocked": "límite alcanzado, vuelve a las {time}",
+  "ui_status_limit_hit_today": "límite alcanzado hoy a las {time}",
+  "ui_status_ok": "correcto",
+  "ui_models_reference_note": "Los límites y precios son valores de referencia leídos el {date}. Google los cambia sin avisar y ya no publica los límites gratuitos por modelo: los reales están en AI Studio ({url}). Las peticiones las cuenta este programa (en los modelos de voz, una por llamada).",
+  "ui_quota_reset_note": "Los límites diarios se renuevan a medianoche, hora del Pacífico (a las {time} aquí).",
+  "ui_privacy_title": "🔒 Privacidad y condiciones de uso",
+  "ui_privacy_free_text": "**Plan gratuito (cuota sin pago).** Fuera del Espacio Económico Europeo, Suiza y el Reino Unido, Google puede usar lo que envía el programa (números de los llamantes, transcripciones, audio) para mejorar sus productos, y revisores humanos pueden leerlo. Google pide no enviar información sensible, confidencial o personal a los servicios sin pago, y las llamadas telefónicas suelen contenerla. Dentro de esas tres regiones las condiciones de datos del plan de pago se aplican también a la cuota gratuita: Google no usa los datos para mejorar sus productos.",
+  "ui_privacy_paid_text": "**Plan de pago.** Google no usa tus peticiones, audio ni respuestas para mejorar sus productos. Los conserva un tiempo limitado solo para detectar abusos y cumplir obligaciones legales.",
+  "ui_privacy_eu_text": "**Espacio Económico Europeo, Suiza y Reino Unido.** Las condiciones de Google dicen que solo pueden usarse servicios de pago cuando pones una aplicación a disposición de usuarios de esas regiones. Si das esta centralita a otras personas allí (clientes, empleados), usa una clave con facturación activada. Si tu propio uso cuenta es algo que debes comprobar tú: las condiciones son de Google y pueden cambiar (enlace abajo). Esto no es asesoramiento legal.",
+  "ui_spam_filter_title": "🛡️ Modo filtro SPAM",
+  "ui_spam_filter_label": "Activar el modo filtro SPAM",
+  "ui_spam_filter_help": "Todas las llamadas se quedan en el móvil, con su propio audio, salvo el SPAM, que se cuelga. Las reglas de la lista negra siguen rechazando. No se borra nada de lo que configuraste: las opciones que mientras tanto no hacen nada aparecen en gris y vuelven a estar como estaban al desactivar el modo. Si la centralita está en pausa, manda la pausa.",
+  "ui_spam_filter_unknown_label": "Números que no están en tu lista de contactos (y no son SPAM):",
+  "ui_spam_filter_unknown_opts": {
+    "phone": "Dejarlos en el móvil",
+    "ai": "Que los atienda la IA"
+  },
+  "ui_spam_filter_active_phone": "🛡️ Activo: todas las llamadas suenan en el móvil. La comprobación de SPAM se hace mientras suena y, si es SPAM y todavía no has contestado, se cuelga. La IA no atiende a nadie.",
+  "ui_spam_filter_active_ai": "🛡️ Activo: los números de tu lista blanca se quedan en el móvil, el SPAM se cuelga y la IA atiende solo los números desconocidos, después de la comprobación de SPAM (puede tardar unos segundos más en contestar).",
+  "ui_spam_filter_banner": "🛡️ El modo filtro SPAM está ACTIVADO — números desconocidos: {unknown}. Las opciones en gris no hacen nada hasta que lo desactives; sus valores se conservan.",
+  "ui_spam_filter_contacts_note": "El modo filtro SPAM está activado: todos los números de la lista blanca se quedan en el móvil y la lista negra sigue rechazando. Las instrucciones, el saludo, la memoria y las opciones de móvil de cada regla se conservan pero no se usan hasta que desactives el modo.",
+  "ui_spam_filter_autoblock_note": "Siempre activo mientras el modo filtro SPAM está activado. Tu elección se conserva.",
+  "ui_spam_filter_inactive_note": "🛡️ El modo filtro SPAM está activado y la IA no atiende a nadie, así que las opciones de abajo no hacen nada ahora. Conservan sus valores y vuelven a funcionar al desactivar el modo o dejar que la IA atienda los números desconocidos.",
   "default_legal_warning": "Hola. Soy una inteligencia artificial y esta llamada está siendo grabada por seguridad. ¿En qué le puedo ayudar?",
 
   "memory_title": "🧠 Memoria de Llamadas y Reglas por Categoría",
@@ -303,7 +358,7 @@
     "realtime": "Tiempo real (Whisper.cpp)",
     "online_realtime": "Online en tiempo real (Gemini 3.5 Transcribe Live)",
     "whisper_final": "Whisper.cpp al final de la llamada",
-    "gemini_final": "Gemini Flash 3 al final de la llamada"
+    "gemini_final": "Gemini al final de la llamada"
   },
 
   "tags": [
@@ -317,7 +372,6 @@
 
   "owner_types": ["privado", "profesional", "negocio"],
   "gender_types": ["femenino", "masculino"],
-  "text_model_opts": ["gemini-3-flash-preview", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
 
   "defaults": {
     "assistant_name": "Beatriz",
