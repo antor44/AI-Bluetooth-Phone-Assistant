@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 3.4
+Version: 3.5
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
 DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
 BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
@@ -411,14 +411,31 @@ def find_contact_rule(candidates: List[str], rules: List[Dict[str, str]]) -> Opt
     return best_rule
 
 
+def format_passthrough_tag(passthrough_label: str, secondary_tag: str = "") -> str:
+    """Keeps the passthrough badge together with any custom contact or manual tag."""
+    clean_secondary = (secondary_tag or "").strip()
+    if not clean_secondary or clean_secondary == passthrough_label:
+        return passthrough_label
+    if clean_secondary.startswith(passthrough_label):
+        return clean_secondary
+    return f"{passthrough_label} · {clean_secondary}"
+
+
+def is_passthrough_tag(tag_value: str, passthrough_label: str) -> bool:
+    clean = (tag_value or "").strip()
+    return bool(clean) and (clean == passthrough_label or clean.startswith(f"{passthrough_label} · ") or clean.startswith("📱"))
+
+
 def recalculate_call_labels(labels: Dict[str, str], in_progress_label: str) -> int:
     """Applies the current contact rules to ALL finished calls, so past calls follow every change of the rules.
     Tag: the custom tag of the matching rule; otherwise the blocked label if the rule is a Blacklist rule;
-    otherwise the call's own base label (the AI classification, or the one chosen by hand in the call log).
+    otherwise the call's own base label (the AI classification, or the one you chose by hand in the call log).
+    Passthrough calls always keep the 📱 ON THE PHONE badge combined with any contact or manual tag.
     Name: the name heard by the AI (or typed by hand); the rule's note only fills in when there is none.
     Returns how many calls changed."""
     numbering = get_home_numbering()
     blocked_label = labels.get("blocked", "🚫 BLACKLISTED")
+    passthrough_label = labels.get("passthrough", "📱 ON THE PHONE")
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     try:
         rules = load_contact_rules(conn, numbering)
@@ -434,10 +451,11 @@ def recalculate_call_labels(labels: Dict[str, str], in_progress_label: str) -> i
                 _, _, candidates = normalize_phone_candidates(number, numbering)
                 rule_by_number[number] = find_contact_rule(candidates, rules)
             rule = rule_by_number[number]
+            passthrough_call = is_passthrough_tag(base_tag or "", passthrough_label)
             if rule and rule["tag"]:
-                new_tag = rule["tag"]
+                new_tag = format_passthrough_tag(passthrough_label, rule["tag"]) if passthrough_call else rule["tag"]
             elif rule and rule["type"] == "blacklist":
-                new_tag = blocked_label
+                new_tag = format_passthrough_tag(passthrough_label, blocked_label) if passthrough_call else blocked_label
             else:
                 new_tag = base_tag
             new_name = base_client_name or (rule["note"] if rule else "")
@@ -460,7 +478,8 @@ def backfill_call_base_labels(labels: Dict[str, str], extra_standard_tags: List[
     blocked_label = labels.get("blocked", "🚫 BLACKLISTED")
     spam_label = labels.get("spam", "SPAM")
     general_label = labels.get("general", "GENERAL")
-    standard_tags = {labels[key] for key in ("spam", "priority", "personal", "work", "general") if labels.get(key)}
+    passthrough_label = labels.get("passthrough", "📱 ON THE PHONE")
+    standard_tags = {labels[key] for key in ("spam", "priority", "personal", "work", "general", "passthrough") if labels.get(key)}
     standard_tags.update(tag for tag in extra_standard_tags if tag and tag != blocked_label)
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     try:
@@ -472,7 +491,9 @@ def backfill_call_base_labels(labels: Dict[str, str], extra_standard_tags: List[
         updates = []
         for call_id, tag, spam_score, summary, transcript, client_name in rows:
             current_tag = (tag or "").strip()
-            if current_tag in standard_tags:
+            if (transcript or "").lstrip().startswith("📱"):
+                base_tag = passthrough_label
+            elif current_tag in standard_tags:
                 base_tag = current_tag
             elif (spam_score or 0) >= SPAM_SCORE_THRESHOLD:
                 base_tag = spam_label
@@ -483,6 +504,32 @@ def backfill_call_base_labels(labels: Dict[str, str], extra_standard_tags: List[
         if updates:
             conn.executemany("UPDATE calls SET base_tag=?, base_client_name=? WHERE id=?", updates)
             conn.commit()
+        return len(updates)
+    finally:
+        conn.close()
+
+
+def rescue_passthrough_call_labels(labels: Dict[str, str], in_progress_label: str) -> int:
+    """One-time rescue for existing passthrough calls whose 📱 label was overwritten by a contact tag."""
+    passthrough_label = labels.get("passthrough", "📱 ON THE PHONE")
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+    try:
+        cur = conn.execute("INSERT OR IGNORE INTO settings VALUES ('passthrough_labels_rescued_v35', '1')")
+        if cur.rowcount == 0:
+            return 0
+        rows = conn.execute(
+            "SELECT id, tag, base_tag FROM calls WHERE COALESCE(transcript, '') LIKE '📱%' AND COALESCE(tag, '') != ?",
+            (in_progress_label,)
+        ).fetchall()
+        updates = []
+        for call_id, tag, base_tag in rows:
+            new_base = base_tag if is_passthrough_tag(base_tag or "", passthrough_label) else passthrough_label
+            new_tag = format_passthrough_tag(passthrough_label, tag or "")
+            if new_tag != tag or new_base != base_tag:
+                updates.append((new_tag, new_base, call_id))
+        if updates:
+            conn.executemany("UPDATE calls SET tag=?, base_tag=? WHERE id=?", updates)
+        conn.commit()
         return len(updates)
     finally:
         conn.close()
@@ -927,6 +974,10 @@ def init_db() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    # Upgrade installs that still hold the old 600 ms default without touching custom values
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_v35_migrated', '1')")
+    if c.rowcount == 1:
+        c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms' AND value='600'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
 
     migrate_text_model_choice(conn)
 
@@ -943,7 +994,7 @@ LOCALIZED_KEYS = [
 
 
 def get_config(key: str, default_value: str) -> str:
-    """Retrieves standard or language-localized configuration elements from the database."""
+    """Retrieves standard or localized configuration elements from the database."""
     conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
     res_lang = conn.execute("SELECT value FROM settings WHERE key='language'").fetchone()
     current_lang = res_lang[0] if res_lang else DEFAULT_LANGUAGE
@@ -1567,10 +1618,13 @@ trans = load_language_data(current_lang, "gui.json")
 assistant_labels = load_language_data(current_lang, "assistant.json").get("labels", {})
 in_progress_label = trans.get("ui_in_progress", "IN PROGRESS")
 
-# Calls saved by older versions get their base label once (the daemon fills it in for new calls). Right after that
-# migration the contact rules that already existed are applied to those old calls too.
+# Calls saved by older versions get their base label once (the daemon fills it in for new calls).
+# Existing passthrough calls whose 📱 label had been overwritten by a contact tag are also rescued once,
+# and contact rules are then re-applied across all calls.
 if not st.session_state.get("call_base_labels_ready"):
-    if backfill_call_base_labels(assistant_labels, list(trans.get("tags", [])), in_progress_label):
+    changed_backfill = backfill_call_base_labels(assistant_labels, list(trans.get("tags", [])), in_progress_label)
+    changed_rescue = rescue_passthrough_call_labels(assistant_labels, in_progress_label)
+    if changed_backfill or changed_rescue:
         recalculate_call_labels(assistant_labels, in_progress_label)
     st.session_state["call_base_labels_ready"] = True
 
@@ -2236,6 +2290,9 @@ with col1:
                 c_edit1, c_edit2 = st.columns([2, 2])
                 with c_edit1:
                     tag_options = list(trans.get("tags", ["GENERAL CALL"]))
+                    passthrough_label = assistant_labels.get("passthrough", "📱 ON THE PHONE")
+                    if is_passthrough_tag(tag_display, passthrough_label) and passthrough_label not in tag_options:
+                        tag_options.append(passthrough_label)
                     if tag_display and tag_display not in tag_options:
                         tag_options.append(tag_display)
                     tag_current_val = tag_display if tag_display in tag_options else tag_options[-1]
@@ -2258,8 +2315,12 @@ with col1:
                         key=tag_widget_key
                     )
                     if new_tag != tag_current_val:
+                        if is_passthrough_tag(tag_current_val, passthrough_label) and not is_passthrough_tag(new_tag, passthrough_label):
+                            tag_to_save = format_passthrough_tag(passthrough_label, new_tag)
+                        else:
+                            tag_to_save = new_tag
                         conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        conn_loc.execute("UPDATE calls SET tag=?, base_tag=? WHERE id=?", (new_tag, new_tag, id_call))
+                        conn_loc.execute("UPDATE calls SET tag=?, base_tag=? WHERE id=?", (tag_to_save, tag_to_save, id_call))
                         conn_loc.commit()
                         conn_loc.close()
                         st.toast(trans.get("ui_toast_tag_updated", "Tag updated"))

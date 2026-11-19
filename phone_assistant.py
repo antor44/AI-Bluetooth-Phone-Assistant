@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 3.4
+Version: 3.5
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -237,16 +237,18 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 DEFAULT_LANGUAGE = DEFAULTS["settings"]["language"]  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
 PLAYBACK_BYTES_PER_SECOND = 24000 * 2   # Gemini Live output: 24 kHz, 16-bit, mono PCM
+PLAYBACK_FRAME_BYTES = 2                # One 16-bit mono sample: silence must be written in whole samples
 HANGUP_AUDIO_TAIL_SECONDS = 1.2         # Extra time after the estimated end of playback (PipeWire + Bluetooth SCO latency)
 DEFAULT_CALLER_GAIN = float(DEFAULTS["settings"]["caller_gain"])                 # Default caller microphone gain (x)
 DEFAULT_NOISE_GATE_BASE = int(DEFAULTS["settings"]["noise_gate_base"])             # Default base noise gate (RMS)
 DEFAULT_VAD_PREFIX_PADDING_MS = int(DEFAULTS["settings"]["vad_prefix_padding_ms"])      # Default VAD prefix padding (ms)
 DEFAULT_VAD_SILENCE_DURATION_MS = int(DEFAULTS["settings"]["vad_silence_duration_ms"])    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
+DEFAULT_PLAYBACK_LEAD_SILENCE_MS = int(DEFAULTS["settings"]["playback_lead_silence_ms"])  # Default silence (ms) written before the first model audio so the Bluetooth link does not swallow the first word
 ASSISTANT_TURN_GAP_SECONDS = 4.0         # Output chunks closer than this belong to the same assistant turn (farewell detection)
 HOLD_ACCEPT_WINDOW_SECONDS = 25.0        # An assistant "I'll wait" phrase only starts a hold if the caller asked to wait this recently
 HOLD_RESUME_EXCHANGES = 2                # Caller turns dismissed during a hold but answered by the assistant that end the hold
@@ -277,6 +279,8 @@ DB_WRITE_MIN_INTERVAL = 2.0              # Live transcript writes to SQLite are 
 WHISPER_QUEUE_MAX = 8                    # Pending Whisper jobs per call; beyond this the oldest work is not worth waiting for
 HANGUP_STREAM_QUIET_SECONDS = 1.0       # No new audio from the model for this long before cutting the call
 HANGUP_MAX_WAIT_SECONDS = 20.0          # Safety limit: never wait longer than this for the audio to finish
+FAREWELL_CONFIRMED_GRACE_SECONDS = 0.5  # Reduced grace wait once the text model already confirmed the caller closed the call
+FAREWELL_CANCEL_DEFER_SECONDS = 1.0     # Wait briefly on 1-2 word utterances during a pending farewell in case online/Whisper confirms goodbye
 HOLD_MAX_TOTAL_SECONDS = 900.0          # Accumulated hold time of one call after which the grace warning starts (15 minutes)
 CALL_MAX_TOTAL_SECONDS = 1800.0         # Absolute maximum length of a call answered by the switchboard (30 minutes), whatever the hold or category settings
 CALL_LIMIT_GRACE_SECONDS = 20.0         # After the assistant announces that limit the call is cut this long afterwards, even if the caller keeps talking
@@ -894,6 +898,10 @@ def ensure_database_exists(reset_runtime_state: bool = False) -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_default_migrated', '1')")
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    # Upgrade installs that still hold the old 600 ms default without touching custom values
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_v35_migrated', '1')")
+    if c.rowcount == 1:
+        c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms' AND value='600'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
     # Values every start of the daemon sets again (state of the daemon and of the Tor service)
     for setting_key, setting_value in DEFAULTS["runtime_settings"].items():
         c.execute(f"{runtime_insert} INTO settings VALUES (?, ?)", (setting_key, str(setting_value)))
@@ -1470,6 +1478,30 @@ def print_debug_timeline(path: str, only: Optional[str] = None) -> None:
         print(f"{n:6d}  {ev}")
 
 
+def merge_json_documents(text: str) -> List[Any]:
+    """Reads every JSON document in a text and merges them into one list. pw-dump prints a second array when a node
+    disappears while it is dumping (e.g. [{"id": 58, "info": null}] next to the full dump), which json.loads rejects."""
+    decoder = json.JSONDecoder()
+    merged: List[Any] = []
+    pos, size = 0, len(text)
+    while pos < size:
+        while pos < size and text[pos].isspace():
+            pos += 1
+        if pos >= size:
+            break
+        try:
+            document, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            break
+        if isinstance(document, list):
+            merged.extend(document)
+        elif isinstance(document, dict):
+            merged.append(document)
+    if text.strip() and not merged:
+        raise ValueError("no JSON document found in the output")
+    return merged
+
+
 def summarize_bt_audio(objects: Any) -> Dict[str, Any]:
     """Picks the Bluetooth facts out of a pw-dump (codec, profile, sample rate) to learn whether the call runs in
     wide-band (mSBC) or narrow-band (CVSD) audio. Narrow-band audio degrades every transcription."""
@@ -1972,9 +2004,6 @@ def unblock_phones_left_blocked() -> None:
         set_bluetooth_phones_blocked(False)
 
 
-
-
-
 def _speaker_mute_marker_path() -> str:
     """RAM file that lists the speakers silenced by the switchboard, so they can be restored if the daemon dies meanwhile."""
     if os.path.isdir(RAM_STATE_DIR) and os.access(RAM_STATE_DIR, os.W_OK):
@@ -2384,6 +2413,16 @@ class CallPolicyEngine:
         return PolicyDecision("confirm", "Requires user confirmation")
 
 
+def format_passthrough_tag(passthrough_label: str, secondary_tag: str = "") -> str:
+    """Keeps the passthrough badge together with any custom contact or manual tag."""
+    clean_secondary = (secondary_tag or "").strip()
+    if not clean_secondary or clean_secondary == passthrough_label:
+        return passthrough_label
+    if clean_secondary.startswith(passthrough_label):
+        return clean_secondary
+    return f"{passthrough_label} · {clean_secondary}"
+
+
 class PhoneAssistant:
     """Main class that handles a single active Bluetooth phone call via Gemini 3.8 Live."""
 
@@ -2452,6 +2491,7 @@ class PhoneAssistant:
         # the audio has finished, the farewell still stands in the full turn text and the caller had a grace time.
         self.farewell_pending = False
         self.farewell_drained_since = 0.0
+        self._pending_cancel_check: Optional[Tuple[float, str]] = None
         self._asst_turn_text = ""
         self._asst_turn_last_time = 0.0
 
@@ -2467,7 +2507,7 @@ class PhoneAssistant:
         self.whisper_signals = knob_bool("whisper_signals", True)                        # Whisper text also feeds hold / farewell / priority detection
         self.flush_on_interrupt = knob_bool("flush_on_interrupt", True)                  # Drop queued model audio when the Live API reports an interruption
         self.send_speech_language_code = knob_bool("send_speech_language_code", True)    # Send speech_language_code from the language file
-        self.mic_gate_hangover_chunks = knob_int("mic_gate_hangover_chunks", 8)          # ~16 ms each: keeps the noise gate open after speech
+        self.mic_gate_hangover_chunks = knob_int("mic_gate_hangover_chunks", 12)         # ~16 ms each: keeps the noise gate open after speech
         self.whisper_threads = max(1, knob_int("whisper_threads", min(8, os.cpu_count() or 4)))
 
         # Agreement between the two "brains" for irreversible / costly decisions
@@ -2490,6 +2530,8 @@ class PhoneAssistant:
         self.spam_filter_active = False                          # True when the SPAM filter mode decides this call (a late SPAM verdict still hangs it up)
         self.greeting_points_pending = False                     # Adaptive greeting: its essential points were not confirmed as said yet
         self.greeting_interrupted_time = 0.0                     # When the caller cut the adaptive greeting (0 = not cut)
+        self._greeting_turn_text = ""                            # Text spoken by the assistant during the initial greeting turn
+        self._greeting_audio_bytes = 0                           # Audio bytes generated during the initial greeting turn
         self._caller_spoke_since_intent = False   # a caller turn arrived after the goodbye / hangup request
         self._intent_text = ""                    # what the assistant had said when the goodbye / hangup was requested
         self._intent_time = 0.0                   # when the goodbye / hangup was requested
@@ -2610,6 +2652,10 @@ class PhoneAssistant:
             self.vad_silence_duration_ms = int(get_config("vad_silence_duration_ms", str(DEFAULT_VAD_SILENCE_DURATION_MS)))
         except ValueError:
             self.vad_silence_duration_ms = DEFAULT_VAD_SILENCE_DURATION_MS
+        try:
+            self.playback_lead_silence_ms = max(0, int(get_config("playback_lead_silence_ms", str(DEFAULT_PLAYBACK_LEAD_SILENCE_MS))))
+        except ValueError:
+            self.playback_lead_silence_ms = DEFAULT_PLAYBACK_LEAD_SILENCE_MS
 
         self.final_transcription_mode = get_config("final_transcription_mode", "disabled")
 
@@ -3014,7 +3060,12 @@ class PhoneAssistant:
 
         print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Warning: Could not force profile. Relying on auto-switching.{_R}")
 
-    async def wait_for_pw_node(self, node_name: str, timeout: float = 12.0) -> Tuple[bool, str]:
+    async def _has_active_call_profile(self) -> bool:
+        """True when the Bluetooth audio card of the phone is already on an HFP/HSP call profile."""
+        _, active_profile, _ = await self._read_card_profiles()
+        return bool(active_profile and active_profile != PASSTHROUGH_RELEASE_PROFILE and re.search(BT_CALL_PROFILE_PATTERN, active_profile))
+
+    async def wait_for_pw_node(self, node_name: str, timeout: float = 12.0, poll_interval: float = 0.15) -> Tuple[bool, str]:
         print(f"{_C_SERVER}[{get_timestamp()}] {ICON_CONN}[PipeWire] Waiting for node: {node_name}...{_R}")
         base_name = re.sub(r"\.\d+$", "", node_name)
         deadline = time.time() + timeout
@@ -3029,7 +3080,7 @@ class PhoneAssistant:
                 node_part = line.strip().split(":")[0]
                 if base_name in node_part:
                     return True, node_part
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(poll_interval)
         return False, node_name
 
     async def monitor_routing_manager(self) -> None:
@@ -3582,6 +3633,7 @@ class PhoneAssistant:
             return
         self.farewell_pending = True
         self.farewell_drained_since = 0.0
+        self._pending_cancel_check = None
         self._closing_vote = None
         self._caller_spoke_since_intent = False
         self._intent_text = self._asst_turn_text
@@ -3718,7 +3770,7 @@ class PhoneAssistant:
         try:
             proc = await asyncio.create_subprocess_exec("pw-dump", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=4.0)
-            summary = summarize_bt_audio(json.loads(out.decode("utf-8", errors="ignore") or "[]"))
+            summary = summarize_bt_audio(merge_json_documents(out.decode("utf-8", errors="ignore")))
         except FileNotFoundError:
             summary = {"codec_guess": "unknown", "error": "pw-dump not found"}
         except Exception as e:
@@ -3961,6 +4013,18 @@ class PhoneAssistant:
                         self._pb_spawns += 1
                         self.dbg.log("playback_proc_started", pid=proc.pid, target=self.pw_playback_target, spawns=self._pb_spawns)
 
+                        if self._pb_spawns == 1 and self.playback_lead_silence_ms > 0:
+                            # First player start of the call only: let the Bluetooth SCO link settle on silence, not on the first word
+                            lead_bytes = int(PLAYBACK_BYTES_PER_SECOND * self.playback_lead_silence_ms / 1000)
+                            lead_bytes -= lead_bytes % PLAYBACK_FRAME_BYTES
+                            try:
+                                proc.stdin.write(b"\x00" * lead_bytes)
+                                proc.stdin.flush()
+                                self.playback_end_time = time.time() + lead_bytes / PLAYBACK_BYTES_PER_SECOND
+                                self.dbg.log("playback_lead_silence", ms=self.playback_lead_silence_ms, bytes=lead_bytes)
+                            except Exception as e:
+                                self._pb_last_error = repr(e)
+
                     try:
                         proc.stdin.write(chunk)
                         proc.stdin.flush()
@@ -4165,9 +4229,13 @@ class PhoneAssistant:
 
         self._check_priority_keywords(whisper_txt, source.lower())
 
-        if self.farewell_pending and queued_at > self.__dict__.get("_tf_farewell_pending_since", 0.0) and self._is_farewell(whisper_txt, fuzzy=True):
-            self.log_decision("hangup", gemini=f"heard: {gemini_txt}" if gemini_txt else "-", text=f"{source}: {whisper_txt}", result="caller goodbye", detail=source)
-            self._commit_farewell_hangup(f"the caller also said goodbye (heard by {source})")
+        if self.farewell_pending and queued_at > self.__dict__.get("_tf_farewell_pending_since", 0.0):
+            if self._is_farewell(whisper_txt, fuzzy=True):
+                self._pending_cancel_check = None
+                self.log_decision("hangup", gemini=f"heard: {gemini_txt}" if gemini_txt else "-", text=f"{source}: {whisper_txt}", result="caller goodbye", detail=source)
+                self._commit_farewell_hangup(f"the caller also said goodbye (heard by {source})")
+            elif self._pending_cancel_check is not None and self._is_farewell_ack(whisper_txt):
+                self._pending_cancel_check = None
 
     def _strip_streamed_angle_tags(self, text: str) -> str:
         """Strips <...> tags from streamed output chunks even when a tag is split across two or more chunks."""
@@ -4277,6 +4345,7 @@ class PhoneAssistant:
         self.log_decision("hangup", gemini="assistant text had a goodbye", text=reason, result="cancelled")
         self.farewell_pending = False
         self.farewell_drained_since = 0.0
+        self._pending_cancel_check = None
         self._hangup_tool_seen = False
         self._closing_vote = None
         self._caller_spoke_since_intent = False
@@ -4290,6 +4359,7 @@ class PhoneAssistant:
                           text="goodbye in the text" if not self._hangup_tool_seen else "goodbye intent", result="hangup", detail=reason)
         self.farewell_pending = False
         self.farewell_drained_since = 0.0
+        self._pending_cancel_check = None
         self.hanging_up = self.hangup_triggered = True
         self.hangup_triggered_time = time.time()
         self.hangup_source = "tool" if self._hangup_tool_seen else "cut_words"
@@ -4440,10 +4510,27 @@ class PhoneAssistant:
             return category_greeting, "category"
         return get_config("initial_greeting", ""), "global"
 
+    def _greeting_points_already_delivered(self) -> bool:
+        """True when the assistant already spoke the essential points of the greeting before being interrupted."""
+        if not self.greeting_phrase or not self._greeting_turn_text:
+            return False
+        phrase_words = [w for w in fold_text(self.greeting_phrase).split() if len(w) >= 4]
+        spoken_words = set(fold_text(self._greeting_turn_text).split())
+        if phrase_words and (sum(1 for w in phrase_words if w in spoken_words) / len(phrase_words)) >= 0.55:
+            total_s = self._greeting_audio_bytes / PLAYBACK_BYTES_PER_SECOND
+            played_s = max(0.0, self.greeting_interrupted_time - self.greeting_started_time - 0.5)
+            if total_s <= 0 or played_s >= min(total_s * 0.60, max(0.0, total_s - 2.0)):
+                return True
+        return False
+
     async def _check_greeting_points(self, session: Any) -> None:
         """Adaptive greeting: makes sure the caller hears the essential points of the greeting even when the caller spoke over it.
-        If the greeting finished without being cut, nothing else is needed. If it was cut, once the assistant has answered the
-        caller it is reminded (once) to give the points it still owes, in a short natural way."""
+        If the greeting finished without being cut (or the essential points were already spoken), nothing else is needed.
+        If it was cut early, once the assistant has answered the caller it is reminded (once) to give the remaining points."""
+        if self._greeting_points_already_delivered():
+            self.greeting_points_pending = False
+            self.dbg.log("greeting_points_skipped", reason="already_delivered", spoken=self._greeting_turn_text)
+            return
         if self.greeting_interrupted_time <= 0:
             if self.last_chunk_audio_time > self.greeting_started_time:
                 self.greeting_points_pending = False   # The greeting was spoken without being cut
@@ -4678,7 +4765,14 @@ class PhoneAssistant:
                         continue
                     if spam_flagged:
                         answered_message = str(self.assistant_data.get("spam_filter_answered_message", "SPAM suspected (risk {score}), but the call was answered on the phone.")).replace("{score}", str(self.network_spam_score))
-                        self._mark_call_record(self.labels_data.get("spam", "SPAM"), f"⚠️ [{get_timestamp()}]: [SYSTEM]: {answered_message}", answered_message)
+                        passthrough_label = self.labels_data.get("passthrough", "📱 ON THE PHONE")
+                        spam_label = self.labels_data.get("spam", "SPAM")
+                        self._mark_call_record(
+                            format_passthrough_tag(passthrough_label, spam_label),
+                            f"⚠️ [{get_timestamp()}]: [SYSTEM]: {answered_message}",
+                            answered_message,
+                            base_tag=passthrough_label
+                        )
 
                 if call_state == "active" and answered_at is None:
                     answered_at = now
@@ -4731,7 +4825,9 @@ class PhoneAssistant:
             message = str(self.assistant_data.get("passthrough_message", "Call left to the phone: the switchboard did not answer it ({pattern}).")).replace("{pattern}", str(contact_match.get("pattern", "")))
         else:
             message = str(self.assistant_data.get("spam_filter_phone_message", "Call left to the phone: SPAM filter mode, the number is not in the contact list."))
-        self.create_call_record_db(initial_tag=label, initial_transcript=f"📱 [{get_timestamp()}]: [SYSTEM]: {message}",
+        contact_tag = str(contact_match.get("tag", "") or "").strip()
+        initial_tag = format_passthrough_tag(label, contact_tag)
+        self.create_call_record_db(initial_tag=initial_tag, initial_transcript=f"📱 [{get_timestamp()}]: [SYSTEM]: {message}",
                                    audio_path_val="", base_tag=label, base_client_name="")
         conn = None
         try:
@@ -4797,12 +4893,25 @@ class PhoneAssistant:
             print(f"{_C_WARN}[{get_timestamp()}] {ICON_OK}[{self.assistant_name}] Live connection {self._live_reconnects + 1} is up. The conversation goes on.{_R}", flush=True)
 
         while self.running:
-            if self.farewell_pending and not self.hanging_up:
+            if self._pending_cancel_check is not None:
+                if not self.farewell_pending or self.hanging_up:
+                    self._pending_cancel_check = None
+                elif time.time() - self._pending_cancel_check[0] >= FAREWELL_CANCEL_DEFER_SECONDS:
+                    _, deferred_text = self._pending_cancel_check
+                    self._pending_cancel_check = None
+                    self._cancel_pending_farewell(f"the caller did not close the conversation: '{deferred_text}'")
+
+            if self.farewell_pending and not self.hanging_up and self._pending_cancel_check is None:
                 if self.is_playback_drained():
+                    farewell_in_turn = self._is_farewell(self._asst_turn_text)
+                    grace_needed = (
+                        FAREWELL_CONFIRMED_GRACE_SECONDS
+                        if (self._closing_vote is True and (self._hangup_tool_seen or farewell_in_turn))
+                        else self.farewell_grace_seconds
+                    )
                     if self.farewell_drained_since <= 0.0:
                         self.farewell_drained_since = time.time()
-                    elif time.time() - self.farewell_drained_since >= self.farewell_grace_seconds:
-                        farewell_in_turn = self._is_farewell(self._asst_turn_text)
+                    elif time.time() - self.farewell_drained_since >= grace_needed:
                         farewell_remembered = self._caller_spoke_since_intent and self._is_farewell(self._intent_text)
                         newer_turn = self._asst_turn_start_time > self._intent_time + 1.0   # a NEW assistant turn, not the goodbye's own
                         if not (self._hangup_tool_seen or farewell_in_turn or farewell_remembered):
@@ -4997,11 +5106,18 @@ class PhoneAssistant:
 
                     if self.farewell_pending and not suspect_echo:
                         if self._is_farewell(itx.text, fuzzy=True):
+                            self._pending_cancel_check = None
                             self._commit_farewell_hangup("caller also said goodbye")
                         elif not self._is_farewell_ack(itx.text):
-                            self._cancel_pending_farewell(f"the caller did not close the conversation: '{itx.text}'")
+                            if len(fold_text(itx.text).split()) <= 2 and (self.online is not None or self.final_transcription_mode == "realtime" or self._closing_vote is True):
+                                self._pending_cancel_check = (time.time(), itx.text)
+                                self.farewell_drained_since = 0.0
+                            else:
+                                self._pending_cancel_check = None
+                                self._cancel_pending_farewell(f"the caller did not close the conversation: '{itx.text}'")
                         else:
                             # Only an acknowledgement ('vale', 'no, nada'): the goodbye stands, but the silence time starts again
+                            self._pending_cancel_check = None
                             self._caller_spoke_since_intent = True
                             self._intent_text = self._asst_turn_text or self._intent_text
                             self.farewell_drained_since = 0.0
@@ -5072,6 +5188,8 @@ class PhoneAssistant:
                             inline_data = getattr(part, "inline_data", None)
                             if inline_data and isinstance(getattr(inline_data, "data", None), bytes):
                                 self.greeting_audio_received = True
+                                if self.assistant_turns_done == 0:
+                                    self._greeting_audio_bytes += len(inline_data.data)
                                 target_byte_idx = int((time.time() - self.call_start_time) * 24000) * 2
                                 current_len = len(self.recording_buffer_wav)
                                 if current_len < target_byte_idx:
@@ -5094,6 +5212,8 @@ class PhoneAssistant:
                         # Placeholder utterance (e.g. "..." or "Nothing" or "<no speech detected>"): keep it out of the transcript and the memory
                         clean_otx = ""
                     if clean_otx:
+                        if self.assistant_turns_done == 0:
+                            self._greeting_turn_text = (self._greeting_turn_text + " " + clean_otx).strip()
                         clean_norm = re.sub(r"[^\w\s]", "", clean_otx.lower()).strip()
                         now = time.time()
                         self.recent_asst_phrases = [p for p in self.recent_asst_phrases if now - p[1] < 18.0]
@@ -5157,6 +5277,7 @@ class PhoneAssistant:
                                 and not self.hello_question_sent and time.time() - self._farewell_veto_time >= FAREWELL_VETO_SECONDS):
                             self.farewell_pending = True
                             self.farewell_drained_since = 0.0
+                            self._pending_cancel_check = None
                             self._closing_vote = None
                             self._caller_spoke_since_intent = False
                             self._intent_text = self._asst_turn_text
@@ -5432,13 +5553,13 @@ class PhoneAssistant:
         print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Blacklist] {self.caller_number} matched '{contact_match['pattern']}'. Logged and rejected.{_R}")
         self.hangup_call()
 
-    def _mark_call_record(self, tag: str, transcript: str, summary: str) -> None:
+    def _mark_call_record(self, tag: str, transcript: str, summary: str, base_tag: Optional[str] = None) -> None:
         """Rewrites label, transcript and summary of this call's record (SPAM filter mode decisions)."""
         conn = None
         try:
             conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
             conn.execute("UPDATE calls SET tag=?, base_tag=?, transcript=?, summary=?, spam_score=? WHERE id=?",
-                         (tag, tag, transcript, summary, int(self.network_spam_score or 0), self.call_id))
+                         (tag, base_tag if base_tag is not None else tag, transcript, summary, int(self.network_spam_score or 0), self.call_id))
             conn.commit()
         except Exception as db_error:
             print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[SpamFilter] Could not update the call record: {db_error}{_R}")
@@ -5449,7 +5570,7 @@ class PhoneAssistant:
 
     def _reject_spam_call(self) -> None:
         """SPAM filter mode: the number was flagged as SPAM. The call is rejected and its record says so."""
-        message = str(self.assistant_data.get("spam_filter_rejected_message", "Call rejected: the SPAM filter flagged the number (risk {score}).")).replace("{score}", str(self.network_spam_score))
+        message = str(self.assistant_data.get("spam_filter_rejected_message", "Call rejected: the SPAM filter mode flagged the number (risk {score}).")).replace("{score}", str(self.network_spam_score))
         self._mark_call_record(self.labels_data.get("spam", "SPAM"), f"❌ [{get_timestamp()}]: [SYSTEM]: {message}", message)
         self._post_processed = True
         print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[SpamFilter] {self.caller_number} is SPAM (risk {self.network_spam_score}). Logged and rejected.{_R}")
@@ -5675,15 +5796,16 @@ class PhoneAssistant:
                 self.answer_call()
                 self.answered_call = True
                 self.call_start_time = time.time()
-                self._spawn(self._probe_bluetooth_audio())
 
-                print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Bluetooth] Stabilizing audio channel...{_R}")
-                await asyncio.sleep(0.5)
-                await self.enforce_bluetooth_call_profile()
-                await asyncio.sleep(1.5)
+                print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Bluetooth] Waiting for audio channel...{_R}")
+                await asyncio.sleep(0.15)
+                if not await self._has_active_call_profile():
+                    await self.enforce_bluetooth_call_profile()
 
-                ready_in, resolved_in = await self.wait_for_pw_node(self.pw_record_target, timeout=12.0)
-                ready_out, resolved_out = await self.wait_for_pw_node(self.pw_playback_target, timeout=12.0)
+                (ready_in, resolved_in), (ready_out, resolved_out) = await asyncio.gather(
+                    self.wait_for_pw_node(self.pw_record_target, timeout=12.0, poll_interval=0.15),
+                    self.wait_for_pw_node(self.pw_playback_target, timeout=12.0, poll_interval=0.15),
+                )
                 self.pw_record_target, self.pw_playback_target = resolved_in, resolved_out
 
                 if self.running and ready_in and ready_out:
@@ -5694,7 +5816,8 @@ class PhoneAssistant:
                         print(f"{_C_AUDIO}[{get_timestamp()}] {ICON_OK}[PipeWire] Channels unmuted.{_R}")
                     except Exception:
                         pass
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.2)
+                    self._spawn(self._probe_bluetooth_audio())
                 elif not self.running:
                     print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[PipeWire] Call aborted during initialization.{_R}")
                     return

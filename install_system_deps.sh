@@ -11,7 +11,7 @@
 # Supported accel.  : CUDA > Vulkan > OpenBLAS > CPU  (auto-detected with --with-whisper)
 #
 # Author: Antonio R.
-# Version: 3.4
+# Version: 3.5
 # License: GPL 3.0
 #
 # Copyright (c) 2026 Antonio R.

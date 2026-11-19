@@ -1,11 +1,11 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 3.4](https://img.shields.io/badge/Version-3.4-brightgreen.svg)
+![Version: 3.5](https://img.shields.io/badge/Version-3.5-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
 
-Author: Antonio R. | Version: 3.4 | License: GPL 3.0
+Author: Antonio R. | Version: 3.5 | License: GPL 3.0
 
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini 3.8 Live** for conversational AI and optional **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages in a dedicated inbox, maintains configurable context-aware memory with AI summaries for repeat callers, and provides a sleek Web GUI to manage your communications and server state.
 
@@ -829,7 +829,7 @@ Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Heb
 <a id="contact-rules"></a>
 ### 🛡️ Contact Rules, SPAM Filtering & Call-Log Labels
 
-* **🏷️ Call Log Labels That Follow Your Rules:** The **custom tag** and the **note** of a contact rule apply to every call of that number or wildcard, past calls included. Add or change them and the whole call log updates; clear the tag or delete the rule and each call goes back to its own classification (the one the AI gave it, or the one you chose by hand in the call log). A Blacklist rule without a custom tag shows the blacklist label; calls it rejected go back to the general label when the rule is deleted. The note works as the caller name only when no name was heard during the call. A tag chosen by hand in the call log is replaced when a rule with a custom tag matches that number.
+* **🏷️ Call Log Labels That Follow Your Rules:** The **custom tag** and the **note** of a contact rule apply to every call of that number or wildcard, past calls included. Add or change them and the whole call log updates; clear the tag or delete the rule and each call goes back to its own classification (the one the AI gave it, or the one you chose by hand in the call log). Calls left directly to the phone (`📱 ON THE PHONE`) always keep their phone badge, even when a contact rule adds a custom tag or you choose a label by hand: both appear together (for example `📱 ON THE PHONE · 🟣 Family`). A Blacklist rule without a custom tag shows the blacklist label; calls it rejected go back to the general label when the rule is deleted. The note works as the caller name only when no name was heard during the call. A tag chosen by hand in the call log is replaced when a rule with a custom tag matches that number.
 * **🎨 Custom Tag Icons:** Every custom tag of a contact rule has an icon (color) chosen from a dropdown next to the tag text, so tags are easy to tell apart in the call log. New tags start with 🟣, a color the standard labels do not use; change it at any time or choose *No icon*. The icons offered are listed under `contact_tag_icons` in the language file (`gui.json`), and the icon is stored as the first character of the tag, so no database change is needed.
 * **🧭 Contacts & Wildcard Rules Layout:** Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. Example: 626288* blocks or whitelists every number that starts with 626288. If several rules match, the exact number wins, then the most specific wildcard. The web GUI shows the list of rules first, with the form to add a new rule below it.
 
@@ -874,7 +874,7 @@ python3 phone_assistant.py --test-spam +34600000000
 
 #### Goodbye and hanging up
 When Gemini says goodbye or calls its hang-up tool, the switchboard treats it as an **intention**, not as an order. It lets the farewell audio finish and watches what the caller does:
-* The caller says a real goodbye, or stays silent for `farewell_grace_seconds` (2 s by default): the call is hung up.
+* The caller says a real goodbye, or stays silent for `farewell_grace_seconds` (2 s by default, or 0.5 s when the closing vote already confirmed the caller ended the conversation): the call is hung up.
 * The caller answers with something that is not just politeness ("OK, thanks", "no, nothing else" are polite; a question or a new request is not; the polite words are listed in `farewell_ack_words` in `assistant.json`), the secretary starts a new turn, or her last sentence is a question: the hang-up is **cancelled**.
 * A short text-model vote can also veto the hang-up for 20 seconds when the caller has clearly not finished.
 
@@ -933,14 +933,14 @@ Changes apply from the **next call**. Change **one setting at a time**, in small
 | **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily she decides that the caller started speaking. |
 | **VAD Prefix Padding (ms)** | 450 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
 | **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller stopped speaking. |
-| **VAD Silence Duration (ms)** | 600 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
+| **VAD Silence Duration (ms)** | 900 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
 
 #### Quick troubleshooting
 
 | What you notice | What to try (one change at a time) |
 | :--- | :--- |
 | She answers too slowly | Lower *VAD Silence Duration* by 100 ms; keep *End Sensitivity* HIGH. |
-| She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1000–1500 ms and set *End Sensitivity* to LOW. |
+| She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1100–1500 ms and set *End Sensitivity* to LOW. |
 | She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; try *Start Sensitivity* HIGH or a lower *Prefix Padding*. |
 | She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at its default (450) or higher; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
 | She hears her own voice and repeats or interrupts herself | Turn on *Software Echo Suppression*. |
@@ -967,7 +967,7 @@ Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and
 **VAD Prefix Padding.** Despite its name, this is the **minimum amount of speech she must hear before accepting that the caller started talking** (it is not a recording buffer). **Lower values** (50–200 ms): very short words such as "yes", "no" or "hello" are noticed, but short noises also count. **Higher values** (500 ms or more): short noises are ignored, but a very short word may be missed.
 
 **VAD End Sensitivity and VAD Silence Duration.** These two work together and are the main controls of the **answer speed**. *End Sensitivity* says how readily a pause counts as the end of the sentence, and *Silence Duration* says how long that pause must last.
-* **Faster answers:** End Sensitivity HIGH and a short silence (200–500 ms). Risk: she answers while the caller is only taking a breath or thinking, and cuts into names, phone numbers or spelled words.
+* **Faster answers:** End Sensitivity HIGH and a short silence (400–600 ms). Risk: she answers while the caller is only taking a breath or thinking, and cuts into names, phone numbers or spelled words.
 * **More patient:** End Sensitivity LOW and a long silence (1000–2000 ms). Better for slow speakers, older callers and for leaving messages, but answers feel slower.
 
 <details>
@@ -997,7 +997,7 @@ This is the hardest case, because the secretary cannot tell a TV from a person.
 What can help:
 1. **The caller's side** makes the biggest difference: a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls.
 2. **Do not raise *VAD Prefix Padding*** for this problem: return phrases are short ("hello?") and a high value can make her miss them.
-3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–600 ms. If the TV never stops, this cannot help.
+3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–700 ms (the default 900 ms avoids cutting mid-sentence pauses). If the TV never stops, this cannot help.
 
 <details>
 <summary>🧪 <b>Advanced:</b> adding return phrases (for the curious and experienced users)</summary>
