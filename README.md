@@ -16,6 +16,12 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 >
 > Users are responsible for compliance with applicable local laws regarding call recording, transcription, and AI-assisted call handling. The safest default profile is: **incoming calls only**, clear first-message disclosure to the caller, and minimal data retention.
 
+> 🛡️ **Concerned about privacy, security, or legal compliance? Use [SPAM filter mode](#spam-filter-mode)**
+>
+> If legal compliance or security is a major concern for you, enable **SPAM filter mode** and select **"Leave them on the phone"** for *Numbers that are not in your contact list (and are not SPAM)*. Any call not detected as SPAM, fraudulent, or rejected by your blacklist rules stays on your phone with its own audio and is handled normally: it is only answered by you if you pick up on your phone, or otherwise processed by your OS/manufacturer's built-in spam filter or any third-party anti-spam app you have installed. In this configuration, **call recordings and conversation transcripts are never saved**.
+>
+> In short, it does not alter standard smartphone behavior at all—it simply adds a **supercharged** version of current anti-spam systems, featuring AI-powered processing and wildcard filtering (`*` and `?`) that prioritizes filters by level whenever multiple rules overlap for the same number, capabilities that standard mobile anti-spam apps do not usually include.
+
 ## 📑 Table of Contents
 
 1. [Overview & Features](#overview)
