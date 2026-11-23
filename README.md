@@ -18,9 +18,11 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
 
 > 🛡️ **Concerned about privacy, security, or legal compliance? Use [SPAM filter mode](#spam-filter-mode)**
 >
-> If legal compliance or security is a major concern for you, enable **SPAM filter mode** and select **"Leave them on the phone"** for *Numbers that are not in your contact list (and are not SPAM)*. Any call not detected as SPAM, fraudulent, or rejected by your blacklist rules stays on your phone with its own audio and is handled normally: it is only answered by you if you pick up on your phone; otherwise, it is processed as usual by your OS/manufacturer's built-in spam filter, any third-party anti-spam app you have installed, or—if you do not answer—your carrier's voicemail service (if enabled). In this configuration, **the assistant never saves call recordings or conversation transcripts** (calls can still be recorded directly on your own phone in countries where this is permitted or on older mobile OS versions).
+> If legal compliance or security is a major concern for you, enable **SPAM filter mode** and select **"Leave them on the phone"** for *Numbers that are not in your contact list (and are not SPAM)*. Any call not detected as SPAM, fraudulent, or rejected by your blacklist rules stays on your phone with its own audio and is handled normally: it is only answered by you if you pick up on your phone; otherwise the phone treats it as it always does (its own anti-spam acts as usual and, if you do not answer, your carrier's voicemail service takes over, if enabled). In this configuration, **the assistant never saves call recordings or conversation transcripts** (calls can still be recorded directly on your own phone in countries where this is permitted or on older mobile OS versions).
 >
-> In short, it does not alter standard smartphone behavior at all—it simply adds a **supercharged** version of current anti-spam systems, featuring AI-powered processing and wildcard filtering (`*` and `?`) that prioritizes filters by level whenever multiple rules overlap for the same number, capabilities that standard mobile anti-spam apps do not usually include.
+> 📱 **Your phone's own anti-spam keeps working in every mode.** The spam protection of your OS/manufacturer or of a third-party app (Truecaller, Hiya...) runs on the phone, *before* the call reaches the switchboard over Bluetooth, whether SPAM filter mode is on or not. What the phone blocks or screens automatically normally never reaches the switchboard (so it is not logged there); what the phone only labels, and probably what it only silences, still arrives and is processed by the switchboard with its own filters. If you want the switchboard to process every call, you can turn those phone options off (blocked numbers, anti-spam filtering, third-party anti-spam apps and call screening) in your phone's own settings; leave them on if you prefer your phone's filter to act first. See [SPAM filter mode and your phone's own anti-spam](#phone-antispam).
+>
+> In short, SPAM filter mode does not alter standard smartphone behavior at all—it adds a **second, supercharged layer** on top of the anti-spam your phone already has, featuring AI-powered processing and wildcard filtering (`*` and `?`) that prioritizes filters by level whenever multiple rules overlap for the same number, capabilities that standard mobile anti-spam apps do not usually include.
 
 ## 📑 Table of Contents
 
@@ -38,6 +40,7 @@ An advanced, real-time AI telephone secretary designed to handle your mobile cal
     * [Assistant personality, tuning & languages](#personality-language)
     * [Contact rules, SPAM filtering & call-log labels](#contact-rules)
     * [SPAM filter mode](#spam-filter-mode)
+    * [SPAM filter mode and your phone's own anti-spam](#phone-antispam)
     * [Call handling: handset takeover, goodbye & transcription modes](#call-handling)
     * [Audio, Echo & Voice Detection Tuning Guide (incl. hold mode)](#audio-tuning-guide)
     * [Debug traces](#debug-traces)
@@ -78,7 +81,7 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
   <tr>
     <td width="31%" align="center" valign="top">
       <img src="https://github.com/antor44/AI-Bluetooth-Phone-Assistant/raw/main/Pi_assistant3.jpg" width="100%">
-      <br><b>🛡️ The Ultimate SPAM Shield</b><br>Enjoy your free time in peace. The AI intercepts unknown callers, verifies their numbers against live SPAM databases, and automatically terminates telemarketing calls before they bother you.
+      <br><b>🛡️ The Ultimate SPAM Shield</b><br>Enjoy your free time in peace. The AI intercepts unknown callers, verifies their numbers against live SPAM databases, and automatically terminates telemarketing calls before they bother you. It works on top of your phone's own anti-spam, which keeps acting first.
     </td>
     <td width="3.5%"></td>
     <td width="31%" align="center" valign="top">
@@ -95,6 +98,8 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
 
 > 📶 **No Wi-Fi around? The required Internet connection can come from the phone itself: just turn on its Wi-Fi hotspot (also called tethering or mobile hotspot) and share its mobile data.**
 
+> 📱 **Your phone's own spam protection is not replaced.** The switchboard is a second layer behind it. The anti-spam built into your phone or installed as a third-party app acts first, on the phone, in every mode: calls it blocks or screens automatically normally never arrive over Bluetooth, so the switchboard neither answers nor logs them, while calls it merely labels (and probably those it only silences) still arrive and go through the switchboard's own filters. If you want the switchboard to process every call, you can turn off those phone options (blocked numbers, anti-spam filtering, third-party anti-spam apps, call screening) in your phone's own settings, or leave them on if you prefer your phone's filter to act first. Details in [SPAM filter mode and your phone's own anti-spam](#phone-antispam).
+
 <br><br>
 
 ### Main Features
@@ -103,7 +108,7 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
 * **⏱️ Long calls:** the AI conversation is not cut when Google closes its connection after about 10 minutes. No call lasts more than 30 minutes.
 * **👋 Natural greeting:** choose between an exact greeting (for legal notices) and an adaptive one that sounds like a person. The style can be set in general, for each category or for each whitelist number or wildcard.
 * **📱 Calls left to the phone:** mark a whitelist number (or all calls while the switchboard is paused) and the call stays on your phone with its own audio.
-* **🛡️ SPAM filter mode:** every call stays on your phone, with its own audio, except SPAM, which is hung up. Unknown numbers can stay on the phone too or be answered by the AI. Nothing you configured is erased: the options that do nothing meanwhile are greyed out.
+* **🛡️ SPAM filter mode:** every call stays on your phone, with its own audio, except SPAM, which is hung up. Unknown numbers can stay on the phone too or be answered by the AI. Nothing you configured is erased: the options that do nothing meanwhile are greyed out. It is an extra layer: your phone's own anti-spam (system or third-party app) keeps acting first, in every mode You can turn those phone options off in your phone's settings if you want the switchboard to process every call (see [details](#phone-antispam)).
 * **🤖 Models panel:** the Web GUI shows which Google model does each task, the plan of your key, the requests made today and the free limits, and warns you when a daily limit is reached.
 * **🛠️ Web GUI maintenance:** start and stop the switchboard, check a number for SPAM from the call log and update Linux from the panel.
 * **💾 Gentle on SD cards / eMMC:** the switchboard writes to disk as little as possible.
@@ -838,6 +843,7 @@ Although SQLite and the Gemini API natively process UTF-8 encoded Arabic and Heb
 * **🏷️ Call Log Labels That Follow Your Rules:** The **custom tag** and the **note** of a contact rule apply to every call of that number or wildcard, past calls included. Add or change them and the whole call log updates; clear the tag or delete the rule and each call goes back to its own classification (the one the AI gave it, or the one you chose by hand in the call log). Calls left directly to the phone (`📱 ON THE PHONE`) always keep their phone badge, even when a contact rule adds a custom tag or you choose a label by hand: both appear together (for example `📱 ON THE PHONE · 🟣 Family`). A Blacklist rule without a custom tag shows the blacklist label; calls it rejected go back to the general label when the rule is deleted. The note works as the caller name only when no name was heard during the call. A tag chosen by hand in the call log is replaced when a rule with a custom tag matches that number.
 * **🎨 Custom Tag Icons:** Every custom tag of a contact rule has an icon (color) chosen from a dropdown next to the tag text, so tags are easy to tell apart in the call log. New tags start with 🟣, a color the standard labels do not use; change it at any time or choose *No icon*. The icons offered are listed under `contact_tag_icons` in the language file (`gui.json`), and the icon is stored as the first character of the tag, so no database change is needed.
 * **🧭 Contacts & Wildcard Rules Layout:** Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. Example: 626288* blocks or whitelists every number that starts with 626288. If several rules match, the exact number wins, then the most specific wildcard. The web GUI shows the list of rules first, with the form to add a new rule below it.
+* **📱 The phone's own anti-spam comes first:** contact rules are applied by the switchboard, after your phone has already done its own filtering. A whitelisted number that the phone blocks or screens automatically never reaches the switchboard, so the whitelist cannot override it; fix that in the phone's own settings (unblock the number, save it as a contact, or turn that phone option off). See [SPAM filter mode and your phone's own anti-spam](#phone-antispam).
 
 <a id="spam-filter-mode"></a>
 #### 🛡️ SPAM Filter Mode (every call stays on the phone except SPAM)
@@ -857,6 +863,49 @@ The SPAM check starts when the call rings, so nothing is delayed: if the number 
 *   If the AI answers nobody, the options of the AI are greyed out: wait before answering, call memory and categories, priority keywords, transcription, speaker monitoring, audio tuning, owner and identity. If the AI answers unknown numbers, they stay active.
 *   Everything keeps its stored value. When you switch the mode off, every option works again exactly as you left it.
 *   The **Pause** has priority: while the switchboard is paused, calls are handled as the pause says, without the SPAM filter.
+
+<a id="phone-antispam"></a>
+#### 📱 SPAM Filter Mode & Your Phone's Own Anti-Spam
+
+**The switchboard is never the first filter.** A call goes through these layers, in this order, whatever the mode of the switchboard:
+
+1. **Carrier / network:** some carriers already block or flag known spam before the call reaches your phone.
+2. **Your phone's blocked numbers, anti-spam and call screening:** the ones of the OS/manufacturer or of a third-party app that your phone allows to filter calls (Truecaller, Hiya...). They run on the phone itself.
+3. **Bluetooth link (HFP):** only what the phone decides to report arrives here: the incoming call notice and the number. The audio only comes to the switchboard if the switchboard answers.
+4. **The switchboard:** contact rules (whitelist, blacklist, wildcards), SPAM lookup and, if enabled, SPAM filter mode.
+
+Layers 1 and 2 act with SPAM filter mode **on or off**, and also when you choose *Leave them on the phone*. That option only decides *who handles the audio* of a call that got through; it does not switch off the phone's own filter. In the same way, the switchboard does not replace your phone's anti-spam: it adds a second opinion behind it, with AI processing, live SPAM databases and wildcard rules.
+
+**What the phone makers document, and what they do not.**
+
+*   **Android** lets the phone app or a call-screening app answer each new call from an unknown number by *blocking* it, *rejecting* it as if the user had done so manually, or *silencing* it. Users can choose to have spam calls silently rejected, and those calls are recorded in the phone's call log. A silenced call is still shown to the user, only without a ringtone ([Android Telecom documentation](https://developer.android.com/develop/connectivity/telecom)).
+*   **iPhone** has *Blocked Contacts* (you receive no calls from them), *Silence Unknown Callers* (calls from numbers that are not in your contacts go to voicemail) and call screening such as *Ask Reason for Calling*, where the caller is asked why they call before your phone even rings ([Apple support](https://support.apple.com/111106)).
+*   **Neither documents whether a call handled this way is also announced to a Bluetooth hands-free device.** The table below is what normally happens according to how these mechanisms work. It is an expectation, not a guarantee, and it can differ between manufacturers, OS versions, anti-spam apps and settings.
+
+| What the phone does with the call | Does it normally reach the switchboard? | What you see |
+|---|---|---|
+| Nothing (no anti-spam active) | Yes | The switchboard is the only filter. |
+| **Only labels** it (for example "suspected spam" on the screen) but lets it ring | Yes | The switchboard processes it with its own filters. The phone's label does not influence the switchboard's verdict. |
+| **Silences** it (no ringtone; for example *Silence Unknown Callers* or a screening app's *silence* option) | Uncertain. On Android the call is still a normal incoming call, just without ringtone, so it probably arrives; on iPhone unknown numbers go to voicemail and may not arrive | If it arrives, the switchboard handles it as usual while the phone stays quiet. |
+| **Blocks or rejects** it (blocked-numbers list, *block spam calls* options of the phone app or of a third-party anti-spam app) | **No.** Verified by the author with the blocked-numbers list of a recent Android phone (Motorola edge 50 fusion): absolutely nothing reaches the switchboard and the call goes to the carrier's voicemail. Other blocking options are expected to behave the same way but have not been tested | Not answered and not logged by the switchboard. Look for it in the phone's call history, spam or blocked list. |
+| **Screens or answers** it with a phone assistant (Google Call Screen, *Ask Reason for Calling*, Live Voicemail and similar) or diverts it to voicemail | Most likely not: the phone has already taken the call | The switchboard does not take part in that call. |
+
+**Anti-spam apps that look the number up online** may behave differently: they need a moment to get a verdict, so the call can already be ringing, and reaching the switchboard, before the app labels, silences or hangs it up. In that case the phone's app and the switchboard act at the same time, and the switchboard may already be answering. This is an expectation, not a tested result.
+
+**Check it on your own phone (5 minutes).** Nothing here changes any setting of the switchboard.
+
+1. On the machine that runs the switchboard, follow the live log: in the terminal where you launched `my_gui.sh` or, if you use the systemd service, with `journalctl --user -u ai-switchboard.service -f -n 100 -a -o cat`.
+2. Call your phone from a second phone, one test per phone setting: number in the phone's blocked list; spam filter set to block; spam filter set to silence or to label only; unknown callers silenced.
+3. After each call, check whether the log shows an incoming call and whether the call appears in the switchboard's call log. A call that appears in the phone's own history but not in the switchboard's was stopped by the phone before reaching Bluetooth.
+
+**Practical consequences:**
+
+*   **A call is missing from the switchboard log:** it is not necessarily a bug. If your phone blocked or screened it, the switchboard never knew about it. Check the phone's own call history and its blocked/spam list first. A call blocked on the phone normally goes to your carrier's voicemail (if enabled), not to the switchboard.
+*   **You want the switchboard to evaluate every call** (whitelist exceptions, AI categories, custom tags, its own SPAM lookup): set the phone's anti-spam to *label only* and turn off its automatic blocking and screening. Otherwise the phone decides first and the switchboard only sees what is left.
+*   **You prefer your phone's filter to act first:** leave it as it is. The switchboard works as a second layer behind it; a call can be stopped by either of the two without conflict.
+*   **A whitelisted number is blocked by the phone:** the switchboard's whitelist cannot override a block made on the phone. Unblock the number or save it as a contact in the phone's own settings.
+*   **A call hung up by the switchboard** (blacklist or confirmed SPAM) is rejected by the phone from its point of view, so the phone may also show it as a rejected or missed call in its own history.
+*   **Privacy:** calls that the phone screens or answers by itself are processed by your phone's manufacturer or by the anti-spam app, under their own terms. That processing is outside this project; the switchboard only handles what the phone passes to it.
 
 #### 🛡️ Optional CLI SPAM Test
 
@@ -906,7 +955,7 @@ None of them changes the live decisions. The switchboard's rules for hold, retur
 *   **One greeting per number, per category or for everyone:** the *Initial greeting* is the general one. Each contact rule has its own *Greeting for this number* and each category its own *Greeting for this category*. The call uses the first one that is filled in: number, then category, then general. Leave them empty to use the next level. The greeting *style* (adaptive or exact) follows the same idea: the whitelist rule first, then the category, then the general setting; each category has a *Greeting style for this category* selector, whose default is *Use the general setting*. Since the greeting is said before the caller speaks, the category here is the one already known for the number (its tag, or the category of its last call), never one detected from the keywords of the current call; unknown callers get the general style.
 *   **Long calls:** Google cuts the connection with the AI after about 10 minutes, and the audio session after 15. With *Long calls* switched on (default) the switchboard opens a new connection by itself and the call goes on. With it switched off, the call is cut when Google closes the connection. In a very long call the assistant may forget something said at the very beginning.
 *   **Maximum length of a call:** whatever you choose, no call lasts more than 30 minutes. When the time is up, the assistant tells the caller politely that the call has to end and hangs up (after 20 seconds at most, even if the caller keeps talking). This limit covers the waiting time and the category settings too. Time on hold is also limited to 15 minutes in total. Both limits are constants at the top of `phone_assistant.py` (`CALL_MAX_TOTAL_SECONDS` and `HOLD_MAX_TOTAL_SECONDS`).
-*   **Leave calls to the phone:** tick *Leave these calls to the phone* in a *whitelist* contact rule and the switchboard will not answer that number: it rings on your phone and, when you answer, the sound stays on the phone instead of going through Bluetooth to the switchboard. In the *Pause* section, *While paused, leave the calls to the phone with their own audio* does the same for every call: while paused with that option, the phone is disconnected from the switchboard (no delay when you answer) and it is connected again when you resume. These calls appear in the call log as *On the phone* (the paused ones are not logged). This depends on the phone: if the sound still reaches the switchboard with yours, the switchboard cannot prevent it.
+*   **Leave calls to the phone:** tick *Leave these calls to the phone* in a *whitelist* contact rule and the switchboard will not answer that number: it rings on your phone and, when you answer, the sound stays on the phone instead of going through Bluetooth to the switchboard. In the *Pause* section, *While paused, leave the calls to the phone with their own audio* does the same for every call: while paused with that option, the phone is disconnected from the switchboard (no delay when you answer) and it is connected again when you resume. These calls appear in the call log as *On the phone* (the paused ones are not logged). This depends on the phone: if the sound still reaches the switchboard with yours, the switchboard cannot prevent it. The phone's own anti-spam still acts first on these calls too (see [SPAM filter mode and your phone's own anti-spam](#phone-antispam)).
 *   **How a call left to the phone is followed:** the switchboard stays connected to the phone, so it sees the call ring and knows when it ends. About a second after you answer, it releases the call audio so the sound stays on the phone. From the moment the call rings until a second or two after that, the speakers of the switchboard are silenced, so the call is not heard through them. If you had muted the speakers yourself, nothing changes. While a call is left to the phone, the switchboard does not handle other calls (the phone answers them normally).
 
 ### 🛠️ Web GUI Maintenance: Daemon, SPAM Check & Linux Update
