@@ -21,10 +21,10 @@
     "daemon_heartbeat": "0",
     "caller_gain": "1.5",
     "noise_gate_base": "55",
-    "vad_start_sensitivity": "LOW",
+    "vad_start_sensitivity": "HIGH",
     "vad_end_sensitivity": "HIGH",
     "vad_prefix_padding_ms": "450",
-    "vad_silence_duration_ms": "900",
+    "vad_silence_duration_ms": "750",
     "playback_lead_silence_ms": "120",
     "protect_initial_greeting": "true",
     "greeting_mode": "exact",
@@ -37,7 +37,10 @@
     "tor_notify_port": "8502",
     "api_plan": "free",
     "spam_filter_mode": "false",
-    "spam_filter_unknown": "phone"
+    "spam_filter_unknown": "phone",
+    "bilingual_mode": "false",
+    "bilingual_languages": "",
+    "hidden_gui_sections": ""
   },
   "runtime_settings": {
     "daemon_state": "running",
@@ -107,6 +110,18 @@
           "free_tpm": 16000,
           "price_in_per_million": null,
           "price_out_per_million": null
+        },
+        {
+          "id": "gemini-4-hydrogen",
+          "family": "gemini",
+          "audio": true,
+          "paid_plan": true,
+          "thinking_level": null,
+          "free_rpm": null,
+          "free_rpd": null,
+          "free_tpm": null,
+          "price_in_per_million": 1.5,
+          "price_out_per_million": 7.5
         }
       ]
     }

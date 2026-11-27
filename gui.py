@@ -4,7 +4,7 @@ AI Switchboard Web Interface - Streamlit UI for managing configurations, inbox m
 contacts/wildcards, audio/VAD parameters, Whisper models, daemon controls, and call logs.
 
 Author: Antonio R.
-Version: 3.5
+Version: 3.6
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -55,7 +55,30 @@ from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "switchboard.db")
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
+HIDDEN_SECTIONS_SETTING = "hidden_gui_sections"   # Comma separated keys of the panel sections the user chose to hide
+BILINGUAL_MODE_SETTING = "bilingual_mode"
+BILINGUAL_LANGUAGES_SETTING = "bilingual_languages"
+GUI_SECTIONS: List[Tuple[str, str, str]] = [   # (key, translation key of the title, fallback title): the sections that can be hidden
+    ("call_log", "call_log_title", "📝 Call Log & Recordings"),
+    ("messages", "messages_inbox_title", "📬 Caller Messages"),
+    ("contacts", "ui_managed_contacts", "Managed contacts & wildcard rules:"),
+    ("daemon", "ui_daemon_control_title", "Switchboard & Linux Server Control"),
+    ("spam_filter", "ui_spam_filter_title", "🛡️ SPAM filter mode"),
+    ("system_update", "ui_update_title", "Linux system update"),
+    ("bluetooth", "ui_bt_title", "Phone Bluetooth connection"),
+    ("tor", "ui_tor_title", "Remote access (Tor)"),
+    ("cleanup", "ui_cleanup_title", "Auto-Cleanup Data"),
+    ("models", "ui_models_title", "🤖 Models in use"),
+    ("network_spam", "ui_spam_title", "🛡️ Network SPAM Protection"),
+    ("memory", "memory_title", "🧠 Call Memory & Category Rules"),
+    ("priority_keywords", "priority_keywords_title", "🚨 Priority Keywords"),
+    ("transcription", "transcription_mode_title", "🎙️ Transcription Mode"),
+    ("monitor", "monitor_mode_title", "🔊 PC Speaker Monitoring"),
+    ("audio", "audio_mode_title", "🎚️ Audio, Echo & Gemini 3.8 VAD Tuning"),
+    ("owner", "owner_settings_title", "👤 Owner"),
+    ("identity", "identity_title", "👤 Identity"),
+]
 DB_BUSY_TIMEOUT_SECONDS = 15.0          # How long a SQLite connection waits for the lock held by the other process (daemon / Web GUI)
 DAEMON_HEARTBEAT_STALE_SECONDS = 45.0    # The daemon is shown as stopped only after this long without a heartbeat (the board is busy while it processes a finished call)
 BT_STATE_STALE_SECONDS = 60.0            # The daemon watchdog heartbeat older than this means the Bluetooth state is unknown
@@ -81,6 +104,7 @@ DEFAULTS = load_defaults()
 DEFAULT_LANGUAGE = DEFAULTS["settings"]["language"]  # Language of a fresh install, until another one is selected in the Web GUI
 DEFAULT_CALLER_GAIN = float(DEFAULTS["settings"]["caller_gain"])                 # Default caller microphone gain (x)
 DEFAULT_NOISE_GATE_BASE = int(DEFAULTS["settings"]["noise_gate_base"])             # Default base noise gate (RMS)
+DEFAULT_VAD_START_SENSITIVITY = DEFAULTS["settings"]["vad_start_sensitivity"]  # Default VAD start sensitivity (how easily speech is detected)
 DEFAULT_VAD_PREFIX_PADDING_MS = int(DEFAULTS["settings"]["vad_prefix_padding_ms"])      # Default VAD prefix padding (ms)
 DEFAULT_VAD_SILENCE_DURATION_MS = int(DEFAULTS["settings"]["vad_silence_duration_ms"])  # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
 LANG_DIR = os.path.join(BASE_DIR, "languages")
@@ -978,6 +1002,11 @@ def init_db() -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_v35_migrated', '1')")
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms' AND value='600'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    # Upgrade installs that still hold the VAD defaults of the previous version (900 ms silence, LOW start sensitivity) without touching custom values
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_v36_migrated', '1')")
+    if c.rowcount == 1:
+        c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms' AND value='900'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+        c.execute("UPDATE settings SET value=? WHERE key='vad_start_sensitivity' AND value='LOW'", (DEFAULT_VAD_START_SENSITIVITY,))
 
     migrate_text_model_choice(conn)
 
@@ -1969,6 +1998,44 @@ def contact_memory_widgets(key_prefix: str, mem_mode_db: str = "", mem_calls=Non
     return ("none" if chosen == "none" else ""), None, None
 
 
+def hidden_sections() -> set:
+    return {key for key in get_config(HIDDEN_SECTIONS_SETTING, "").split(",") if key}
+
+
+def section_visible(section_key: str) -> bool:
+    """False when the user hid this section: its code is then skipped, so the page loads faster (useful on the phone)."""
+    return section_key not in hidden_sections()
+
+
+def render_section_selector() -> None:
+    """Collapsed panel where the user chooses which sections of the page are shown. Nothing is erased: a hidden section keeps its settings."""
+    def _section_key(key: str) -> str:
+        return f"chk_section_{key}"
+
+    for key, _, _ in GUI_SECTIONS:
+        if _section_key(key) not in st.session_state:
+            st.session_state[_section_key(key)] = section_visible(key)
+
+    def _save_sections() -> None:
+        hidden = [key for key, _, _ in GUI_SECTIONS if not st.session_state.get(_section_key(key), True)]
+        set_config(HIDDEN_SECTIONS_SETTING, ",".join(hidden))
+
+    def _show_all() -> None:
+        for key, _, _ in GUI_SECTIONS:
+            st.session_state[_section_key(key)] = True
+        set_config(HIDDEN_SECTIONS_SETTING, "")
+
+    hidden_count = len(hidden_sections())
+    title = trans.get("ui_sections_title", "👁️ Visible sections")
+    if hidden_count:
+        title = f"{title} ({trans.get('ui_sections_hidden_count', '{n} hidden').format(n=hidden_count)})"
+    with st.expander(title, expanded=False):
+        st.caption(trans.get("ui_sections_help", "Hide the sections you do not use: the page loads faster, especially on the phone. Nothing is erased; the settings of a hidden section are kept."))
+        for key, title_key, fallback in GUI_SECTIONS:
+            st.checkbox(trans.get(title_key, fallback).strip().rstrip(":"), key=_section_key(key), on_change=_save_sections)
+        st.button(trans.get("ui_btn_show_all_sections", "↩️ Show all sections"), key="btn_show_all_sections", on_click=_show_all, disabled=hidden_count == 0)
+
+
 spam_filter_on = get_config("spam_filter_mode", "false") == "true"
 spam_filter_unknown = get_config("spam_filter_unknown", SPAM_FILTER_UNKNOWN_CHOICES[0])
 spam_filter_ai = spam_filter_on and spam_filter_unknown == "ai"
@@ -1981,6 +2048,8 @@ def format_local_time(epoch: float) -> str:
 
 def describe_free_limit(info: Dict[str, Any]) -> str:
     """Free-plan limits of one model, as read from the catalog."""
+    if not any(info.get(limit_key) for limit_key in ("free_rpd", "free_rpm", "free_tpm")):
+        return trans.get("ui_limit_unknown", "Google does not publish the free limits of this model: see AI Studio")
     parts = []
     if info.get("free_rpd"):
         parts.append(trans.get("ui_limit_per_day", "{n} requests/day").format(n=f"{int(info['free_rpd']):,}"))
@@ -2088,523 +2157,528 @@ if spam_filter_on:
     st.warning(trans.get("ui_spam_filter_banner", "🛡️ SPAM filter mode is ON: calls stay on the phone except SPAM. Greyed-out options do nothing until you turn it off; their values are kept.").format(
         unknown=trans.get("ui_spam_filter_unknown_opts", {"phone": "Leave them on the phone", "ai": "Let the AI answer them"}).get(spam_filter_unknown, spam_filter_unknown)))
 
+render_section_selector()
+
 col1, col2, col3 = st.columns([1.45, 1.15, 1.25])
 
 # =============================================================================
 # COLUMN 1: CALL LOG & RECORDINGS
 # =============================================================================
 with col1:
-    st.subheader(trans.get("call_log_title", "📝 Call Log & Recordings"))
-    show_system_msg = st.checkbox(
-        trans.get("show_system_msg_label", "Show system messages"),
-        value=True,
-        key="toggle_sys_msg"
-    )
-    show_filtered_msg = st.checkbox(
-        trans.get("show_filtered_msg_label", "🔇 Show filtered speech and alternative readings (noise, TV, echo, online)"),
-        value=True,
-        key="toggle_filtered_msg"
-    )
+    if section_visible("call_log"):
+        st.subheader(trans.get("call_log_title", "📝 Call Log & Recordings"))
+        show_system_msg = st.checkbox(
+            trans.get("show_system_msg_label", "Show system messages"),
+            value=True,
+            key="toggle_sys_msg"
+        )
+        show_filtered_msg = st.checkbox(
+            trans.get("show_filtered_msg_label", "🔇 Show filtered speech and alternative readings (noise, TV, echo, online)"),
+            value=True,
+            key="toggle_filtered_msg"
+        )
 
-    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-    total_calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
-    calls_page = clamp_page("calls_page", total_calls, CALLS_PAGE_SIZE)
-    calls = conn.execute(
-        "SELECT id, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary "
-        "FROM calls ORDER BY id DESC LIMIT ? OFFSET ?",
-        (CALLS_PAGE_SIZE, calls_page * CALLS_PAGE_SIZE)
-    ).fetchall()
-    conn.close()
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+        total_calls = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+        calls_page = clamp_page("calls_page", total_calls, CALLS_PAGE_SIZE)
+        calls = conn.execute(
+            "SELECT id, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary "
+            "FROM calls ORDER BY id DESC LIMIT ? OFFSET ?",
+            (CALLS_PAGE_SIZE, calls_page * CALLS_PAGE_SIZE)
+        ).fetchall()
+        conn.close()
 
-    if calls:
-        for call in calls:
-            id_call, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary = call
+        if calls:
+            for call in calls:
+                id_call, number, date, spam_score, transcript, audio_path, client_audio_path, tag, client_name, company, summary = call
 
-            in_progress_str = trans.get("ui_in_progress", "IN PROGRESS")
-            if tag and tag.strip() == in_progress_str:
-                prefix = in_progress_str
-            else:
-                prefix = "📞"
+                in_progress_str = trans.get("ui_in_progress", "IN PROGRESS")
+                if tag and tag.strip() == in_progress_str:
+                    prefix = in_progress_str
+                else:
+                    prefix = "📞"
 
-            caller_display = ""
-            if client_name and company:
-                caller_display = f" — {client_name} ({company})"
-            elif client_name:
-                caller_display = f" — {client_name}"
-            elif company:
-                caller_display = f" — {company}"
+                caller_display = ""
+                if client_name and company:
+                    caller_display = f" — {client_name} ({company})"
+                elif client_name:
+                    caller_display = f" — {client_name}"
+                elif company:
+                    caller_display = f" — {company}"
 
-            tag_display = tag if tag and tag != in_progress_str else trans.get("ui_general_call", "GENERAL CALL")
+                tag_display = tag if tag and tag != in_progress_str else trans.get("ui_general_call", "GENERAL CALL")
 
-            risk_label = trans.get("ui_call_risk", "Risk: {score}/100").format(score=spam_score)
-            with st.expander(f"{prefix} {number}{caller_display} — {date} | {tag_display} ({risk_label})"):
-                if summary and summary.strip():
-                    st.info(f"**📋 {trans.get('ui_call_summary', 'AI Summary:')}** {summary}")
+                risk_label = trans.get("ui_call_risk", "Risk: {score}/100").format(score=spam_score)
+                with st.expander(f"{prefix} {number}{caller_display} — {date} | {tag_display} ({risk_label})"):
+                    if summary and summary.strip():
+                        st.info(f"**📋 {trans.get('ui_call_summary', 'AI Summary:')}** {summary}")
 
-                st.write(f"**{trans.get('ui_transcript', 'Transcript:')}**")
+                    st.write(f"**{trans.get('ui_transcript', 'Transcript:')}**")
 
-                # Reading mode renders the transcript as a single text element. The per-phrase edit and delete
-                # controls (several widgets per phrase) are built only while this switch is on.
-                edit_mode = st.toggle(trans.get("ui_toggle_edit_phrases", "Edit phrases"), key=f"edit_mode_{id_call}")
-                pending_lines: List[str] = []
+                    # Reading mode renders the transcript as a single text element. The per-phrase edit and delete
+                    # controls (several widgets per phrase) are built only while this switch is on.
+                    edit_mode = st.toggle(trans.get("ui_toggle_edit_phrases", "Edit phrases"), key=f"edit_mode_{id_call}")
+                    pending_lines: List[str] = []
 
-                blocks_raw = [b.strip() for b in (transcript or "").split("\n\n") if b.strip()]
-                edit_key = f"edit_phrase_{id_call}"
-                if edit_key not in st.session_state:
-                    st.session_state[edit_key] = None
+                    blocks_raw = [b.strip() for b in (transcript or "").split("\n\n") if b.strip()]
+                    edit_key = f"edit_phrase_{id_call}"
+                    if edit_key not in st.session_state:
+                        st.session_state[edit_key] = None
 
-                for idx_b, block in enumerate(blocks_raw):
-                    if not show_system_msg:
-                        if any(marker in block for marker in ["[SYSTEM]", "[Active Hold]", "❌", "⏳", "⏸"]):
+                    for idx_b, block in enumerate(blocks_raw):
+                        if not show_system_msg:
+                            if any(marker in block for marker in ["[SYSTEM]", "[Active Hold]", "❌", "⏳", "⏸"]):
+                                continue
+                        if not show_filtered_msg and (block.startswith("🔇") or block.startswith("🌐")):
                             continue
-                    if not show_filtered_msg and (block.startswith("🔇") or block.startswith("🌐")):
-                        continue
 
-                    is_user = block.startswith("🗣")
-                    is_assistant = block.startswith("📞")
+                        is_user = block.startswith("🗣")
+                        is_assistant = block.startswith("📞")
 
-                    m_ts = re.match(r"^[🗣📞]\s*\[(\d{2}:\d{2}:\d{2})\]:\s*(.*)", block, re.DOTALL)
-                    if m_ts:
-                        ts_str = f"[{m_ts.group(1)}]"
-                        pure_text = m_ts.group(2).strip()
-                    else:
-                        ts_str = ""
-                        pure_text = block
-                        for pref in ["🗣", "📞"]:
-                            pure_text = pure_text.replace(pref, "")
-                        pure_text = pure_text.lstrip(": ").strip()
-
-                    main_text, alt_texts = split_alternative_texts(pure_text) if (is_user or is_assistant) else (pure_text, [])
-                    shown_text = main_text + alternatives_markdown(alt_texts)
-                    alt_suffix = "".join(f" | [{label_alt}]: {text_alt}" for label_alt, text_alt in alt_texts)
-
-                    if is_user:
-                        label_caller = client_name or company or number
-                        prefix_md = f"🗣 {ts_str} **[{label_caller}]:**"
-                    elif is_assistant:
-                        prefix_md = f"📞 {ts_str} **[{current_assistant_name}]:**"
-                    else:
-                        if pending_lines:
-                            st.markdown("\n\n".join(pending_lines))
-                            pending_lines = []
-                        m_filtered = re.match(r"^🔇\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[FILTERED:\s*([^\]]*)\]:\s*(.*)", block, re.DOTALL)
-                        if m_filtered:
-                            st.caption(f"🔇 [{m_filtered.group(1)}] **{trans.get('ui_filtered_label', 'Filtered')}** ({m_filtered.group(2).strip()}): {m_filtered.group(3).strip()}")
+                        m_ts = re.match(r"^[🗣📞]\s*\[(\d{2}:\d{2}:\d{2})\]:\s*(.*)", block, re.DOTALL)
+                        if m_ts:
+                            ts_str = f"[{m_ts.group(1)}]"
+                            pure_text = m_ts.group(2).strip()
                         else:
-                            m_online = re.match(r"^🌐\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[([^\]]+)\]:\s*(.*)", block, re.DOTALL)
-                            if m_online:
-                                st.caption(f"🌐 [{m_online.group(1)}] **{m_online.group(2).strip()}**: {m_online.group(3).strip()}")
+                            ts_str = ""
+                            pure_text = block
+                            for pref in ["🗣", "📞"]:
+                                pure_text = pure_text.replace(pref, "")
+                            pure_text = pure_text.lstrip(": ").strip()
+
+                        main_text, alt_texts = split_alternative_texts(pure_text) if (is_user or is_assistant) else (pure_text, [])
+                        shown_text = main_text + alternatives_markdown(alt_texts)
+                        alt_suffix = "".join(f" | [{label_alt}]: {text_alt}" for label_alt, text_alt in alt_texts)
+
+                        if is_user:
+                            label_caller = client_name or company or number
+                            prefix_md = f"🗣 {ts_str} **[{label_caller}]:**"
+                        elif is_assistant:
+                            prefix_md = f"📞 {ts_str} **[{current_assistant_name}]:**"
+                        else:
+                            if pending_lines:
+                                st.markdown("\n\n".join(pending_lines))
+                                pending_lines = []
+                            m_filtered = re.match(r"^🔇\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[FILTERED:\s*([^\]]*)\]:\s*(.*)", block, re.DOTALL)
+                            if m_filtered:
+                                st.caption(f"🔇 [{m_filtered.group(1)}] **{trans.get('ui_filtered_label', 'Filtered')}** ({m_filtered.group(2).strip()}): {m_filtered.group(3).strip()}")
                             else:
-                                st.caption(block)
-                        continue
-
-                    if not edit_mode:
-                        pending_lines.append(f"{prefix_md} {shown_text}")
-                        continue
-
-                    with st.container(key=f"phrase_{id_call}_{idx_b}"):
-                        if st.session_state[edit_key] == idx_b:
-                            col_inp, col_ok, col_cancel = st.columns([5, 0.6, 0.8])
-                            with col_inp:
-                                new_txt = st.text_input(
-                                    f"Edit {prefix_md}",
-                                    value=main_text,
-                                    key=f"edit_inp_{id_call}_{idx_b}",
-                                    label_visibility="collapsed"
-                                )
-                            with col_ok:
-                                if st.button("✅", key=f"ok_{id_call}_{idx_b}"):
-                                    emoji_orig = "🗣" if is_user else "📞"
-                                    blocks_raw[idx_b] = (f"{emoji_orig} {ts_str}: {new_txt}" if ts_str else f"{emoji_orig}: {new_txt}") + alt_suffix
-                                    new_trans = "\n\n".join(blocks_raw)
-                                    conn2 = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                                    conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
-                                    conn2.commit()
-                                    conn2.close()
-                                    st.session_state[edit_key] = None
-                                    st.toast(trans.get("ui_toast_phrase_updated", "Updated"))
-                                    st.rerun()
-                            with col_cancel:
-                                if st.button("✖", key=f"cancel_{id_call}_{idx_b}"):
-                                    st.session_state[edit_key] = None
-                                    st.rerun()
-                        else:
-                            col_txt, col_edit, col_del = st.columns([6, 0.55, 0.55])
-                            with col_txt:
-                                st.markdown(f"{prefix_md} {shown_text}")
-                            with col_edit:
-                                if st.button("✏️", key=f"edit_btn_{id_call}_{idx_b}"):
-                                    st.session_state[edit_key] = idx_b
-                                    st.rerun()
-                            with col_del:
-                                del_confirm_key = f"del_confirm_{id_call}_{idx_b}"
-                                if del_confirm_key not in st.session_state:
-                                    st.session_state[del_confirm_key] = False
-
-                                if not st.session_state[del_confirm_key]:
-                                    if st.button("🗑️", key=f"del_phrase_{id_call}_{idx_b}"):
-                                        st.session_state[del_confirm_key] = True
-                                        st.rerun()
+                                m_online = re.match(r"^🌐\s*\[(\d{2}:\d{2}:\d{2})\]:\s*\[([^\]]+)\]:\s*(.*)", block, re.DOTALL)
+                                if m_online:
+                                    st.caption(f"🌐 [{m_online.group(1)}] **{m_online.group(2).strip()}**: {m_online.group(3).strip()}")
                                 else:
-                                    c_yes, c_no = st.columns(2)
-                                    with c_yes:
-                                        if st.button("✓", key=f"del_yes_{id_call}_{idx_b}"):
-                                            blocks_raw.pop(idx_b)
-                                            new_trans = "\n\n".join(blocks_raw)
-                                            conn2 = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                                            conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
-                                            conn2.commit()
-                                            conn2.close()
-                                            st.session_state[del_confirm_key] = False
-                                            st.toast(trans.get("ui_toast_phrase_deleted", "Deleted"))
-                                            st.rerun()
-                                    with c_no:
-                                        if st.button("X", key=f"del_no_{id_call}_{idx_b}"):
-                                            st.session_state[del_confirm_key] = False
-                                            st.rerun()
-
-                if pending_lines:
-                    st.markdown("\n\n".join(pending_lines))
-
-                # Two players side by side: the stereo conversation, and the caller track alone. The caller track is
-                # saved before any noise filtering, so it still holds the noise / TV / speech that was filtered out.
-                call_audio_ok = bool(audio_path and os.path.exists(audio_path))
-                caller_audio_ok = bool(client_audio_path and os.path.exists(client_audio_path))
-                if call_audio_ok or caller_audio_ok:
-                    col_audio_call, col_audio_caller = st.columns(2)
-                    for col_audio, path_audio, ok_audio, label_audio in (
-                        (col_audio_call, audio_path, call_audio_ok, trans.get("ui_audio_call_label", "🔊 Conversation (caller + assistant)")),
-                        (col_audio_caller, client_audio_path, caller_audio_ok, trans.get("ui_audio_caller_label", "🎤 Caller only (unfiltered, noise included)")),
-                    ):
-                        if not ok_audio:
+                                    st.caption(block)
                             continue
-                        with col_audio:
-                            st.caption(label_audio)
-                            try:
-                                with open(path_audio, "rb") as f:
-                                    st.audio(f.read(), format=audio_mime_type(path_audio))
-                            except Exception:
-                                pass
 
-                st.write("---")
-                c_edit1, c_edit2 = st.columns([2, 2])
-                with c_edit1:
-                    tag_options = list(trans.get("tags", ["GENERAL CALL"]))
-                    passthrough_label = assistant_labels.get("passthrough", "📱 ON THE PHONE")
-                    if is_passthrough_tag(tag_display, passthrough_label) and passthrough_label not in tag_options:
-                        tag_options.append(passthrough_label)
-                    if tag_display and tag_display not in tag_options:
-                        tag_options.append(tag_display)
-                    tag_current_val = tag_display if tag_display in tag_options else tag_options[-1]
+                        if not edit_mode:
+                            pending_lines.append(f"{prefix_md} {shown_text}")
+                            continue
 
-                    # The widget state is the single source of truth: it is seeded through
-                    # session_state (no "index" argument) and re-synced only when the stored
-                    # value changes outside of this widget.
-                    tag_widget_key = f"tag_{id_call}"
-                    tag_synced_key = f"tag_synced_{id_call}"
-                    if (
-                        st.session_state.get(tag_widget_key) not in tag_options
-                        or st.session_state.get(tag_synced_key) != tag_current_val
-                    ):
-                        st.session_state[tag_widget_key] = tag_current_val
-                        st.session_state[tag_synced_key] = tag_current_val
+                        with st.container(key=f"phrase_{id_call}_{idx_b}"):
+                            if st.session_state[edit_key] == idx_b:
+                                col_inp, col_ok, col_cancel = st.columns([5, 0.6, 0.8])
+                                with col_inp:
+                                    new_txt = st.text_input(
+                                        f"Edit {prefix_md}",
+                                        value=main_text,
+                                        key=f"edit_inp_{id_call}_{idx_b}",
+                                        label_visibility="collapsed"
+                                    )
+                                with col_ok:
+                                    if st.button("✅", key=f"ok_{id_call}_{idx_b}"):
+                                        emoji_orig = "🗣" if is_user else "📞"
+                                        blocks_raw[idx_b] = (f"{emoji_orig} {ts_str}: {new_txt}" if ts_str else f"{emoji_orig}: {new_txt}") + alt_suffix
+                                        new_trans = "\n\n".join(blocks_raw)
+                                        conn2 = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                                        conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
+                                        conn2.commit()
+                                        conn2.close()
+                                        st.session_state[edit_key] = None
+                                        st.toast(trans.get("ui_toast_phrase_updated", "Updated"))
+                                        st.rerun()
+                                with col_cancel:
+                                    if st.button("✖", key=f"cancel_{id_call}_{idx_b}"):
+                                        st.session_state[edit_key] = None
+                                        st.rerun()
+                            else:
+                                col_txt, col_edit, col_del = st.columns([6, 0.55, 0.55])
+                                with col_txt:
+                                    st.markdown(f"{prefix_md} {shown_text}")
+                                with col_edit:
+                                    if st.button("✏️", key=f"edit_btn_{id_call}_{idx_b}"):
+                                        st.session_state[edit_key] = idx_b
+                                        st.rerun()
+                                with col_del:
+                                    del_confirm_key = f"del_confirm_{id_call}_{idx_b}"
+                                    if del_confirm_key not in st.session_state:
+                                        st.session_state[del_confirm_key] = False
 
-                    new_tag = st.selectbox(
-                        trans.get("ui_tag_label", "Classification:"),
-                        tag_options,
-                        key=tag_widget_key
-                    )
-                    if new_tag != tag_current_val:
-                        if is_passthrough_tag(tag_current_val, passthrough_label) and not is_passthrough_tag(new_tag, passthrough_label):
-                            tag_to_save = format_passthrough_tag(passthrough_label, new_tag)
-                        else:
-                            tag_to_save = new_tag
-                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        conn_loc.execute("UPDATE calls SET tag=?, base_tag=? WHERE id=?", (tag_to_save, tag_to_save, id_call))
-                        conn_loc.commit()
-                        conn_loc.close()
-                        st.toast(trans.get("ui_toast_tag_updated", "Tag updated"))
-                        st.rerun()
+                                    if not st.session_state[del_confirm_key]:
+                                        if st.button("🗑️", key=f"del_phrase_{id_call}_{idx_b}"):
+                                            st.session_state[del_confirm_key] = True
+                                            st.rerun()
+                                    else:
+                                        c_yes, c_no = st.columns(2)
+                                        with c_yes:
+                                            if st.button("✓", key=f"del_yes_{id_call}_{idx_b}"):
+                                                blocks_raw.pop(idx_b)
+                                                new_trans = "\n\n".join(blocks_raw)
+                                                conn2 = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                                                conn2.execute("UPDATE calls SET transcript=? WHERE id=?", (new_trans, id_call))
+                                                conn2.commit()
+                                                conn2.close()
+                                                st.session_state[del_confirm_key] = False
+                                                st.toast(trans.get("ui_toast_phrase_deleted", "Deleted"))
+                                                st.rerun()
+                                        with c_no:
+                                            if st.button("X", key=f"del_no_{id_call}_{idx_b}"):
+                                                st.session_state[del_confirm_key] = False
+                                                st.rerun()
 
-                with c_edit2:
-                    corr_name = st.text_input(
-                        trans.get("ui_caller_name", "Caller Name:"),
-                        value=client_name or "",
-                        key=f"name_{id_call}"
-                    )
-                    corr_company = st.text_input(
-                        trans.get("ui_company", "Company:"),
-                        value=company or "",
-                        key=f"comp_{id_call}"
-                    )
-                    if corr_name != (client_name or "") or corr_company != (company or ""):
-                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        conn_loc.execute(
-                            "UPDATE calls SET client_name=?, base_client_name=?, company=? WHERE id=?",
-                            (corr_name, corr_name, corr_company, id_call)
+                    if pending_lines:
+                        st.markdown("\n\n".join(pending_lines))
+
+                    # Two players side by side: the stereo conversation, and the caller track alone. The caller track is
+                    # saved before any noise filtering, so it still holds the noise / TV / speech that was filtered out.
+                    call_audio_ok = bool(audio_path and os.path.exists(audio_path))
+                    caller_audio_ok = bool(client_audio_path and os.path.exists(client_audio_path))
+                    if call_audio_ok or caller_audio_ok:
+                        col_audio_call, col_audio_caller = st.columns(2)
+                        for col_audio, path_audio, ok_audio, label_audio in (
+                            (col_audio_call, audio_path, call_audio_ok, trans.get("ui_audio_call_label", "🔊 Conversation (caller + assistant)")),
+                            (col_audio_caller, client_audio_path, caller_audio_ok, trans.get("ui_audio_caller_label", "🎤 Caller only (unfiltered, noise included)")),
+                        ):
+                            if not ok_audio:
+                                continue
+                            with col_audio:
+                                st.caption(label_audio)
+                                try:
+                                    with open(path_audio, "rb") as f:
+                                        st.audio(f.read(), format=audio_mime_type(path_audio))
+                                except Exception:
+                                    pass
+
+                    st.write("---")
+                    c_edit1, c_edit2 = st.columns([2, 2])
+                    with c_edit1:
+                        tag_options = list(trans.get("tags", ["GENERAL CALL"]))
+                        passthrough_label = assistant_labels.get("passthrough", "📱 ON THE PHONE")
+                        if is_passthrough_tag(tag_display, passthrough_label) and passthrough_label not in tag_options:
+                            tag_options.append(passthrough_label)
+                        if tag_display and tag_display not in tag_options:
+                            tag_options.append(tag_display)
+                        tag_current_val = tag_display if tag_display in tag_options else tag_options[-1]
+
+                        # The widget state is the single source of truth: it is seeded through
+                        # session_state (no "index" argument) and re-synced only when the stored
+                        # value changes outside of this widget.
+                        tag_widget_key = f"tag_{id_call}"
+                        tag_synced_key = f"tag_synced_{id_call}"
+                        if (
+                            st.session_state.get(tag_widget_key) not in tag_options
+                            or st.session_state.get(tag_synced_key) != tag_current_val
+                        ):
+                            st.session_state[tag_widget_key] = tag_current_val
+                            st.session_state[tag_synced_key] = tag_current_val
+
+                        new_tag = st.selectbox(
+                            trans.get("ui_tag_label", "Classification:"),
+                            tag_options,
+                            key=tag_widget_key
                         )
-                        conn_loc.commit()
-                        conn_loc.close()
-                        st.toast(trans.get("ui_toast_caller_updated", "Caller data updated"))
-                        st.rerun()
+                        if new_tag != tag_current_val:
+                            if is_passthrough_tag(tag_current_val, passthrough_label) and not is_passthrough_tag(new_tag, passthrough_label):
+                                tag_to_save = format_passthrough_tag(passthrough_label, new_tag)
+                            else:
+                                tag_to_save = new_tag
+                            conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                            conn_loc.execute("UPDATE calls SET tag=?, base_tag=? WHERE id=?", (tag_to_save, tag_to_save, id_call))
+                            conn_loc.commit()
+                            conn_loc.close()
+                            st.toast(trans.get("ui_toast_tag_updated", "Tag updated"))
+                            st.rerun()
 
-                st.write("")
-                c_act1, c_act2, c_act3, c_act4, c_act5 = st.columns(5)
-                with c_act1:
-                    if (audio_path and os.path.exists(audio_path)) or (client_audio_path and os.path.exists(client_audio_path)):
-                        if st.button(trans.get("ui_btn_delete_audio", "Delete Audio"), key=f"delaud_{id_call}"):
+                    with c_edit2:
+                        corr_name = st.text_input(
+                            trans.get("ui_caller_name", "Caller Name:"),
+                            value=client_name or "",
+                            key=f"name_{id_call}"
+                        )
+                        corr_company = st.text_input(
+                            trans.get("ui_company", "Company:"),
+                            value=company or "",
+                            key=f"comp_{id_call}"
+                        )
+                        if corr_name != (client_name or "") or corr_company != (company or ""):
+                            conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                            conn_loc.execute(
+                                "UPDATE calls SET client_name=?, base_client_name=?, company=? WHERE id=?",
+                                (corr_name, corr_name, corr_company, id_call)
+                            )
+                            conn_loc.commit()
+                            conn_loc.close()
+                            st.toast(trans.get("ui_toast_caller_updated", "Caller data updated"))
+                            st.rerun()
+
+                    st.write("")
+                    c_act1, c_act2, c_act3, c_act4, c_act5 = st.columns(5)
+                    with c_act1:
+                        if (audio_path and os.path.exists(audio_path)) or (client_audio_path and os.path.exists(client_audio_path)):
+                            if st.button(trans.get("ui_btn_delete_audio", "Delete Audio"), key=f"delaud_{id_call}"):
+                                for ap_to_del in (audio_path, client_audio_path):
+                                    if ap_to_del:
+                                        remove_audio_files(ap_to_del)
+                                conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                                conn_loc.execute("UPDATE calls SET audio_path='', client_audio_path='' WHERE id=?", (id_call,))
+                                conn_loc.commit()
+                                conn_loc.close()
+                                st.toast(trans.get("ui_toast_audio_deleted", "Audio deleted"))
+                                st.rerun()
+                    with c_act2:
+                        if st.button(trans.get("ui_btn_delete_record", "Delete Record"), key=f"delreg_{id_call}"):
                             for ap_to_del in (audio_path, client_audio_path):
                                 if ap_to_del:
                                     remove_audio_files(ap_to_del)
                             conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                            conn_loc.execute("UPDATE calls SET audio_path='', client_audio_path='' WHERE id=?", (id_call,))
+                            conn_loc.execute("DELETE FROM calls WHERE id=?", (id_call,))
                             conn_loc.commit()
                             conn_loc.close()
-                            st.toast(trans.get("ui_toast_audio_deleted", "Audio deleted"))
+                            st.toast(trans.get("ui_toast_record_deleted", "Record deleted"))
                             st.rerun()
-                with c_act2:
-                    if st.button(trans.get("ui_btn_delete_record", "Delete Record"), key=f"delreg_{id_call}"):
-                        for ap_to_del in (audio_path, client_audio_path):
-                            if ap_to_del:
-                                remove_audio_files(ap_to_del)
-                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        conn_loc.execute("DELETE FROM calls WHERE id=?", (id_call,))
-                        conn_loc.commit()
-                        conn_loc.close()
-                        st.toast(trans.get("ui_toast_record_deleted", "Record deleted"))
-                        st.rerun()
-                with c_act3:
-                    if st.button(trans.get("ui_btn_whitelist", "Whitelist"), key=f"wht_{id_call}"):
-                        norm_num = normalize_phone_pattern(number)
-                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        cur = conn_loc.execute("UPDATE contacts SET type='whitelist' WHERE number=?", (norm_num,))
-                        if cur.rowcount == 0:
-                            conn_loc.execute(
-                                "INSERT INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'whitelist', '', '', '')",
-                                (norm_num,)
-                            )
-                        conn_loc.commit()
-                        conn_loc.close()
-                        recalculate_call_labels(assistant_labels, in_progress_label)
-                        st.toast(trans.get("ui_toast_saved", "Saved successfully"))
-                        st.rerun()
-                with c_act5:
-                    if st.button(trans.get("ui_btn_check_spam", "Check SPAM"), key=f"spamchk_{id_call}"):
-                        # The SPAM test box is built later in this same run: its value can still be set from here
-                        st.session_state["spam_test_num_inp"] = number
-                        st.session_state["spam_test_expanded"] = True
-                        st.toast(trans.get("ui_toast_spam_prefilled", "Number copied to the SPAM test box in the settings column."))
-                with c_act4:
-                    if st.button(trans.get("ui_btn_blacklist", "Blacklist"), key=f"blk_{id_call}"):
-                        norm_num = normalize_phone_pattern(number)
-                        conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        cur = conn_loc.execute("UPDATE contacts SET type='blacklist' WHERE number=?", (norm_num,))
-                        if cur.rowcount == 0:
-                            conn_loc.execute(
-                                "INSERT INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'blacklist', '', '', '')",
-                                (norm_num,)
-                            )
-                        conn_loc.commit()
-                        conn_loc.close()
-                        recalculate_call_labels(assistant_labels, in_progress_label)
-                        st.toast(trans.get("ui_toast_saved", "Saved successfully"))
-                        st.rerun()
-        render_pager("calls_page", total_calls, CALLS_PAGE_SIZE, "calls")
-    else:
-        st.info(trans.get("ui_no_calls", "No calls recorded yet."))
+                    with c_act3:
+                        if st.button(trans.get("ui_btn_whitelist", "Whitelist"), key=f"wht_{id_call}"):
+                            norm_num = normalize_phone_pattern(number)
+                            conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                            cur = conn_loc.execute("UPDATE contacts SET type='whitelist' WHERE number=?", (norm_num,))
+                            if cur.rowcount == 0:
+                                conn_loc.execute(
+                                    "INSERT INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'whitelist', '', '', '')",
+                                    (norm_num,)
+                                )
+                            conn_loc.commit()
+                            conn_loc.close()
+                            recalculate_call_labels(assistant_labels, in_progress_label)
+                            st.toast(trans.get("ui_toast_saved", "Saved successfully"))
+                            st.rerun()
+                    with c_act5:
+                        if st.button(trans.get("ui_btn_check_spam", "Check SPAM"), key=f"spamchk_{id_call}"):
+                            # The SPAM test box is built later in this same run: its value can still be set from here
+                            st.session_state["spam_test_num_inp"] = number
+                            st.session_state["spam_test_expanded"] = True
+                            st.toast(trans.get("ui_toast_spam_prefilled", "Number copied to the SPAM test box in the settings column."))
+                    with c_act4:
+                        if st.button(trans.get("ui_btn_blacklist", "Blacklist"), key=f"blk_{id_call}"):
+                            norm_num = normalize_phone_pattern(number)
+                            conn_loc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                            cur = conn_loc.execute("UPDATE contacts SET type='blacklist' WHERE number=?", (norm_num,))
+                            if cur.rowcount == 0:
+                                conn_loc.execute(
+                                    "INSERT INTO contacts (number, type, prompt_rules, tag, note) VALUES (?, 'blacklist', '', '', '')",
+                                    (norm_num,)
+                                )
+                            conn_loc.commit()
+                            conn_loc.close()
+                            recalculate_call_labels(assistant_labels, in_progress_label)
+                            st.toast(trans.get("ui_toast_saved", "Saved successfully"))
+                            st.rerun()
+            render_pager("calls_page", total_calls, CALLS_PAGE_SIZE, "calls")
+        else:
+            st.info(trans.get("ui_no_calls", "No calls recorded yet."))
 
 # =============================================================================
 # COLUMN 2: CALLER MESSAGES INBOX & CONTACT FILTERS / WILDCARDS
 # =============================================================================
 with col2:
-    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-    messages_rows = conn.execute(
-        "SELECT id, call_id, number, date, time, caller_name, message_text, is_read "
-        "FROM messages ORDER BY id DESC"
-    ).fetchall()
-    conn.close()
+    if section_visible("messages"):
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+        messages_rows = conn.execute(
+            "SELECT id, call_id, number, date, time, caller_name, message_text, is_read "
+            "FROM messages ORDER BY id DESC"
+        ).fetchall()
+        conn.close()
 
-    unread_count = sum(1 for m in messages_rows if m[7] == 0)
-    badge_str = f" 🔴 ({unread_count} {trans.get('ui_messages_unread', 'unread')})" if unread_count > 0 else f" ({len(messages_rows)})"
-    st.subheader(f"{trans.get('messages_inbox_title', '📬 Caller Messages')}{badge_str}")
+        unread_count = sum(1 for m in messages_rows if m[7] == 0)
+        badge_str = f" 🔴 ({unread_count} {trans.get('ui_messages_unread', 'unread')})" if unread_count > 0 else f" ({len(messages_rows)})"
+        st.subheader(f"{trans.get('messages_inbox_title', '📬 Caller Messages')}{badge_str}")
 
-    with st.container(border=True):
-        show_unread_only = db_checkbox(
-            trans.get("ui_messages_unread_only", "Show unread only"),
-            "show_unread_only",
-            "chk_unread_msgs",
-            False
-        )
-
-        filtered_msgs = [m for m in messages_rows if (not show_unread_only or m[7] == 0)]
-        if filtered_msgs:
-            messages_page = clamp_page("messages_page", len(filtered_msgs), MESSAGES_PAGE_SIZE)
-            messages_start = messages_page * MESSAGES_PAGE_SIZE
-            for msg in filtered_msgs[messages_start:messages_start + MESSAGES_PAGE_SIZE]:
-                msg_id, msg_call_id, msg_num, msg_date, msg_time, msg_caller, msg_text, msg_read = msg
-                status_icon = "🟢" if msg_read == 0 else "✅"
-                header_label = f"{status_icon} [{msg_date} {msg_time}] {msg_caller or msg_num} ({msg_num})"
-                with st.expander(header_label, expanded=(msg_read == 0)):
-                    st.markdown(f"**{trans.get('ui_message_date_time', 'Date & Exact Time:')}** `{msg_date} {msg_time}`")
-                    st.markdown(f"**{trans.get('ui_caller_name', 'Caller Name:')}** {msg_caller or '-'} | **📞** `{msg_num}`")
-                    st.write(msg_text)
-                    mc1, mc2 = st.columns(2)
-                    with mc1:
-                        toggle_label = trans.get("ui_btn_mark_read", "✓ Mark Read") if msg_read == 0 else trans.get("ui_btn_mark_unread", "✉️ Mark Unread")
-                        if st.button(toggle_label, key=f"msg_read_{msg_id}", use_container_width=True):
-                            new_state = 1 if msg_read == 0 else 0
-                            conn_m = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                            conn_m.execute("UPDATE messages SET is_read=? WHERE id=?", (new_state, msg_id))
-                            conn_m.commit()
-                            conn_m.close()
-                            st.rerun()
-                    with mc2:
-                        if st.button(trans.get("ui_btn_delete_msg", "🗑️ Delete"), key=f"msg_del_{msg_id}", use_container_width=True):
-                            conn_m = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                            conn_m.execute("DELETE FROM messages WHERE id=?", (msg_id,))
-                            conn_m.commit()
-                            conn_m.close()
-                            st.rerun()
-            render_pager("messages_page", len(filtered_msgs), MESSAGES_PAGE_SIZE, "messages")
-        else:
-            st.caption(trans.get("ui_no_messages", "No saved caller messages yet."))
-
-    st.write("---")
-
-    st.subheader(trans.get("ui_managed_contacts", "Managed contacts & wildcard rules:"))
-    if spam_filter_on:
-        st.info(trans.get("ui_spam_filter_contacts_note", "SPAM filter mode is on: every number of the whitelist stays on the phone and the blacklist still rejects. The instructions, greeting, memory and phone options of each rule are kept but not used until you turn the mode off."))
-    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-    contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode FROM contacts ORDER BY number ASC").fetchall()
-    conn.close()
-
-    if contacts:
-        contacts_page = clamp_page("contacts_page", len(contacts), CONTACTS_PAGE_SIZE)
-        contacts_start = contacts_page * CONTACTS_PAGE_SIZE
-        for c_row in contacts[contacts_start:contacts_start + CONTACTS_PAGE_SIZE]:
-            c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days, c_greeting, c_passthrough, c_greeting_mode = c_row
-            # Widget keys come from the stored contact itself, not from its position in the list: Streamlit keeps the
-            # state of a key and ignores the new default values, so position-based keys showed the data of another
-            # contact after an insertion. The key also changes when the stored row changes (e.g. the quick
-            # Whitelist/Blacklist buttons), so the fields are rebuilt from the database.
-            ckey = hashlib.md5(repr(c_row).encode("utf-8")).hexdigest()[:12]
-            badge = "🛡️ WHITELIST" if c_type == "whitelist" else "🚫 BLACKLIST"
-            wildcard_badge = " [WILDCARD]" if any(w in c_num for w in ("*", "?")) else ""
-            note_str = f" — {c_note}" if c_note else ""
-            tag_has_icon = bool(split_contact_tag(c_tag, get_contact_tag_icons())[0])
-            tag_str = (f" | {c_tag}" if tag_has_icon else f" | 🏷️ {c_tag}") if c_tag else ""
-
-            passthrough_badge = " 📱" if (c_passthrough and c_type == "whitelist") else ""
-            with st.expander(f"{c_num}{wildcard_badge} -> [{badge}]{passthrough_badge}{note_str}{tag_str}"):
-                edit_num = st.text_input(
-                    trans.get("ui_form_phone", "Phone / Pattern:"),
-                    value=c_num,
-                    key=f"edit_c_num_{ckey}"
-                )
-                edit_type = st.selectbox(
-                    trans.get("ui_form_category", "Action:"),
-                    ["whitelist", "blacklist"],
-                    index=0 if c_type == "whitelist" else 1,
-                    key=f"edit_c_type_{ckey}"
-                )
-                edit_tag = contact_tag_widgets(f"edit_c_{ckey}", c_tag or "")
-                edit_note = st.text_input(
-                    trans.get("ui_form_note", "Note:"),
-                    value=c_note or "",
-                    key=f"edit_c_note_{ckey}",
-                    help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT)
-                )
-                edit_prompt = st.text_area(
-                    trans.get("ui_form_prompt", "Custom Instructions:"),
-                    value=c_prompt or "",
-                    key=f"edit_c_prompt_{ckey}",
-                    disabled=spam_filter_on
-                )
-                edit_greeting = st.text_area(
-                    trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"),
-                    value=c_greeting or "",
-                    key=f"edit_c_greeting_{ckey}",
-                    disabled=spam_filter_on
-                )
-                edit_greeting_mode = contact_greeting_mode_widget(f"edit_c_gm_{ckey}", c_greeting_mode or "", disabled=spam_filter_on)
-                edit_passthrough = st.checkbox(
-                    trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
-                    value=bool(c_passthrough),
-                    key=f"edit_c_pt_{ckey}",
-                    disabled=spam_filter_on,
-                    help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
-                )
-                edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{ckey}", c_mem_mode, c_mem_calls, c_mem_days, disabled=spam_filter_on)
-                eb1, eb2 = st.columns(2)
-                with eb1:
-                    if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{ckey}", use_container_width=True):
-                        norm_new_num = normalize_phone_pattern(edit_num)
-                        conn_c = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        if norm_new_num != c_num:
-                            conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
-                        conn_c.execute(
-                            "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (norm_new_num, edit_type, edit_prompt.strip(), edit_tag, edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days,
-                             edit_greeting.strip(), 1 if edit_passthrough else 0, edit_greeting_mode)
-                        )
-                        conn_c.commit()
-                        conn_c.close()
-                        recalculate_call_labels(assistant_labels, in_progress_label)
-                        st.toast(trans.get("ui_toast_saved", "Saved successfully"))
-                        st.rerun()
-                with eb2:
-                    if st.button(trans.get("ui_btn_delete_contact", "🗑️ Delete"), key=f"btn_del_c_{ckey}", use_container_width=True):
-                        conn_c = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                        conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
-                        conn_c.commit()
-                        conn_c.close()
-                        recalculate_call_labels(assistant_labels, in_progress_label)
-                        st.toast(trans.get("ui_toast_record_deleted", "Deleted"))
-                        st.rerun()
-        render_pager("contacts_page", len(contacts), CONTACTS_PAGE_SIZE, "contacts")
-    else:
-        st.caption(trans.get("ui_no_contacts", "No contacts or wildcard rules configured yet."))
-
-    st.write("---")
-
-    st.markdown(f"#### {trans.get('ui_new_rule_title', 'Add a new rule:')}")
-    st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (600123456) and wildcards (* and ?, e.g. 626288*)."))
-    st.info(trans.get(
-        "ui_wildcard_help",
-        "Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. "
-        "Example: 626288* blocks or whitelists every number that starts with 626288. "
-        "If several rules match, the exact number wins, then the most specific wildcard."
-    ))
-
-    with st.form("new_contact"):
-        phone_num = st.text_input(trans.get("ui_form_phone", "Phone Number or Wildcard (e.g. 626288*):"))
-        contact_type = st.selectbox(trans.get("ui_form_category", "Action:"), ["whitelist", "blacklist"])
-        contact_tag = contact_tag_widgets("new_contact")
-        contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="", help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT))
-        prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"), disabled=spam_filter_on)
-        new_greeting_c = st.text_area(trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"), disabled=spam_filter_on)
-        new_greeting_mode = contact_greeting_mode_widget("new_contact_gm", disabled=spam_filter_on)
-        new_passthrough = st.checkbox(
-            trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
-            disabled=spam_filter_on,
-            help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
-        )
-        new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact", disabled=spam_filter_on)
-        submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
-
-        if submit and phone_num.strip():
-            norm_number = normalize_phone_pattern(phone_num)
-            conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-            conn.execute(
-                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (norm_number, contact_type, prompt_rules.strip(), contact_tag, contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days,
-                 new_greeting_c.strip(), 1 if new_passthrough else 0, new_greeting_mode)
+        with st.container(border=True):
+            show_unread_only = db_checkbox(
+                trans.get("ui_messages_unread_only", "Show unread only"),
+                "show_unread_only",
+                "chk_unread_msgs",
+                False
             )
-            conn.commit()
-            conn.close()
-            recalculate_call_labels(assistant_labels, in_progress_label)
-            st.success(trans.get("ui_toast_saved", "Saved successfully"))
-            st.rerun()
+
+            filtered_msgs = [m for m in messages_rows if (not show_unread_only or m[7] == 0)]
+            if filtered_msgs:
+                messages_page = clamp_page("messages_page", len(filtered_msgs), MESSAGES_PAGE_SIZE)
+                messages_start = messages_page * MESSAGES_PAGE_SIZE
+                for msg in filtered_msgs[messages_start:messages_start + MESSAGES_PAGE_SIZE]:
+                    msg_id, msg_call_id, msg_num, msg_date, msg_time, msg_caller, msg_text, msg_read = msg
+                    status_icon = "🟢" if msg_read == 0 else "✅"
+                    header_label = f"{status_icon} [{msg_date} {msg_time}] {msg_caller or msg_num} ({msg_num})"
+                    with st.expander(header_label, expanded=(msg_read == 0)):
+                        st.markdown(f"**{trans.get('ui_message_date_time', 'Date & Exact Time:')}** `{msg_date} {msg_time}`")
+                        st.markdown(f"**{trans.get('ui_caller_name', 'Caller Name:')}** {msg_caller or '-'} | **📞** `{msg_num}`")
+                        st.write(msg_text)
+                        mc1, mc2 = st.columns(2)
+                        with mc1:
+                            toggle_label = trans.get("ui_btn_mark_read", "✓ Mark Read") if msg_read == 0 else trans.get("ui_btn_mark_unread", "✉️ Mark Unread")
+                            if st.button(toggle_label, key=f"msg_read_{msg_id}", use_container_width=True):
+                                new_state = 1 if msg_read == 0 else 0
+                                conn_m = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                                conn_m.execute("UPDATE messages SET is_read=? WHERE id=?", (new_state, msg_id))
+                                conn_m.commit()
+                                conn_m.close()
+                                st.rerun()
+                        with mc2:
+                            if st.button(trans.get("ui_btn_delete_msg", "🗑️ Delete"), key=f"msg_del_{msg_id}", use_container_width=True):
+                                conn_m = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                                conn_m.execute("DELETE FROM messages WHERE id=?", (msg_id,))
+                                conn_m.commit()
+                                conn_m.close()
+                                st.rerun()
+                render_pager("messages_page", len(filtered_msgs), MESSAGES_PAGE_SIZE, "messages")
+            else:
+                st.caption(trans.get("ui_no_messages", "No saved caller messages yet."))
+
+    if section_visible("contacts"):
+        st.write("---")
+
+        st.subheader(trans.get("ui_managed_contacts", "Managed contacts & wildcard rules:"))
+        if spam_filter_on:
+            st.info(trans.get("ui_spam_filter_contacts_note", "SPAM filter mode is on: every number of the whitelist stays on the phone and the blacklist still rejects. The instructions, greeting, memory and phone options of each rule are kept but not used until you turn the mode off."))
+        conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+        contacts = conn.execute("SELECT number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode FROM contacts ORDER BY number ASC").fetchall()
+        conn.close()
+
+        if contacts:
+            contacts_page = clamp_page("contacts_page", len(contacts), CONTACTS_PAGE_SIZE)
+            contacts_start = contacts_page * CONTACTS_PAGE_SIZE
+            for c_row in contacts[contacts_start:contacts_start + CONTACTS_PAGE_SIZE]:
+                c_num, c_type, c_prompt, c_tag, c_note, c_mem_mode, c_mem_calls, c_mem_days, c_greeting, c_passthrough, c_greeting_mode = c_row
+                # Widget keys come from the stored contact itself, not from its position in the list: Streamlit keeps the
+                # state of a key and ignores the new default values, so position-based keys showed the data of another
+                # contact after an insertion. The key also changes when the stored row changes (e.g. the quick
+                # Whitelist/Blacklist buttons), so the fields are rebuilt from the database.
+                ckey = hashlib.md5(repr(c_row).encode("utf-8")).hexdigest()[:12]
+                badge = "🛡️ WHITELIST" if c_type == "whitelist" else "🚫 BLACKLIST"
+                wildcard_badge = " [WILDCARD]" if any(w in c_num for w in ("*", "?")) else ""
+                note_str = f" — {c_note}" if c_note else ""
+                tag_has_icon = bool(split_contact_tag(c_tag, get_contact_tag_icons())[0])
+                tag_str = (f" | {c_tag}" if tag_has_icon else f" | 🏷️ {c_tag}") if c_tag else ""
+
+                passthrough_badge = " 📱" if (c_passthrough and c_type == "whitelist") else ""
+                with st.expander(f"{c_num}{wildcard_badge} -> [{badge}]{passthrough_badge}{note_str}{tag_str}"):
+                    edit_num = st.text_input(
+                        trans.get("ui_form_phone", "Phone / Pattern:"),
+                        value=c_num,
+                        key=f"edit_c_num_{ckey}"
+                    )
+                    edit_type = st.selectbox(
+                        trans.get("ui_form_category", "Action:"),
+                        ["whitelist", "blacklist"],
+                        index=0 if c_type == "whitelist" else 1,
+                        key=f"edit_c_type_{ckey}"
+                    )
+                    edit_tag = contact_tag_widgets(f"edit_c_{ckey}", c_tag or "")
+                    edit_note = st.text_input(
+                        trans.get("ui_form_note", "Note:"),
+                        value=c_note or "",
+                        key=f"edit_c_note_{ckey}",
+                        help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT)
+                    )
+                    edit_prompt = st.text_area(
+                        trans.get("ui_form_prompt", "Custom Instructions:"),
+                        value=c_prompt or "",
+                        key=f"edit_c_prompt_{ckey}",
+                        disabled=spam_filter_on
+                    )
+                    edit_greeting = st.text_area(
+                        trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"),
+                        value=c_greeting or "",
+                        key=f"edit_c_greeting_{ckey}",
+                        disabled=spam_filter_on
+                    )
+                    edit_greeting_mode = contact_greeting_mode_widget(f"edit_c_gm_{ckey}", c_greeting_mode or "", disabled=spam_filter_on)
+                    edit_passthrough = st.checkbox(
+                        trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
+                        value=bool(c_passthrough),
+                        key=f"edit_c_pt_{ckey}",
+                        disabled=spam_filter_on,
+                        help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
+                    )
+                    edit_mem_mode, edit_mem_calls, edit_mem_days = contact_memory_widgets(f"edit_c_{ckey}", c_mem_mode, c_mem_calls, c_mem_days, disabled=spam_filter_on)
+                    eb1, eb2 = st.columns(2)
+                    with eb1:
+                        if st.button(trans.get("ui_btn_update_contact", "💾 Update"), key=f"btn_upd_c_{ckey}", use_container_width=True):
+                            norm_new_num = normalize_phone_pattern(edit_num)
+                            conn_c = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                            if norm_new_num != c_num:
+                                conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
+                            conn_c.execute(
+                                "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (norm_new_num, edit_type, edit_prompt.strip(), edit_tag, edit_note.strip(), edit_mem_mode, edit_mem_calls, edit_mem_days,
+                                 edit_greeting.strip(), 1 if edit_passthrough else 0, edit_greeting_mode)
+                            )
+                            conn_c.commit()
+                            conn_c.close()
+                            recalculate_call_labels(assistant_labels, in_progress_label)
+                            st.toast(trans.get("ui_toast_saved", "Saved successfully"))
+                            st.rerun()
+                    with eb2:
+                        if st.button(trans.get("ui_btn_delete_contact", "🗑️ Delete"), key=f"btn_del_c_{ckey}", use_container_width=True):
+                            conn_c = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                            conn_c.execute("DELETE FROM contacts WHERE number=?", (c_num,))
+                            conn_c.commit()
+                            conn_c.close()
+                            recalculate_call_labels(assistant_labels, in_progress_label)
+                            st.toast(trans.get("ui_toast_record_deleted", "Deleted"))
+                            st.rerun()
+            render_pager("contacts_page", len(contacts), CONTACTS_PAGE_SIZE, "contacts")
+        else:
+            st.caption(trans.get("ui_no_contacts", "No contacts or wildcard rules configured yet."))
+
+        st.write("---")
+
+        st.markdown(f"#### {trans.get('ui_new_rule_title', 'Add a new rule:')}")
+        st.caption(trans.get("ui_wildcard_hint", "Supports exact numbers (600123456) and wildcards (* and ?, e.g. 626288*)."))
+        st.info(trans.get(
+            "ui_wildcard_help",
+            "Wildcards let one rule cover many numbers. * replaces any group of digits and ? replaces exactly one digit. "
+            "Example: 626288* blocks or whitelists every number that starts with 626288. "
+            "If several rules match, the exact number wins, then the most specific wildcard."
+        ))
+
+        with st.form("new_contact"):
+            phone_num = st.text_input(trans.get("ui_form_phone", "Phone Number or Wildcard (e.g. 626288*):"))
+            contact_type = st.selectbox(trans.get("ui_form_category", "Action:"), ["whitelist", "blacklist"])
+            contact_tag = contact_tag_widgets("new_contact")
+            contact_note = st.text_input(trans.get("ui_form_note", "Label / Note (e.g. Aunt Mary, Telemarketer):"), value="", help=trans.get("ui_form_note_help", CONTACT_NOTE_HELP_DEFAULT))
+            prompt_rules = st.text_area(trans.get("ui_form_prompt", "Custom Instructions for AI:"), disabled=spam_filter_on)
+            new_greeting_c = st.text_area(trans.get("ui_form_greeting", "Greeting for this number (empty = the one of its category or the general one):"), disabled=spam_filter_on)
+            new_greeting_mode = contact_greeting_mode_widget("new_contact_gm", disabled=spam_filter_on)
+            new_passthrough = st.checkbox(
+                trans.get("ui_form_passthrough", "📱 Leave these calls to the phone (whitelist only)"),
+                disabled=spam_filter_on,
+                help=trans.get("ui_form_passthrough_help", "The switchboard does not answer: the call rings on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth.")
+            )
+            new_mem_mode, new_mem_calls, new_mem_days = contact_memory_widgets("new_contact", disabled=spam_filter_on)
+            submit = st.form_submit_button(trans.get("ui_form_save_rule", "💾 Save Rule"), use_container_width=True)
+
+            if submit and phone_num.strip():
+                norm_number = normalize_phone_pattern(phone_num)
+                conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                conn.execute(
+                    "INSERT OR REPLACE INTO contacts (number, type, prompt_rules, tag, note, mem_mode, mem_calls, mem_days, greeting, phone_passthrough, greeting_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (norm_number, contact_type, prompt_rules.strip(), contact_tag, contact_note.strip(), new_mem_mode, new_mem_calls, new_mem_days,
+                     new_greeting_c.strip(), 1 if new_passthrough else 0, new_greeting_mode)
+                )
+                conn.commit()
+                conn.close()
+                recalculate_call_labels(assistant_labels, in_progress_label)
+                st.success(trans.get("ui_toast_saved", "Saved successfully"))
+                st.rerun()
 
 # =============================================================================
 # COLUMN 3: SYSTEM CONTROLS & ASSISTANT SETTINGS
@@ -2627,240 +2701,246 @@ with col3:
     if st.session_state.pending_lang:
         confirm_language_dialog()
 
-    st.write("---")
+    if section_visible("daemon"):
+        st.write("---")
 
-    # --- DAEMON CONTROLS & FULL LINUX SERVER REBOOT (WITH SUDO PASSWORD INPUT) ---
-    st.markdown(f"**🎛️ {trans.get('ui_daemon_control_title', 'Switchboard & Linux Server Control')}**")
-    with st.container(border=True):
-        daemon_state = get_config("daemon_state", "running")
-        try:
-            last_hb = float(get_volatile("daemon_heartbeat", "0"))
-        except ValueError:
-            last_hb = 0.0
-        hb_age = time.time() - last_hb
+        # --- DAEMON CONTROLS & FULL LINUX SERVER REBOOT (WITH SUDO PASSWORD INPUT) ---
+        st.markdown(f"**🎛️ {trans.get('ui_daemon_control_title', 'Switchboard & Linux Server Control')}**")
+        with st.container(border=True):
+            daemon_state = get_config("daemon_state", "running")
+            try:
+                last_hb = float(get_volatile("daemon_heartbeat", "0"))
+            except ValueError:
+                last_hb = 0.0
+            hb_age = time.time() - last_hb
 
-        if daemon_state == "stopped" or hb_age > DAEMON_HEARTBEAT_STALE_SECONDS:
-            status_badge = trans.get("ui_daemon_status_stopped", "🔴 Stopped / Offline")
-        elif daemon_state == "paused":
-            status_badge = trans.get("ui_daemon_status_paused", "⏸️ Paused (Calls ring without answering)")
-        else:
-            status_badge = trans.get("ui_daemon_status_running", "🟢 Active (Listening for calls)")
-
-        st.markdown(f"**{trans.get('ui_daemon_status_label', 'Status:')}** {status_badge}")
-
-        daemon_stopped = daemon_state == "stopped" or hb_age > DAEMON_HEARTBEAT_STALE_SECONDS
-        can_restart_from_gui = bool(daemon_start_method())
-        dc1, dc2 = st.columns(2)
-        with dc1:
-            if daemon_state == "paused":
-                if st.button(trans.get("ui_btn_resume_daemon", "▶️ Resume Switchboard"), key="btn_daemon_resume", use_container_width=True, disabled=daemon_stopped):
-                    set_config("daemon_state", "running")
-                    st.toast(trans.get("ui_toast_daemon_resumed", "Switchboard resumed"))
-                    st.rerun()
+            if daemon_state == "stopped" or hb_age > DAEMON_HEARTBEAT_STALE_SECONDS:
+                status_badge = trans.get("ui_daemon_status_stopped", "🔴 Stopped / Offline")
+            elif daemon_state == "paused":
+                status_badge = trans.get("ui_daemon_status_paused", "⏸️ Paused (Calls ring without answering)")
             else:
-                if st.button(trans.get("ui_btn_pause_daemon", "⏸️ Pause Switchboard"), key="btn_daemon_pause", use_container_width=True, disabled=daemon_stopped):
-                    set_config("daemon_state", "paused")
-                    st.toast(trans.get("ui_toast_daemon_paused", "Switchboard paused"))
-                    st.rerun()
-        with dc2:
-            if daemon_stopped:
-                if st.button(trans.get("ui_btn_start_daemon", "▶️ Start Daemon"), key="btn_daemon_start", use_container_width=True):
-                    with st.spinner(trans.get("ui_daemon_starting", "Starting the switchboard...")):
-                        started_ok, start_text_key = start_daemon_process()
-                    start_text = trans.get(start_text_key, start_text_key)
-                    if started_ok:
-                        st.toast(start_text)
-                        st.rerun()
-                    else:
-                        st.error(start_text)
-            elif can_restart_from_gui:
-                if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
-                    set_config("daemon_state", "stopped")
-                    st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
-                    st.rerun()
-            else:
-                # The daemon cannot be started again from this panel: the user must know before stopping it
-                if not st.session_state.get("confirm_daemon_stop", False):
-                    if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
-                        st.session_state.confirm_daemon_stop = True
+                status_badge = trans.get("ui_daemon_status_running", "🟢 Active (Listening for calls)")
+
+            st.markdown(f"**{trans.get('ui_daemon_status_label', 'Status:')}** {status_badge}")
+
+            daemon_stopped = daemon_state == "stopped" or hb_age > DAEMON_HEARTBEAT_STALE_SECONDS
+            can_restart_from_gui = bool(daemon_start_method())
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                if daemon_state == "paused":
+                    if st.button(trans.get("ui_btn_resume_daemon", "▶️ Resume Switchboard"), key="btn_daemon_resume", use_container_width=True, disabled=daemon_stopped):
+                        set_config("daemon_state", "running")
+                        st.toast(trans.get("ui_toast_daemon_resumed", "Switchboard resumed"))
                         st.rerun()
                 else:
-                    st.warning(trans.get("ui_daemon_stop_warning", "⚠️ The switchboard will stop completely and it cannot be started again from this panel. Start it again from a terminal or restart the server."))
-                    sc1, sc2 = st.columns(2)
-                    with sc1:
-                        if st.button(trans.get("ui_btn_confirm_stop_yes", "✅ Yes, stop it"), key="btn_daemon_stop_yes", use_container_width=True):
-                            st.session_state.confirm_daemon_stop = False
-                            set_config("daemon_state", "stopped")
-                            st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
+                    if st.button(trans.get("ui_btn_pause_daemon", "⏸️ Pause Switchboard"), key="btn_daemon_pause", use_container_width=True, disabled=daemon_stopped):
+                        set_config("daemon_state", "paused")
+                        st.toast(trans.get("ui_toast_daemon_paused", "Switchboard paused"))
+                        st.rerun()
+            with dc2:
+                if daemon_stopped:
+                    if st.button(trans.get("ui_btn_start_daemon", "▶️ Start Daemon"), key="btn_daemon_start", use_container_width=True):
+                        with st.spinner(trans.get("ui_daemon_starting", "Starting the switchboard...")):
+                            started_ok, start_text_key = start_daemon_process()
+                        start_text = trans.get(start_text_key, start_text_key)
+                        if started_ok:
+                            st.toast(start_text)
                             st.rerun()
-                    with sc2:
-                        if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_daemon_stop_no", use_container_width=True):
-                            st.session_state.confirm_daemon_stop = False
+                        else:
+                            st.error(start_text)
+                elif can_restart_from_gui:
+                    if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
+                        set_config("daemon_state", "stopped")
+                        st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
+                        st.rerun()
+                else:
+                    # The daemon cannot be started again from this panel: the user must know before stopping it
+                    if not st.session_state.get("confirm_daemon_stop", False):
+                        if st.button(trans.get("ui_btn_stop_daemon", "⏹️ Stop Daemon"), key="btn_daemon_stop", use_container_width=True):
+                            st.session_state.confirm_daemon_stop = True
                             st.rerun()
-
-        db_checkbox(trans.get("ui_paused_to_phone", "While paused, leave the calls to the phone with their own audio"), "paused_calls_to_phone", "chk_paused_to_phone", False)
-        st.caption(trans.get("ui_paused_to_phone_help", "The calls keep ringing on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth to the switchboard."))
-
-        st.write("")
-        if "confirm_server_reboot" not in st.session_state:
-            st.session_state.confirm_server_reboot = False
-
-        if not st.session_state.confirm_server_reboot:
-            if st.button(trans.get("ui_btn_reboot_server", "🔄 Reboot Linux Server"), key="btn_reboot_host", use_container_width=True):
-                st.session_state.confirm_server_reboot = True
-                st.rerun()
-        else:
-            st.warning(trans.get("ui_confirm_reboot_warning", "⚠️ Are you sure you want to reboot the entire Linux server?"))
-            sudo_pwd = st.text_input(
-                trans.get("ui_sudo_password_label", "Sudo password (required to reboot):"),
-                type="password",
-                key="reboot_sudo_pwd"
-            )
-            rc1, rc2 = st.columns(2)
-            with rc1:
-                if st.button(trans.get("ui_btn_confirm_reboot_yes", "✅ Yes, Reboot Now"), key="btn_reboot_yes", use_container_width=True):
-                    st.session_state.confirm_server_reboot = False
-                    st.toast(trans.get("ui_toast_rebooting", "Rebooting Linux server..."))
-                    if sudo_pwd:
-                        proc = subprocess.Popen(
-                            ["sudo", "-S", "reboot"],
-                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True
-                        )
-                        try:
-                            proc.stdin.write(sudo_pwd + "\n")
-                            proc.stdin.flush()
-                        except Exception:
-                            pass
                     else:
-                        subprocess.Popen(["sudo", "-n", "reboot"])
-            with rc2:
-                if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_reboot_no", use_container_width=True):
-                    st.session_state.confirm_server_reboot = False
+                        st.warning(trans.get("ui_daemon_stop_warning", "⚠️ The switchboard will stop completely and it cannot be started again from this panel. Start it again from a terminal or restart the server."))
+                        sc1, sc2 = st.columns(2)
+                        with sc1:
+                            if st.button(trans.get("ui_btn_confirm_stop_yes", "✅ Yes, stop it"), key="btn_daemon_stop_yes", use_container_width=True):
+                                st.session_state.confirm_daemon_stop = False
+                                set_config("daemon_state", "stopped")
+                                st.toast(trans.get("ui_toast_daemon_stopped", "Stop signal sent to daemon"))
+                                st.rerun()
+                        with sc2:
+                            if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_daemon_stop_no", use_container_width=True):
+                                st.session_state.confirm_daemon_stop = False
+                                st.rerun()
+
+            db_checkbox(trans.get("ui_paused_to_phone", "While paused, leave the calls to the phone with their own audio"), "paused_calls_to_phone", "chk_paused_to_phone", False)
+            st.caption(trans.get("ui_paused_to_phone_help", "The calls keep ringing on the phone and, when you answer, the audio stays on the phone instead of going through Bluetooth to the switchboard."))
+
+            st.write("")
+            if "confirm_server_reboot" not in st.session_state:
+                st.session_state.confirm_server_reboot = False
+
+            if not st.session_state.confirm_server_reboot:
+                if st.button(trans.get("ui_btn_reboot_server", "🔄 Reboot Linux Server"), key="btn_reboot_host", use_container_width=True):
+                    st.session_state.confirm_server_reboot = True
+                    st.rerun()
+            else:
+                st.warning(trans.get("ui_confirm_reboot_warning", "⚠️ Are you sure you want to reboot the entire Linux server?"))
+                sudo_pwd = st.text_input(
+                    trans.get("ui_sudo_password_label", "Sudo password (required to reboot):"),
+                    type="password",
+                    key="reboot_sudo_pwd"
+                )
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if st.button(trans.get("ui_btn_confirm_reboot_yes", "✅ Yes, Reboot Now"), key="btn_reboot_yes", use_container_width=True):
+                        st.session_state.confirm_server_reboot = False
+                        st.toast(trans.get("ui_toast_rebooting", "Rebooting Linux server..."))
+                        if sudo_pwd:
+                            proc = subprocess.Popen(
+                                ["sudo", "-S", "reboot"],
+                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True
+                            )
+                            try:
+                                proc.stdin.write(sudo_pwd + "\n")
+                                proc.stdin.flush()
+                            except Exception:
+                                pass
+                        else:
+                            subprocess.Popen(["sudo", "-n", "reboot"])
+                with rc2:
+                    if st.button(trans.get("modal_btn_cancel", "❌ Cancel"), key="btn_reboot_no", use_container_width=True):
+                        st.session_state.confirm_server_reboot = False
+                        st.rerun()
+
+    if section_visible("spam_filter"):
+        st.write("---")
+
+        # --- SPAM FILTER MODE ---
+        render_spam_filter_panel()
+
+    if section_visible("system_update"):
+        st.write("---")
+
+        # --- LINUX SYSTEM UPDATE (apt update + upgrade, with live output) ---
+        st.markdown(f"**🛠️ {trans.get('ui_update_title', 'Linux system update')}**")
+        render_system_update_panel()
+
+    if section_visible("bluetooth"):
+        st.write("---")
+
+        # --- PHONE BLUETOOTH LINK: STATUS & ERROR COUNTERS (reconnection handled by the daemon) ---
+        st.markdown(f"**📶 {trans.get('ui_bt_title', 'Phone Bluetooth connection')}**")
+        render_bluetooth_panel()
+
+    if section_visible("tor"):
+        st.write("---")
+
+        # --- REMOTE ACCESS: PRIVATE TOR ONION SERVICE (switch handled by the daemon) ---
+        st.markdown(f"**🧅 {trans.get('ui_tor_title', 'Remote access (Tor)')}**")
+        render_tor_panel()
+
+    if section_visible("cleanup"):
+        st.write("---")
+
+        # --- AUTO-CLEANUP DATA ---
+        st.markdown(f"**🗑️ {trans.get('ui_cleanup_title', 'Auto-Cleanup Data')}**")
+        with st.container(border=True):
+            cl1, cl2 = st.columns(2)
+            with cl1:
+                days_audio = st.number_input(
+                    trans.get("ui_cleanup_audio_label", "Delete audio older than (days):"),
+                    min_value=1, max_value=3650, value=30, step=1, key="cleanup_audio_days"
+                )
+                if st.button(trans.get("ui_cleanup_audio_btn", "🗑️ Delete Audio"), key="btn_cleanup_audio"):
+                    cutoff_audio = datetime.datetime.now() - datetime.timedelta(days=int(days_audio))
+                    recs_dir = os.path.join(BASE_DIR, "recordings")
+                    deleted_audio = 0
+                    if os.path.exists(recs_dir):
+                        for fname in os.listdir(recs_dir):
+                            fpath = os.path.join(recs_dir, fname)
+                            if os.path.isfile(fpath):
+                                mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
+                                if mtime < cutoff_audio:
+                                    try:
+                                        os.remove(fpath)
+                                        deleted_audio += 1
+                                    except Exception:
+                                        pass
+                    conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                    all_audio = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
+                    for row in all_audio:
+                        aid, ap, cap = row
+                        if ap and not os.path.exists(ap):
+                            conn_cl.execute("UPDATE calls SET audio_path='' WHERE id=?", (aid,))
+                        if cap and not os.path.exists(cap):
+                            conn_cl.execute("UPDATE calls SET client_audio_path='' WHERE id=?", (aid,))
+                    conn_cl.commit()
+                    conn_cl.close()
+                    st.toast(trans.get("ui_cleanup_audio_done", "Recordings deleted: {count}").format(count=deleted_audio))
                     st.rerun()
 
-    st.write("---")
+            with cl2:
+                days_records = st.number_input(
+                    trans.get("ui_cleanup_records_label", "Delete records older than (days):"),
+                    min_value=1, max_value=3650, value=30, step=1, key="cleanup_record_days"
+                )
+                if st.button(trans.get("ui_cleanup_records_btn", "❌ Delete Records"), key="btn_cleanup_records"):
+                    cutoff_rec = datetime.datetime.now() - datetime.timedelta(days=int(days_records))
+                    conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                    old_rows = conn_cl.execute(
+                        "SELECT id, audio_path, client_audio_path FROM calls WHERE date < ?",
+                        (cutoff_rec.strftime("%Y-%m-%d %H:%M:%S"),)
+                    ).fetchall()
+                    deleted_recs = 0
+                    for row in old_rows:
+                        rid, ap, cap = row
+                        for fpath in [ap, cap, legacy_aac_copy_path(ap) if ap else None]:
+                            if fpath and os.path.exists(fpath):
+                                try:
+                                    os.remove(fpath)
+                                except Exception:
+                                    pass
+                        conn_cl.execute("DELETE FROM calls WHERE id=?", (rid,))
+                        conn_cl.execute("DELETE FROM messages WHERE call_id=?", (rid,))
+                        deleted_recs += 1
+                    conn_cl.commit()
+                    conn_cl.close()
+                    st.toast(trans.get("ui_cleanup_records_done", "Records deleted: {count}").format(count=deleted_recs))
+                    st.rerun()
 
-    # --- SPAM FILTER MODE ---
-    render_spam_filter_panel()
-
-    st.write("---")
-
-    # --- LINUX SYSTEM UPDATE (apt update + upgrade, with live output) ---
-    st.markdown(f"**🛠️ {trans.get('ui_update_title', 'Linux system update')}**")
-    render_system_update_panel()
-
-    st.write("---")
-
-    # --- PHONE BLUETOOTH LINK: STATUS & ERROR COUNTERS (reconnection handled by the daemon) ---
-    st.markdown(f"**📶 {trans.get('ui_bt_title', 'Phone Bluetooth connection')}**")
-    render_bluetooth_panel()
-
-    st.write("---")
-
-    # --- REMOTE ACCESS: PRIVATE TOR ONION SERVICE (switch handled by the daemon) ---
-    st.markdown(f"**🧅 {trans.get('ui_tor_title', 'Remote access (Tor)')}**")
-    render_tor_panel()
-
-    st.write("---")
-
-    # --- AUTO-CLEANUP DATA ---
-    st.markdown(f"**🗑️ {trans.get('ui_cleanup_title', 'Auto-Cleanup Data')}**")
-    with st.container(border=True):
-        cl1, cl2 = st.columns(2)
-        with cl1:
-            days_audio = st.number_input(
-                trans.get("ui_cleanup_audio_label", "Delete audio older than (days):"),
-                min_value=1, max_value=3650, value=30, step=1, key="cleanup_audio_days"
-            )
-            if st.button(trans.get("ui_cleanup_audio_btn", "🗑️ Delete Audio"), key="btn_cleanup_audio"):
-                cutoff_audio = datetime.datetime.now() - datetime.timedelta(days=int(days_audio))
+            st.write("")
+            if st.button(trans.get("ui_cleanup_all_btn", "🔥 Delete ALL Records and Recordings"), key="btn_cleanup_all", use_container_width=True):
                 recs_dir = os.path.join(BASE_DIR, "recordings")
-                deleted_audio = 0
+                deleted_all_audio = 0
                 if os.path.exists(recs_dir):
                     for fname in os.listdir(recs_dir):
                         fpath = os.path.join(recs_dir, fname)
                         if os.path.isfile(fpath):
-                            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
-                            if mtime < cutoff_audio:
-                                try:
-                                    os.remove(fpath)
-                                    deleted_audio += 1
-                                except Exception:
-                                    pass
+                            try:
+                                os.remove(fpath)
+                                deleted_all_audio += 1
+                            except Exception:
+                                pass
                 conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                all_audio = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
-                for row in all_audio:
-                    aid, ap, cap = row
-                    if ap and not os.path.exists(ap):
-                        conn_cl.execute("UPDATE calls SET audio_path='' WHERE id=?", (aid,))
-                    if cap and not os.path.exists(cap):
-                        conn_cl.execute("UPDATE calls SET client_audio_path='' WHERE id=?", (aid,))
-                conn_cl.commit()
-                conn_cl.close()
-                st.toast(trans.get("ui_cleanup_audio_done", "Recordings deleted: {count}").format(count=deleted_audio))
-                st.rerun()
-
-        with cl2:
-            days_records = st.number_input(
-                trans.get("ui_cleanup_records_label", "Delete records older than (days):"),
-                min_value=1, max_value=3650, value=30, step=1, key="cleanup_record_days"
-            )
-            if st.button(trans.get("ui_cleanup_records_btn", "❌ Delete Records"), key="btn_cleanup_records"):
-                cutoff_rec = datetime.datetime.now() - datetime.timedelta(days=int(days_records))
-                conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-                old_rows = conn_cl.execute(
-                    "SELECT id, audio_path, client_audio_path FROM calls WHERE date < ?",
-                    (cutoff_rec.strftime("%Y-%m-%d %H:%M:%S"),)
-                ).fetchall()
-                deleted_recs = 0
-                for row in old_rows:
-                    rid, ap, cap = row
+                all_rows = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
+                deleted_all_recs = len(all_rows)
+                for row in all_rows:
+                    _, ap, cap = row
                     for fpath in [ap, cap, legacy_aac_copy_path(ap) if ap else None]:
                         if fpath and os.path.exists(fpath):
                             try:
                                 os.remove(fpath)
+                                deleted_all_audio += 1
                             except Exception:
                                 pass
-                    conn_cl.execute("DELETE FROM calls WHERE id=?", (rid,))
-                    conn_cl.execute("DELETE FROM messages WHERE call_id=?", (rid,))
-                    deleted_recs += 1
+                conn_cl.execute("DELETE FROM calls")
+                conn_cl.execute("DELETE FROM messages")
+                conn_cl.execute("DELETE FROM sqlite_sequence WHERE name IN ('calls', 'messages')")
                 conn_cl.commit()
                 conn_cl.close()
-                st.toast(trans.get("ui_cleanup_records_done", "Records deleted: {count}").format(count=deleted_recs))
+                st.toast(trans.get("ui_cleanup_all_done", "All records ({records}) and recordings ({audio}) deleted.").format(records=deleted_all_recs, audio=deleted_all_audio))
                 st.rerun()
-
-        st.write("")
-        if st.button(trans.get("ui_cleanup_all_btn", "🔥 Delete ALL Records and Recordings"), key="btn_cleanup_all", use_container_width=True):
-            recs_dir = os.path.join(BASE_DIR, "recordings")
-            deleted_all_audio = 0
-            if os.path.exists(recs_dir):
-                for fname in os.listdir(recs_dir):
-                    fpath = os.path.join(recs_dir, fname)
-                    if os.path.isfile(fpath):
-                        try:
-                            os.remove(fpath)
-                            deleted_all_audio += 1
-                        except Exception:
-                            pass
-            conn_cl = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-            all_rows = conn_cl.execute("SELECT id, audio_path, client_audio_path FROM calls").fetchall()
-            deleted_all_recs = len(all_rows)
-            for row in all_rows:
-                _, ap, cap = row
-                for fpath in [ap, cap, legacy_aac_copy_path(ap) if ap else None]:
-                    if fpath and os.path.exists(fpath):
-                        try:
-                            os.remove(fpath)
-                            deleted_all_audio += 1
-                        except Exception:
-                            pass
-            conn_cl.execute("DELETE FROM calls")
-            conn_cl.execute("DELETE FROM messages")
-            conn_cl.execute("DELETE FROM sqlite_sequence WHERE name IN ('calls', 'messages')")
-            conn_cl.commit()
-            conn_cl.close()
-            st.toast(trans.get("ui_cleanup_all_done", "All records ({records}) and recordings ({audio}) deleted.").format(records=deleted_all_recs, audio=deleted_all_audio))
-            st.rerun()
 
     st.write("---")
     db_slider(
@@ -2870,94 +2950,96 @@ with col3:
     )
 
     # --- MODELS IN USE ---
-    st.write("---")
-    st.subheader(trans.get("ui_models_title", "🤖 Models in use"))
-    render_models_panel()
+    if section_visible("models"):
+        st.write("---")
+        st.subheader(trans.get("ui_models_title", "🤖 Models in use"))
+        render_models_panel()
 
     # --- NETWORK SPAM PROTECTION, CACHE & LIVE AI TESTER ---
-    st.write("---")
-    st.subheader(trans.get("ui_spam_title", "🛡️ Network SPAM Protection"))
-    current_spam = get_config("auto_block_spam", "false") == "true"
-    block_spam_chk = st.checkbox(trans.get("auto_block_spam_label", "Auto hang up Spam"), value=current_spam, disabled=spam_filter_on)
-    if spam_filter_on:
-        st.caption(trans.get("ui_spam_filter_autoblock_note", "Always on while the SPAM filter mode is on. Your choice is kept."))
-    elif block_spam_chk != current_spam:
-        set_config("auto_block_spam", "true" if block_spam_chk else "false")
+    if section_visible("network_spam"):
+        st.write("---")
+        st.subheader(trans.get("ui_spam_title", "🛡️ Network SPAM Protection"))
+        current_spam = get_config("auto_block_spam", "false") == "true"
+        block_spam_chk = st.checkbox(trans.get("auto_block_spam_label", "Auto hang up Spam"), value=current_spam, disabled=spam_filter_on)
+        if spam_filter_on:
+            st.caption(trans.get("ui_spam_filter_autoblock_note", "Always on while the SPAM filter mode is on. Your choice is kept."))
+        elif block_spam_chk != current_spam:
+            set_config("auto_block_spam", "true" if block_spam_chk else "false")
 
-    db_slider(
-        trans.get("spam_block_threshold_label", "Hang-up cut-off score (AI risk, 0-100):"),
-        "spam_block_threshold", "slider_spam_block_threshold", "70", int,
-        min_value=0, max_value=100, step=5,
-        help=trans.get("spam_block_threshold_help", "The AI rates every unknown number from 0 (safe) to 100 (certain SPAM). The call is hung up only when the score reaches this value. Lower = more aggressive (more wrong hang-ups); higher = more cautious (some SPAM gets through). Doubtful cases, with mixed or contradictory comments, usually get a score in the middle.")
-    )
-
-    sc1, sc2 = st.columns([2, 1])
-    with sc1:
-        current_cache_days = int(get_config("spam_cache_days", "7"))
-        new_cache_days = st.number_input(
-            trans.get("ui_spam_cache_days_label", "SPAM Cache expiration (days):"),
-            min_value=0, max_value=90, value=current_cache_days, step=1
+        db_slider(
+            trans.get("spam_block_threshold_label", "Hang-up cut-off score (AI risk, 0-100):"),
+            "spam_block_threshold", "slider_spam_block_threshold", "70", int,
+            min_value=0, max_value=100, step=5,
+            help=trans.get("spam_block_threshold_help", "The AI rates every unknown number from 0 (safe) to 100 (certain SPAM). The call is hung up only when the score reaches this value. Lower = more aggressive (more wrong hang-ups); higher = more cautious (some SPAM gets through). Doubtful cases, with mixed or contradictory comments, usually get a score in the middle.")
         )
-        if new_cache_days != current_cache_days:
-            set_config("spam_cache_days", new_cache_days)
-    with sc2:
-        st.write("")
-        if st.button(trans.get("ui_btn_clear_spam_cache", "🧹 Clear Cache"), key="btn_clr_spam_cache", use_container_width=True):
-            conn_sc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
-            conn_sc.execute("DELETE FROM spam_cache")
-            conn_sc.commit()
-            conn_sc.close()
-            st.toast(trans.get("ui_toast_spam_cache_cleared", "SPAM cache cleared"))
 
-    spam_data = load_language_data(current_lang, "spam.json")
-    spam_providers_json = get_config("spam_providers", "")
-    spam_urls_list = []
-    if spam_providers_json:
-        try:
-            spam_urls_list = json.loads(spam_providers_json)
-        except Exception:
-            spam_urls_list = []
-    if not spam_urls_list:
-        spam_urls_list = spam_data.get("providers", [])
+        sc1, sc2 = st.columns([2, 1])
+        with sc1:
+            current_cache_days = int(get_config("spam_cache_days", "7"))
+            new_cache_days = st.number_input(
+                trans.get("ui_spam_cache_days_label", "SPAM Cache expiration (days):"),
+                min_value=0, max_value=90, value=current_cache_days, step=1
+            )
+            if new_cache_days != current_cache_days:
+                set_config("spam_cache_days", new_cache_days)
+        with sc2:
+            st.write("")
+            if st.button(trans.get("ui_btn_clear_spam_cache", "🧹 Clear Cache"), key="btn_clr_spam_cache", use_container_width=True):
+                conn_sc = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_SECONDS)
+                conn_sc.execute("DELETE FROM spam_cache")
+                conn_sc.commit()
+                conn_sc.close()
+                st.toast(trans.get("ui_toast_spam_cache_cleared", "SPAM cache cleared"))
 
-    st.caption(trans.get("ui_spam_providers_desc", "Add one URL per line. Placeholders: {number}, {national}, {e164}"))
-    current_spam_text = "\n".join(spam_urls_list)
-    new_spam_text = st.text_area(
-        trans.get("ui_spam_providers_label", "SPAM URLs:"),
-        value=current_spam_text,
-        key=f"spam_urls_textarea_{current_lang}",
-        label_visibility="collapsed"
-    )
+        spam_data = load_language_data(current_lang, "spam.json")
+        spam_providers_json = get_config("spam_providers", "")
+        spam_urls_list = []
+        if spam_providers_json:
+            try:
+                spam_urls_list = json.loads(spam_providers_json)
+            except Exception:
+                spam_urls_list = []
+        if not spam_urls_list:
+            spam_urls_list = spam_data.get("providers", [])
 
-    if new_spam_text != current_spam_text:
-        new_list = [url.strip() for url in new_spam_text.split("\n") if url.strip()]
-        set_config("spam_providers", json.dumps(new_list, ensure_ascii=False))
-        spam_urls_list = new_list
+        st.caption(trans.get("ui_spam_providers_desc", "Add one URL per line. Placeholders: {number}, {national}, {e164}"))
+        current_spam_text = "\n".join(spam_urls_list)
+        new_spam_text = st.text_area(
+            trans.get("ui_spam_providers_label", "SPAM URLs:"),
+            value=current_spam_text,
+            key=f"spam_urls_textarea_{current_lang}",
+            label_visibility="collapsed"
+        )
 
-    with st.expander(trans.get("ui_spam_test_expander", "🔍 Test Phone Number Against SPAM Providers"), expanded=bool(st.session_state.get("spam_test_expanded", False))):
-        test_num_inp = st.text_input(trans.get("ui_spam_test_input", "Phone number to test:"), key="spam_test_num_inp")
-        if st.button(trans.get("ui_spam_test_btn", "Run SPAM Test"), key="btn_run_spam_test") and test_num_inp.strip():
-            active_text_model = get_config("text_model", default_text_model())
-            for tpl in spam_urls_list:
-                formatted_url = format_spam_test_url(tpl, test_num_inp.strip(), spam_data)
-                try:
-                    status_code, raw_html = fetch_spam_page_sync(formatted_url, current_lang)
-                    if status_code == 200:
-                        clean_txt = clean_html_for_spam(raw_html)
-                        st.success(trans.get("ui_spam_test_http_ok", "HTTP {status} — {url} ({chars} chars)").format(status=status_code, url=formatted_url, chars=len(clean_txt)))
-                        st.caption(clean_txt[:500] + ("..." if len(clean_txt) > 500 else ""))
-                        verdict = evaluate_spam_text_with_ai(clean_txt, test_num_inp.strip(), active_text_model, current_lang)
-                        v_spam = bool(verdict.get("is_spam"))
-                        v_score = int(verdict.get("risk_score", 0))
-                        v_reason = verdict.get("reason", "")
-                        if v_spam or v_score > 70:
-                            st.error(trans.get("ui_spam_test_verdict_spam", "🚨 **AI Verdict: SPAM ({score}/100)** — {reason}").format(score=v_score, reason=v_reason))
+        if new_spam_text != current_spam_text:
+            new_list = [url.strip() for url in new_spam_text.split("\n") if url.strip()]
+            set_config("spam_providers", json.dumps(new_list, ensure_ascii=False))
+            spam_urls_list = new_list
+
+        with st.expander(trans.get("ui_spam_test_expander", "🔍 Test Phone Number Against SPAM Providers"), expanded=bool(st.session_state.get("spam_test_expanded", False))):
+            test_num_inp = st.text_input(trans.get("ui_spam_test_input", "Phone number to test:"), key="spam_test_num_inp")
+            if st.button(trans.get("ui_spam_test_btn", "Run SPAM Test"), key="btn_run_spam_test") and test_num_inp.strip():
+                active_text_model = get_config("text_model", default_text_model())
+                for tpl in spam_urls_list:
+                    formatted_url = format_spam_test_url(tpl, test_num_inp.strip(), spam_data)
+                    try:
+                        status_code, raw_html = fetch_spam_page_sync(formatted_url, current_lang)
+                        if status_code == 200:
+                            clean_txt = clean_html_for_spam(raw_html)
+                            st.success(trans.get("ui_spam_test_http_ok", "HTTP {status} — {url} ({chars} chars)").format(status=status_code, url=formatted_url, chars=len(clean_txt)))
+                            st.caption(clean_txt[:500] + ("..." if len(clean_txt) > 500 else ""))
+                            verdict = evaluate_spam_text_with_ai(clean_txt, test_num_inp.strip(), active_text_model, current_lang)
+                            v_spam = bool(verdict.get("is_spam"))
+                            v_score = int(verdict.get("risk_score", 0))
+                            v_reason = verdict.get("reason", "")
+                            if v_spam or v_score > 70:
+                                st.error(trans.get("ui_spam_test_verdict_spam", "🚨 **AI Verdict: SPAM ({score}/100)** — {reason}").format(score=v_score, reason=v_reason))
+                            else:
+                                st.info(trans.get("ui_spam_test_verdict_clean", "✅ **AI Verdict: CLEAN ({score}/100)** — {reason}").format(score=v_score, reason=v_reason))
                         else:
-                            st.info(trans.get("ui_spam_test_verdict_clean", "✅ **AI Verdict: CLEAN ({score}/100)** — {reason}").format(score=v_score, reason=v_reason))
-                    else:
-                        st.error(trans.get("ui_spam_test_http_error", "HTTP {status} — {url}").format(status=status_code, url=formatted_url))
-                except Exception as e:
-                    st.error(trans.get("ui_spam_test_failed", "Failed: {url} -> {error}").format(url=formatted_url, error=e))
+                            st.error(trans.get("ui_spam_test_http_error", "HTTP {status} — {url}").format(status=status_code, url=formatted_url))
+                    except Exception as e:
+                        st.error(trans.get("ui_spam_test_failed", "Failed: {url} -> {error}").format(url=formatted_url, error=e))
 
     # --- OPTIONS THAT ONLY CONCERN CALLS ANSWERED BY THE AI: greyed out (not changed) while the SPAM filter mode leaves the AI without calls ---
     if ai_options_inactive:
@@ -2970,468 +3052,486 @@ with col3:
         ai_options_zone.__enter__()
 
     # --- CONFIGURABLE CONTEXT MEMORY & SUMMARIES ---
-    st.write("---")
-    st.subheader(trans.get("memory_title", "🧠 Call Memory & Category Rules"))
+    if section_visible("memory"):
+        st.write("---")
+        st.subheader(trans.get("memory_title", "🧠 Call Memory & Category Rules"))
 
-    mem_mode_opts = ["priority", "disabled", "only_categories", "only_numbers", "only_global"]
-    mem_mode_labels = trans.get("memory_mode_labels", {
-        "priority": "Priority system (number > category > default)",
-        "disabled": "Disable all (No past call memory)",
-        "only_categories": "Only categories / contact tags",
-        "only_numbers": "Only phone numbers",
-        "only_global": "Only global (All non-SPAM calls)"
-    })
-    current_mem_mode = get_config("memory_mode", "priority")
-    current_mem_mode = MEMORY_MODE_ALIASES.get(current_mem_mode, current_mem_mode)
-    if current_mem_mode not in mem_mode_opts:
-        current_mem_mode = "priority"
+        mem_mode_opts = ["priority", "disabled", "only_categories", "only_numbers", "only_global"]
+        mem_mode_labels = trans.get("memory_mode_labels", {
+            "priority": "Priority system (number > category > default)",
+            "disabled": "Disable all (No past call memory)",
+            "only_categories": "Only categories / contact tags",
+            "only_numbers": "Only phone numbers",
+            "only_global": "Only global (All non-SPAM calls)"
+        })
+        current_mem_mode = get_config("memory_mode", "priority")
+        current_mem_mode = MEMORY_MODE_ALIASES.get(current_mem_mode, current_mem_mode)
+        if current_mem_mode not in mem_mode_opts:
+            current_mem_mode = "priority"
 
-    new_mem_mode = st.selectbox(
-        trans.get("memory_mode_select_label", "Memory Scope:"),
-        mem_mode_opts,
-        format_func=lambda x: mem_mode_labels.get(x, x),
-        index=mem_mode_opts.index(current_mem_mode)
-    )
-    if new_mem_mode != current_mem_mode:
-        set_config("memory_mode", new_mem_mode)
-        st.rerun()
+        new_mem_mode = st.selectbox(
+            trans.get("memory_mode_select_label", "Memory Scope:"),
+            mem_mode_opts,
+            format_func=lambda x: mem_mode_labels.get(x, x),
+            index=mem_mode_opts.index(current_mem_mode)
+        )
+        if new_mem_mode != current_mem_mode:
+            set_config("memory_mode", new_mem_mode)
+            st.rerun()
 
-    if new_mem_mode == "priority":
-        st.info(trans.get(
-            "memory_priority_info",
-            "Priority system: each call uses the first level that applies. "
-            "1) Memory rule of the number (contact or wildcard), 2) rule of its category, 3) default: previous calls of the same number with the general limits below."
-        ))
+        if new_mem_mode == "priority":
+            st.info(trans.get(
+                "memory_priority_info",
+                "Priority system: each call uses the first level that applies. "
+                "1) Memory rule of the number (contact or wildcard), 2) rule of its category, 3) default: previous calls of the same number with the general limits below."
+            ))
 
-    if new_mem_mode == "only_global":
-        st.warning(trans.get(
-            "memory_global_warning",
-            "⚠️ Warning: In Global mode, the AI knows summaries of recent non-SPAM calls from all numbers. An unknown caller could attempt social engineering to ask about other callers."
-        ))
+        if new_mem_mode == "only_global":
+            st.warning(trans.get(
+                "memory_global_warning",
+                "⚠️ Warning: In Global mode, the AI knows summaries of recent non-SPAM calls from all numbers. An unknown caller could attempt social engineering to ask about other callers."
+            ))
 
-    if new_mem_mode != "disabled":
-        mm1, mm2, mm3 = st.columns(3)
-        with mm1:
-            curr_max_calls = int(get_config("memory_max_calls", "1"))
-            new_max_calls = st.number_input(
-                trans.get("memory_max_calls_label", "Calls to remember:"),
-                min_value=1, max_value=20, value=curr_max_calls, step=1
-            )
-            if new_max_calls != curr_max_calls:
-                set_config("memory_max_calls", new_max_calls)
-        with mm2:
-            curr_max_days = int(get_config("memory_max_days", "30"))
-            new_max_days = st.number_input(
-                trans.get("memory_max_days_label", "Max age (days):"),
-                min_value=1, max_value=365, value=curr_max_days, step=1
-            )
-            if new_max_days != curr_max_days:
-                set_config("memory_max_days", new_max_days)
-        with mm3:
-            curr_max_chars = int(get_config("memory_max_chars", "2500"))
-            new_max_chars = st.number_input(
-                trans.get("memory_max_chars_label", "Max characters:"),
-                min_value=500, max_value=12000, value=curr_max_chars, step=250
-            )
-            if new_max_chars != curr_max_chars:
-                set_config("memory_max_chars", new_max_chars)
+        if new_mem_mode != "disabled":
+            mm1, mm2, mm3 = st.columns(3)
+            with mm1:
+                curr_max_calls = int(get_config("memory_max_calls", "1"))
+                new_max_calls = st.number_input(
+                    trans.get("memory_max_calls_label", "Calls to remember:"),
+                    min_value=1, max_value=20, value=curr_max_calls, step=1
+                )
+                if new_max_calls != curr_max_calls:
+                    set_config("memory_max_calls", new_max_calls)
+            with mm2:
+                curr_max_days = int(get_config("memory_max_days", "30"))
+                new_max_days = st.number_input(
+                    trans.get("memory_max_days_label", "Max age (days):"),
+                    min_value=1, max_value=365, value=curr_max_days, step=1
+                )
+                if new_max_days != curr_max_days:
+                    set_config("memory_max_days", new_max_days)
+            with mm3:
+                curr_max_chars = int(get_config("memory_max_chars", "2500"))
+                new_max_chars = st.number_input(
+                    trans.get("memory_max_chars_label", "Max characters:"),
+                    min_value=500, max_value=12000, value=curr_max_chars, step=250
+                )
+                if new_max_chars != curr_max_chars:
+                    set_config("memory_max_chars", new_max_chars)
 
-    rules_json = get_config("memory_rules", "[]")
-    try:
-        rules = json.loads(rules_json)
-    except Exception:
-        rules = []
-
-    new_category_input_key = "new_category_name_input"
-    open_category_key = "category_to_keep_open"
-    category_feedback_key = "category_create_feedback"
-
-    def create_category_callback() -> None:
-        """Adds the typed category as a new rule, leaves it open for editing and clears the input box."""
-        typed_name = str(st.session_state.get(new_category_input_key, "")).strip()
-        if not typed_name:
-            st.session_state[category_feedback_key] = ("empty", "")
-            return
+        rules_json = get_config("memory_rules", "[]")
         try:
-            saved_rules = json.loads(get_config("memory_rules", "[]"))
+            rules = json.loads(rules_json)
         except Exception:
-            saved_rules = []
-        if any(isinstance(r, dict) and str(r.get("category", "")).strip().lower() == typed_name.lower() for r in saved_rules):
-            st.session_state[category_feedback_key] = ("duplicate", typed_name)
-            return
-        saved_rules.append({"category": typed_name, "keywords": [], "days": 7, "wait_seconds": 120, "prompt": ""})
-        set_config("memory_rules", json.dumps(saved_rules, ensure_ascii=False))
-        st.session_state[open_category_key] = typed_name.lower()
-        st.session_state[new_category_input_key] = ""
-        st.session_state[category_feedback_key] = ("created", typed_name)
+            rules = []
 
-    st.text_input(trans.get("add_category_label", "Add category:"), key=new_category_input_key)
-    st.button(trans.get("create_category_btn", "+ Create"), on_click=create_category_callback)
+        new_category_input_key = "new_category_name_input"
+        open_category_key = "category_to_keep_open"
+        category_feedback_key = "category_create_feedback"
 
-    category_feedback = st.session_state.pop(category_feedback_key, None)
-    if category_feedback:
-        feedback_kind, feedback_name = category_feedback
-        if feedback_kind == "created":
-            st.success(trans.get("ui_cat_created", "Category '{name}' created. Fill in its fields below and save.").format(name=feedback_name))
-        elif feedback_kind == "empty":
-            st.warning(trans.get("ui_cat_empty_name", "Type a name for the category first."))
-        else:
-            st.warning(trans.get("ui_cat_duplicate", "A category named '{name}' already exists.").format(name=feedback_name))
+        def create_category_callback() -> None:
+            """Adds the typed category as a new rule, leaves it open for editing and clears the input box."""
+            typed_name = str(st.session_state.get(new_category_input_key, "")).strip()
+            if not typed_name:
+                st.session_state[category_feedback_key] = ("empty", "")
+                return
+            try:
+                saved_rules = json.loads(get_config("memory_rules", "[]"))
+            except Exception:
+                saved_rules = []
+            if any(isinstance(r, dict) and str(r.get("category", "")).strip().lower() == typed_name.lower() for r in saved_rules):
+                st.session_state[category_feedback_key] = ("duplicate", typed_name)
+                return
+            saved_rules.append({"category": typed_name, "keywords": [], "days": 7, "wait_seconds": 120, "prompt": ""})
+            set_config("memory_rules", json.dumps(saved_rules, ensure_ascii=False))
+            st.session_state[open_category_key] = typed_name.lower()
+            st.session_state[new_category_input_key] = ""
+            st.session_state[category_feedback_key] = ("created", typed_name)
 
-    for idx, rule in enumerate(rules):
-        widget_suffix = f"{idx}_{current_lang}"
-        rule_category = rule.get("category", "Unknown")
-        rule_keywords = rule.get("keywords", [])
-        rule_days = rule.get("days", 7)
-        rule_wait = rule.get("wait_seconds", 120)
-        rule_calls = int(rule.get("calls", 0) or 0)
-        rule_chars = int(rule.get("chars", 0) or 0)
+        st.text_input(trans.get("add_category_label", "Add category:"), key=new_category_input_key)
+        st.button(trans.get("create_category_btn", "+ Create"), on_click=create_category_callback)
 
-        with st.expander(f"📁 {rule_category}", expanded=str(rule_category).strip().lower() == st.session_state.get(open_category_key)):
-            new_cat_title = st.text_input(trans.get("ui_cat_name", "Category Name:"), value=rule_category, key=f"cat_{widget_suffix}")
-            keywords_val = st.text_input(trans.get("ui_cat_keywords", "Keywords:"), value=", ".join(rule_keywords), key=f"kw_{widget_suffix}")
-            days_val = st.number_input(trans.get("ui_cat_days", "Days:"), min_value=1, value=rule_days, key=f"days_{widget_suffix}")
-            calls_val = st.number_input(trans.get("ui_cat_calls", "Calls to remember (0 = general value):"), min_value=0, max_value=20, value=rule_calls, key=f"calls_{widget_suffix}")
-            chars_val = st.number_input(trans.get("ui_cat_chars", "Max characters (0 = general value):"), min_value=0, max_value=12000, value=rule_chars, step=250, key=f"chars_{widget_suffix}")
-            wait_val = st.number_input(trans.get("ui_cat_wait", "Wait Seconds:"), min_value=10, value=rule_wait, key=f"wait_{widget_suffix}")
-            prompt_val = st.text_area(trans.get("ui_cat_prompt", "Category instructions:"), value=str(rule.get("prompt", "") or ""), height=160, key=f"prompt_{widget_suffix}")
-            st.caption(trans.get("ui_cat_prompt_help", ""))
-            greeting_val = st.text_area(trans.get("ui_cat_greeting", "Greeting for this category (empty = the general greeting):"), value=str(rule.get("greeting", "") or ""), height=100, key=f"greeting_{widget_suffix}")
-            greeting_mode_val = contact_greeting_mode_widget(f"greeting_mode_{widget_suffix}", str(rule.get("greeting_mode", "") or ""), "ui_cat_greeting_mode", "ui_cat_greeting_mode_help")
+        category_feedback = st.session_state.pop(category_feedback_key, None)
+        if category_feedback:
+            feedback_kind, feedback_name = category_feedback
+            if feedback_kind == "created":
+                st.success(trans.get("ui_cat_created", "Category '{name}' created. Fill in its fields below and save.").format(name=feedback_name))
+            elif feedback_kind == "empty":
+                st.warning(trans.get("ui_cat_empty_name", "Type a name for the category first."))
+            else:
+                st.warning(trans.get("ui_cat_duplicate", "A category named '{name}' already exists.").format(name=feedback_name))
 
-            rules[idx] = {
-                "category": new_cat_title,
-                "keywords": [p.strip().lower() for p in keywords_val.split(",") if p.strip()],
-                "days": days_val,
-                "calls": calls_val,
-                "chars": chars_val,
-                "wait_seconds": wait_val,
-                "prompt": prompt_val.strip(),
-                "greeting": greeting_val.strip(),
-                "greeting_mode": greeting_mode_val
-            }
+        for idx, rule in enumerate(rules):
+            widget_suffix = f"{idx}_{current_lang}"
+            rule_category = rule.get("category", "Unknown")
+            rule_keywords = rule.get("keywords", [])
+            rule_days = rule.get("days", 7)
+            rule_wait = rule.get("wait_seconds", 120)
+            rule_calls = int(rule.get("calls", 0) or 0)
+            rule_chars = int(rule.get("chars", 0) or 0)
 
-            if st.button("🗑️", key=f"delcat_{widget_suffix}"):
-                rules.pop(idx)
-                set_config("memory_rules", json.dumps(rules, ensure_ascii=False))
-                st.rerun()
+            with st.expander(f"📁 {rule_category}", expanded=str(rule_category).strip().lower() == st.session_state.get(open_category_key)):
+                new_cat_title = st.text_input(trans.get("ui_cat_name", "Category Name:"), value=rule_category, key=f"cat_{widget_suffix}")
+                keywords_val = st.text_input(trans.get("ui_cat_keywords", "Keywords:"), value=", ".join(rule_keywords), key=f"kw_{widget_suffix}")
+                days_val = st.number_input(trans.get("ui_cat_days", "Days:"), min_value=1, value=rule_days, key=f"days_{widget_suffix}")
+                calls_val = st.number_input(trans.get("ui_cat_calls", "Calls to remember (0 = general value):"), min_value=0, max_value=20, value=rule_calls, key=f"calls_{widget_suffix}")
+                chars_val = st.number_input(trans.get("ui_cat_chars", "Max characters (0 = general value):"), min_value=0, max_value=12000, value=rule_chars, step=250, key=f"chars_{widget_suffix}")
+                wait_val = st.number_input(trans.get("ui_cat_wait", "Wait Seconds:"), min_value=10, value=rule_wait, key=f"wait_{widget_suffix}")
+                prompt_val = st.text_area(trans.get("ui_cat_prompt", "Category instructions:"), value=str(rule.get("prompt", "") or ""), height=160, key=f"prompt_{widget_suffix}")
+                st.caption(trans.get("ui_cat_prompt_help", ""))
+                greeting_val = st.text_area(trans.get("ui_cat_greeting", "Greeting for this category (empty = the general greeting):"), value=str(rule.get("greeting", "") or ""), height=100, key=f"greeting_{widget_suffix}")
+                greeting_mode_val = contact_greeting_mode_widget(f"greeting_mode_{widget_suffix}", str(rule.get("greeting_mode", "") or ""), "ui_cat_greeting_mode", "ui_cat_greeting_mode_help")
 
-    if st.button(trans.get("save_memory_btn", "💾 Save Category Config")):
-        set_config("memory_rules", json.dumps(rules, ensure_ascii=False))
-        st.success(trans.get("ui_toast_saved", "Saved successfully"))
+                rules[idx] = {
+                    "category": new_cat_title,
+                    "keywords": [p.strip().lower() for p in keywords_val.split(",") if p.strip()],
+                    "days": days_val,
+                    "calls": calls_val,
+                    "chars": chars_val,
+                    "wait_seconds": wait_val,
+                    "prompt": prompt_val.strip(),
+                    "greeting": greeting_val.strip(),
+                    "greeting_mode": greeting_mode_val
+                }
 
-    st.write("---")
-    st.subheader(trans.get("priority_keywords_title", "🚨 Priority Keywords"))
-    current_kw = get_config("priority_keywords", "")
-    new_kw = st.text_area(trans.get("priority_keywords_desc", "Keywords:"), value=current_kw)
-    if new_kw != current_kw:
-        set_config("priority_keywords", new_kw)
+                if st.button("🗑️", key=f"delcat_{widget_suffix}"):
+                    rules.pop(idx)
+                    set_config("memory_rules", json.dumps(rules, ensure_ascii=False))
+                    st.rerun()
+
+        if st.button(trans.get("save_memory_btn", "💾 Save Category Config")):
+            set_config("memory_rules", json.dumps(rules, ensure_ascii=False))
+            st.success(trans.get("ui_toast_saved", "Saved successfully"))
+
+    if section_visible("priority_keywords"):
+        st.write("---")
+        st.subheader(trans.get("priority_keywords_title", "🚨 Priority Keywords"))
+        current_kw = get_config("priority_keywords", "")
+        new_kw = st.text_area(trans.get("priority_keywords_desc", "Keywords:"), value=current_kw)
+        if new_kw != current_kw:
+            set_config("priority_keywords", new_kw)
 
     # --- TRANSCRIPTION MODE & WHISPER MODEL DOWNLOADER ---
-    st.write("---")
-    st.subheader(trans.get("transcription_mode_title", "🎙️ Transcription Mode"))
-    st.caption(trans.get("gemini_live_trans_note", "ℹ️ Gemini 3.8 Live already transcribes calls natively in real time. Local Whisper.cpp is optional."))
-
-    current_model = get_config("text_model", default_text_model())
-
-    whisper_bin_path = find_whisper_bin()
-    whisper_installed = bool(whisper_bin_path)
-
-    trans_mode_opts = ["disabled"]
-    if whisper_installed:
-        trans_mode_opts.append("realtime")
-    trans_mode_opts.append("online_realtime")       # Gemini 3.5 Transcribe Live: needs no local software
-    if whisper_installed:
-        trans_mode_opts.append("whisper_final")
-    if model_family(current_model) != "gemma":
-        trans_mode_opts.append("gemini_final")
-
-    trans_mode_labels = trans.get("trans_mode_opts_labels", {
-        "disabled": "Disabled (Gemini Live only)",
-        "realtime": "Real-time (Whisper.cpp)",
-        "online_realtime": "Online real-time (Gemini 3.5 Transcribe Live)",
-        "whisper_final": "Whisper.cpp at end of call",
-        "gemini_final": "Gemini at end of call"
-    })
-
-    current_trans_mode = get_config("final_transcription_mode", "disabled")
-    if current_trans_mode not in trans_mode_opts:
-        current_trans_mode = "disabled"
-        set_config("final_transcription_mode", current_trans_mode)
-
-    selected_mode = st.selectbox(
-        trans.get("transcription_mode_label", "Select mode:"),
-        trans_mode_opts,
-        format_func=lambda x: trans_mode_labels.get(x, x),
-        index=trans_mode_opts.index(current_trans_mode)
-    )
-    if selected_mode != current_trans_mode:
-        set_config("final_transcription_mode", selected_mode)
-        st.rerun()
-
-    current_store_filtered = get_config("show_filtered_in_transcript", "true") == "true"
-    new_store_filtered = st.checkbox(
-        trans.get("store_filtered_label", "Save filtered speech in the transcript (heard but not used: noise, TV, echo)"),
-        value=current_store_filtered
-    )
-    if new_store_filtered != current_store_filtered:
-        set_config("show_filtered_in_transcript", "true" if new_store_filtered else "false")
-        st.rerun()
-
-    if current_trans_mode == "online_realtime":
-        current_vocab = get_config("online_vocabulary", "")
-        new_vocab = st.text_input(
-            trans.get("online_vocabulary_label", "Online transcription: extra names or terms (comma-separated):"),
-            value=current_vocab,
-            help=trans.get("online_vocabulary_help", "ℹ️ Online mode streams only the caller's speech to Google (gemini-3.5-transcribe-live) in parallel with the call.")
-        )
-        if new_vocab != current_vocab:
-            set_config("online_vocabulary", new_vocab)
-
-    if not whisper_installed:
-        st.info(trans.get(
-            "whisper_not_installed_info",
-            "whisper-cli is not installed. Run './install_system_deps.sh --with-whisper' if you want local Whisper.cpp support."
-        ))
-    else:
+    if section_visible("transcription"):
         st.write("---")
-        st.subheader(trans.get("whisper_model_label", "Whisper Local Model (GGML)"))
-        w_model_opts = ["tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v2", "large-v3", "large-v3-turbo"]
-        w_quant_opts = {"": "default (fp16)", "-q4_0": "q4_0", "-q5_0": "q5_0", "-q8_0": "q8_0"}
+        st.subheader(trans.get("transcription_mode_title", "🎙️ Transcription Mode"))
+        st.caption(trans.get("gemini_live_trans_note", "ℹ️ Gemini 3.8 Live already transcribes calls natively in real time. Local Whisper.cpp is optional."))
 
-        col_wm, col_wq = st.columns(2)
-        with col_wm:
-            current_w_model = get_config("whisper_model", "medium")
-            new_w_model = st.selectbox(
-                trans.get("ui_whisper_base", "Model Base:"),
-                w_model_opts,
-                index=w_model_opts.index(current_w_model) if current_w_model in w_model_opts else 6
+        current_model = get_config("text_model", default_text_model())
+
+        whisper_bin_path = find_whisper_bin()
+        whisper_installed = bool(whisper_bin_path)
+
+        trans_mode_opts = ["disabled"]
+        if whisper_installed:
+            trans_mode_opts.append("realtime")
+        trans_mode_opts.append("online_realtime")       # Gemini 3.5 Transcribe Live: needs no local software
+        if whisper_installed:
+            trans_mode_opts.append("whisper_final")
+        if model_family(current_model) != "gemma":
+            trans_mode_opts.append("gemini_final")
+
+        trans_mode_labels = trans.get("trans_mode_opts_labels", {
+            "disabled": "Disabled (Gemini Live only)",
+            "realtime": "Real-time (Whisper.cpp)",
+            "online_realtime": "Online real-time (Gemini 3.5 Transcribe Live)",
+            "whisper_final": "Whisper.cpp at end of call",
+            "gemini_final": "Gemini at end of call"
+        })
+
+        current_trans_mode = get_config("final_transcription_mode", "disabled")
+        if current_trans_mode not in trans_mode_opts:
+            current_trans_mode = "disabled"
+            set_config("final_transcription_mode", current_trans_mode)
+
+        selected_mode = st.selectbox(
+            trans.get("transcription_mode_label", "Select mode:"),
+            trans_mode_opts,
+            format_func=lambda x: trans_mode_labels.get(x, x),
+            index=trans_mode_opts.index(current_trans_mode)
+        )
+        if selected_mode != current_trans_mode:
+            set_config("final_transcription_mode", selected_mode)
+            st.rerun()
+
+        current_store_filtered = get_config("show_filtered_in_transcript", "true") == "true"
+        new_store_filtered = st.checkbox(
+            trans.get("store_filtered_label", "Save filtered speech in the transcript (heard but not used: noise, TV, echo)"),
+            value=current_store_filtered
+        )
+        if new_store_filtered != current_store_filtered:
+            set_config("show_filtered_in_transcript", "true" if new_store_filtered else "false")
+            st.rerun()
+
+        if current_trans_mode == "online_realtime":
+            current_vocab = get_config("online_vocabulary", "")
+            new_vocab = st.text_input(
+                trans.get("online_vocabulary_label", "Online transcription: extra names or terms (comma-separated):"),
+                value=current_vocab,
+                help=trans.get("online_vocabulary_help", "ℹ️ Online mode streams only the caller's speech to Google (gemini-3.5-transcribe-live) in parallel with the call.")
             )
-            if new_w_model != current_w_model:
-                set_config("whisper_model", new_w_model)
-                st.rerun()
+            if new_vocab != current_vocab:
+                set_config("online_vocabulary", new_vocab)
 
-        with col_wq:
-            current_w_quant = get_config("whisper_quant", "")
-            quant_keys = list(w_quant_opts.keys())
-            new_w_quant = st.selectbox(
-                trans.get("ui_whisper_quant", "Quantization:"),
-                quant_keys,
-                format_func=lambda x: w_quant_opts[x],
-                index=quant_keys.index(current_w_quant) if current_w_quant in quant_keys else 0
-            )
-            if new_w_quant != current_w_quant:
-                set_config("whisper_quant", new_w_quant)
-                st.rerun()
-
-        full_selected_model = f"{new_w_model}{new_w_quant}"
-        model_file_path = os.path.join(MODELS_DIR, f"ggml-{full_selected_model}.bin")
-        if os.path.exists(model_file_path):
-            st.success(f"✅ `models/ggml-{full_selected_model}.bin` {trans.get('ui_model_installed', 'is installed.')}")
+        if not whisper_installed:
+            st.info(trans.get(
+                "whisper_not_installed_info",
+                "whisper-cli is not installed. Run './install_system_deps.sh --with-whisper' if you want local Whisper.cpp support."
+            ))
         else:
-            st.warning(f"⚠️ `models/ggml-{full_selected_model}.bin` {trans.get('ui_model_missing', 'is not downloaded yet.')}")
+            st.write("---")
+            st.subheader(trans.get("whisper_model_label", "Whisper Local Model (GGML)"))
+            w_model_opts = ["tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v2", "large-v3", "large-v3-turbo"]
+            w_quant_opts = {"": "default (fp16)", "-q4_0": "q4_0", "-q5_0": "q5_0", "-q8_0": "q8_0"}
 
-        wt1, wt2 = st.columns([1.4, 1.6])
-        with wt1:
-            selected_terminal = st.selectbox(
-                trans.get("ui_terminal_select", "Installer Terminal:"),
-                SUPPORTED_TERMINALS,
-                index=0
-            )
-        with wt2:
-            st.write("")
-            if st.button(
-                trans.get("ui_btn_install_whisper_model", "⬇️ Download / Quantize Model"),
-                key="btn_dl_whisper_model",
-                use_container_width=True
-            ):
-                with st.spinner(trans.get("ui_installing_model_wait", "Installing {model} model. Please wait...").format(model=full_selected_model)):
-                    ok_status, status_msg = install_whisper_model(full_selected_model, selected_terminal)
-                if ok_status:
-                    st.toast(status_msg)
+            col_wm, col_wq = st.columns(2)
+            with col_wm:
+                current_w_model = get_config("whisper_model", "medium")
+                new_w_model = st.selectbox(
+                    trans.get("ui_whisper_base", "Model Base:"),
+                    w_model_opts,
+                    index=w_model_opts.index(current_w_model) if current_w_model in w_model_opts else 6
+                )
+                if new_w_model != current_w_model:
+                    set_config("whisper_model", new_w_model)
                     st.rerun()
-                else:
-                    st.error(status_msg)
+
+            with col_wq:
+                current_w_quant = get_config("whisper_quant", "")
+                quant_keys = list(w_quant_opts.keys())
+                new_w_quant = st.selectbox(
+                    trans.get("ui_whisper_quant", "Quantization:"),
+                    quant_keys,
+                    format_func=lambda x: w_quant_opts[x],
+                    index=quant_keys.index(current_w_quant) if current_w_quant in quant_keys else 0
+                )
+                if new_w_quant != current_w_quant:
+                    set_config("whisper_quant", new_w_quant)
+                    st.rerun()
+
+            full_selected_model = f"{new_w_model}{new_w_quant}"
+            model_file_path = os.path.join(MODELS_DIR, f"ggml-{full_selected_model}.bin")
+            if os.path.exists(model_file_path):
+                st.success(f"✅ `models/ggml-{full_selected_model}.bin` {trans.get('ui_model_installed', 'is installed.')}")
+            else:
+                st.warning(f"⚠️ `models/ggml-{full_selected_model}.bin` {trans.get('ui_model_missing', 'is not downloaded yet.')}")
+
+            wt1, wt2 = st.columns([1.4, 1.6])
+            with wt1:
+                selected_terminal = st.selectbox(
+                    trans.get("ui_terminal_select", "Installer Terminal:"),
+                    SUPPORTED_TERMINALS,
+                    index=0
+                )
+            with wt2:
+                st.write("")
+                if st.button(
+                    trans.get("ui_btn_install_whisper_model", "⬇️ Download / Quantize Model"),
+                    key="btn_dl_whisper_model",
+                    use_container_width=True
+                ):
+                    with st.spinner(trans.get("ui_installing_model_wait", "Installing {model} model. Please wait...").format(model=full_selected_model)):
+                        ok_status, status_msg = install_whisper_model(full_selected_model, selected_terminal)
+                    if ok_status:
+                        st.toast(status_msg)
+                        st.rerun()
+                    else:
+                        st.error(status_msg)
 
     # --- PC SPEAKER MONITORING ---
-    st.write("---")
-    st.subheader(trans.get("monitor_mode_title", "🔊 PC Speaker Monitoring"))
-    monitor_mode_opts = ["none", "both", "caller", "assistant"]
-    monitor_mode_labels = trans.get("monitor_mode_opts_labels", {
-        "none": "None (Total silence on PC)",
-        "both": "Both (Caller & Secretary)",
-        "caller": "Caller Only",
-        "assistant": "Secretary Only"
-    })
-    current_monitor_mode = get_config("monitor_mode", "none")
-    selected_monitor_mode = st.selectbox(
-        trans.get("monitor_mode_label", "Select what you want to hear locally:"),
-        monitor_mode_opts,
-        format_func=lambda x: monitor_mode_labels.get(x, x),
-        index=monitor_mode_opts.index(current_monitor_mode) if current_monitor_mode in monitor_mode_opts else 0
-    )
-    if selected_monitor_mode != current_monitor_mode:
-        set_config("monitor_mode", selected_monitor_mode)
-        st.rerun()
+    if section_visible("monitor"):
+        st.write("---")
+        st.subheader(trans.get("monitor_mode_title", "🔊 PC Speaker Monitoring"))
+        monitor_mode_opts = ["none", "both", "caller", "assistant"]
+        monitor_mode_labels = trans.get("monitor_mode_opts_labels", {
+            "none": "None (Total silence on PC)",
+            "both": "Both (Caller & Secretary)",
+            "caller": "Caller Only",
+            "assistant": "Secretary Only"
+        })
+        current_monitor_mode = get_config("monitor_mode", "none")
+        selected_monitor_mode = st.selectbox(
+            trans.get("monitor_mode_label", "Select what you want to hear locally:"),
+            monitor_mode_opts,
+            format_func=lambda x: monitor_mode_labels.get(x, x),
+            index=monitor_mode_opts.index(current_monitor_mode) if current_monitor_mode in monitor_mode_opts else 0
+        )
+        if selected_monitor_mode != current_monitor_mode:
+            set_config("monitor_mode", selected_monitor_mode)
+            st.rerun()
 
-    db_slider(
-        trans.get("monitor_volume_label", "Monitoring volume (%):"),
-        "monitor_volume", "slider_monitor_volume", "100", int,
-        min_value=0, max_value=100, step=5,
-        help=trans.get("monitor_volume_help", "Only changes what you hear through the monitoring speakers; the call itself is not affected.")
-    )
+        db_slider(
+            trans.get("monitor_volume_label", "Monitoring volume (%):"),
+            "monitor_volume", "slider_monitor_volume", "100", int,
+            min_value=0, max_value=100, step=5,
+            help=trans.get("monitor_volume_help", "Only changes what you hear through the monitoring speakers; the call itself is not affected.")
+        )
 
-    st.caption(trans.get("allow_pc_mic_desc", "PC microphone is isolated to prevent leakage and echo."))
+        st.caption(trans.get("allow_pc_mic_desc", "PC microphone is isolated to prevent leakage and echo."))
 
     # --- GEMINI 3.8 LIVE AUDIO & VAD TUNING PANEL ---
-    st.write("---")
-    st.subheader(trans.get("audio_mode_title", "🎚️ Audio, Echo & Gemini 3.8 VAD Tuning"))
+    if section_visible("audio"):
+        st.write("---")
+        with st.expander(trans.get("audio_mode_title", "🎚️ Audio, Echo & Gemini 3.8 VAD Tuning"), expanded=False):
 
-    current_echo = get_config("software_echo_suppression", "false") == "true"
-    new_echo_chk = st.checkbox(
-        trans.get("software_echo_label", "Enable Software Echo Suppression (Half-Duplex)"),
-        value=current_echo
-    )
-    if new_echo_chk != current_echo:
-        set_config("software_echo_suppression", "true" if new_echo_chk else "false")
-        st.rerun()
+            current_echo = get_config("software_echo_suppression", "false") == "true"
+            new_echo_chk = st.checkbox(
+                trans.get("software_echo_label", "Enable Software Echo Suppression (Half-Duplex)"),
+                value=current_echo
+            )
+            if new_echo_chk != current_echo:
+                set_config("software_echo_suppression", "true" if new_echo_chk else "false")
+                st.rerun()
 
-    current_prot_greet = get_config("protect_initial_greeting", "true") == "true"
-    new_prot_greet = st.checkbox(
-        trans.get("protect_greeting_label", "Protect Initial Greeting from Early Line Interruptions"),
-        value=current_prot_greet
-    )
-    if new_prot_greet != current_prot_greet:
-        set_config("protect_initial_greeting", "true" if new_prot_greet else "false")
-        st.rerun()
-    st.caption(trans.get("protect_greeting_help", "Only for the Exact greeting style. The Adaptive style does not use it: it only ignores the first second and a half of line noise after answering."))
+            current_prot_greet = get_config("protect_initial_greeting", "true") == "true"
+            new_prot_greet = st.checkbox(
+                trans.get("protect_greeting_label", "Protect Initial Greeting from Early Line Interruptions"),
+                value=current_prot_greet
+            )
+            if new_prot_greet != current_prot_greet:
+                set_config("protect_initial_greeting", "true" if new_prot_greet else "false")
+                st.rerun()
+            st.caption(trans.get("protect_greeting_help", "Only for the Exact greeting style. The Adaptive style does not use it: it only ignores the first second and a half of line noise after answering."))
 
-    db_checkbox(trans.get("live_long_calls_label", "Long calls: keep the AI session alive beyond Google's connection limits (recommended)"), "live_long_calls", "chk_live_long_calls", True)
-    st.caption(trans.get(
-        "live_long_calls_help",
-        "Google cuts the AI connection after about 10 minutes (and the audio session after 15). With this on, the call goes on over a new connection "
-        "and the old conversation is summarized, so a long call is not cut. With this off, the call is cut when Google closes the connection. "
-        "Whatever you choose, no call lasts more than {minutes} minutes."
-    ).replace("{minutes}", str(int(CALL_MAX_TOTAL_SECONDS // 60))))
+            db_checkbox(trans.get("live_long_calls_label", "Long calls: keep the AI session alive beyond Google's connection limits (recommended)"), "live_long_calls", "chk_live_long_calls", True)
+            st.caption(trans.get(
+                "live_long_calls_help",
+                "Google cuts the AI connection after about 10 minutes (and the audio session after 15). With this on, the call goes on over a new connection "
+                "and the old conversation is summarized, so a long call is not cut. With this off, the call is cut when Google closes the connection. "
+                "Whatever you choose, no call lasts more than {minutes} minutes."
+            ).replace("{minutes}", str(int(CALL_MAX_TOTAL_SECONDS // 60))))
 
-    av1, av2 = st.columns(2)
-    with av1:
-        db_slider(
-            trans.get("caller_gain_label", "Caller Mic Gain (x):"),
-            "caller_gain", "slider_caller_gain", str(DEFAULT_CALLER_GAIN), float,
-            min_value=0.5, max_value=5.0, step=0.5
-        )
+            av1, av2 = st.columns(2)
+            with av1:
+                db_slider(
+                    trans.get("caller_gain_label", "Caller Mic Gain (x):"),
+                    "caller_gain", "slider_caller_gain", str(DEFAULT_CALLER_GAIN), float,
+                    min_value=0.5, max_value=5.0, step=0.5
+                )
 
-        vad_sens_opts = ["HIGH", "LOW"]
-        curr_vad_start = get_config("vad_start_sensitivity", "LOW")
-        if curr_vad_start not in vad_sens_opts:
-            curr_vad_start = "LOW"
-        new_vad_start = st.selectbox(
-            trans.get("vad_start_sens_label", "VAD Start Sensitivity:"),
-            vad_sens_opts,
-            index=vad_sens_opts.index(curr_vad_start)
-        )
-        if new_vad_start != curr_vad_start:
-            set_config("vad_start_sensitivity", new_vad_start)
+                vad_sens_opts = ["HIGH", "LOW"]
+                curr_vad_start = get_config("vad_start_sensitivity", DEFAULT_VAD_START_SENSITIVITY)
+                if curr_vad_start not in vad_sens_opts:
+                    curr_vad_start = DEFAULT_VAD_START_SENSITIVITY
+                new_vad_start = st.selectbox(
+                    trans.get("vad_start_sens_label", "VAD Start Sensitivity:"),
+                    vad_sens_opts,
+                    index=vad_sens_opts.index(curr_vad_start)
+                )
+                if new_vad_start != curr_vad_start:
+                    set_config("vad_start_sensitivity", new_vad_start)
 
-        db_slider(
-            trans.get("vad_prefix_padding_label", "VAD Prefix Padding (ms):"),
-            "vad_prefix_padding_ms", "slider_vad_prefix_padding", str(DEFAULT_VAD_PREFIX_PADDING_MS), int,
-            min_value=50, max_value=1000, step=50
-        )
+                db_slider(
+                    trans.get("vad_prefix_padding_label", "VAD Prefix Padding (ms):"),
+                    "vad_prefix_padding_ms", "slider_vad_prefix_padding", str(DEFAULT_VAD_PREFIX_PADDING_MS), int,
+                    min_value=50, max_value=1000, step=50
+                )
 
-    with av2:
-        db_slider(
-            trans.get("noise_gate_label", "Base Noise Gate (RMS):"),
-            "noise_gate_base", "slider_noise_gate", str(DEFAULT_NOISE_GATE_BASE), int,
-            min_value=0, max_value=100, step=5
-        )
+            with av2:
+                db_slider(
+                    trans.get("noise_gate_label", "Base Noise Gate (RMS):"),
+                    "noise_gate_base", "slider_noise_gate", str(DEFAULT_NOISE_GATE_BASE), int,
+                    min_value=0, max_value=100, step=5
+                )
 
-        curr_vad_end = get_config("vad_end_sensitivity", "HIGH")
-        if curr_vad_end not in vad_sens_opts:
-            curr_vad_end = "HIGH"
-        new_vad_end = st.selectbox(
-            trans.get("vad_end_sens_label", "VAD End Sensitivity:"),
-            vad_sens_opts,
-            index=vad_sens_opts.index(curr_vad_end)
-        )
-        if new_vad_end != curr_vad_end:
-            set_config("vad_end_sensitivity", new_vad_end)
+                curr_vad_end = get_config("vad_end_sensitivity", "HIGH")
+                if curr_vad_end not in vad_sens_opts:
+                    curr_vad_end = "HIGH"
+                new_vad_end = st.selectbox(
+                    trans.get("vad_end_sens_label", "VAD End Sensitivity:"),
+                    vad_sens_opts,
+                    index=vad_sens_opts.index(curr_vad_end)
+                )
+                if new_vad_end != curr_vad_end:
+                    set_config("vad_end_sensitivity", new_vad_end)
 
-        db_slider(
-            trans.get("vad_silence_duration_label", "VAD Silence Duration (ms):"),
-            "vad_silence_duration_ms", "slider_vad_silence_duration", str(DEFAULT_VAD_SILENCE_DURATION_MS), int,
-            min_value=200, max_value=2000, step=100
-        )
+                db_slider(
+                    trans.get("vad_silence_duration_label", "VAD Silence Duration (ms):"),
+                    "vad_silence_duration_ms", "slider_vad_silence_duration", str(DEFAULT_VAD_SILENCE_DURATION_MS), int,
+                    min_value=200, max_value=2000, step=50
+                )
 
     # --- OWNER & IDENTITY CONFIGURATION ---
-    st.write("---")
-    st.subheader(trans.get("owner_settings_title", "👤 Owner"))
-    current_boss_name = get_config("boss_name", "")
-    new_boss_name = st.text_input(trans.get("owner_name_label", "Boss Name:"), value=current_boss_name)
-    if new_boss_name != current_boss_name:
-        set_config("boss_name", new_boss_name.strip())
+    if section_visible("owner"):
+        st.write("---")
+        st.subheader(trans.get("owner_settings_title", "👤 Owner"))
+        current_boss_name = get_config("boss_name", "")
+        new_boss_name = st.text_input(trans.get("owner_name_label", "Boss Name:"), value=current_boss_name)
+        if new_boss_name != current_boss_name:
+            set_config("boss_name", new_boss_name.strip())
 
-    current_owner_type = get_config("owner_type", "private")
-    owner_type_opts = trans.get("owner_types", ["private", "professional", "business"])
-    idx_owner = owner_type_opts.index(current_owner_type) if current_owner_type in owner_type_opts else 0
-    new_owner_type = st.selectbox(trans.get("owner_type_label", "Owner Type:"), owner_type_opts, index=idx_owner)
+        current_owner_type = get_config("owner_type", "private")
+        owner_type_opts = trans.get("owner_types", ["private", "professional", "business"])
+        idx_owner = owner_type_opts.index(current_owner_type) if current_owner_type in owner_type_opts else 0
+        new_owner_type = st.selectbox(trans.get("owner_type_label", "Owner Type:"), owner_type_opts, index=idx_owner)
 
-    if new_owner_type != current_owner_type:
-        set_config("owner_type", new_owner_type)
-        if not has_config("initial_greeting"):
-            set_config("initial_greeting", trans.get("default_legal_warning", ""))
-        st.rerun()
+        if new_owner_type != current_owner_type:
+            set_config("owner_type", new_owner_type)
+            if not has_config("initial_greeting"):
+                set_config("initial_greeting", trans.get("default_legal_warning", ""))
+            st.rerun()
 
-    current_desc = get_config("business_description", "")
-    new_desc = st.text_area(trans.get("activity_desc_label", "Activity:"), value=current_desc)
-    if new_desc != current_desc:
-        set_config("business_description", new_desc.strip())
+        current_desc = get_config("business_description", "")
+        new_desc = st.text_area(trans.get("activity_desc_label", "Activity:"), value=current_desc)
+        if new_desc != current_desc:
+            set_config("business_description", new_desc.strip())
 
-    current_calls = get_config("expected_calls", "")
-    new_calls = st.text_area(trans.get("expected_calls_label", "Expected calls:"), value=current_calls)
-    if new_calls != current_calls:
-        set_config("expected_calls", new_calls.strip())
+        current_calls = get_config("expected_calls", "")
+        new_calls = st.text_area(trans.get("expected_calls_label", "Expected calls:"), value=current_calls)
+        if new_calls != current_calls:
+            set_config("expected_calls", new_calls.strip())
 
-    st.write("---")
-    st.subheader(trans.get("identity_title", "👤 Identity"))
-    assistant_name_val = st.text_input(trans.get("assistant_name_label", "Name:"), value=current_assistant_name)
-    if assistant_name_val != current_assistant_name:
-        set_config("assistant_name", assistant_name_val.strip())
-        st.rerun()
+    if section_visible("identity"):
+        st.write("---")
+        st.subheader(trans.get("identity_title", "👤 Identity"))
+        assistant_name_val = st.text_input(trans.get("assistant_name_label", "Name:"), value=current_assistant_name)
+        if assistant_name_val != current_assistant_name:
+            set_config("assistant_name", assistant_name_val.strip())
+            st.rerun()
 
-    current_gender = get_config("assistant_gender", "female")
-    gender_opts = trans.get("gender_types", ["female", "male"])
-    idx_gender = gender_opts.index(current_gender) if current_gender in gender_opts else 0
-    new_gender = st.selectbox(trans.get("assistant_gender_label", "Voice:"), gender_opts, index=idx_gender)
-    if new_gender != current_gender:
-        set_config("assistant_gender", new_gender)
-        st.rerun()
+        current_gender = get_config("assistant_gender", "female")
+        gender_opts = trans.get("gender_types", ["female", "male"])
+        idx_gender = gender_opts.index(current_gender) if current_gender in gender_opts else 0
+        new_gender = st.selectbox(trans.get("assistant_gender_label", "Voice:"), gender_opts, index=idx_gender)
+        if new_gender != current_gender:
+            set_config("assistant_gender", new_gender)
+            st.rerun()
 
-    greeting_mode_opts = ["exact", "adaptive"]
-    greeting_mode_labels = trans.get("greeting_mode_labels", {"exact": "Exact (word for word)", "adaptive": "Adaptive (natural, adapts to the caller)"})
-    current_greeting_mode = get_config("greeting_mode", "exact")
-    if current_greeting_mode not in greeting_mode_opts:
-        current_greeting_mode = "exact"
-    new_greeting_mode = st.selectbox(
-        trans.get("ui_greeting_mode", "Greeting style:"), greeting_mode_opts,
-        index=greeting_mode_opts.index(current_greeting_mode),
-        format_func=lambda opt: greeting_mode_labels.get(opt, opt), key="greeting_mode_select"
-    )
-    if new_greeting_mode != current_greeting_mode:
-        set_config("greeting_mode", new_greeting_mode)
-        st.rerun()
-    st.caption(trans.get("ui_greeting_mode_help", "Adaptive: the assistant says the greeting in its own natural words, listens to the caller from the first second and answers what they say first. Exact: it says the text word for word and the line is protected while it speaks. Use Exact for legal notices."))
+        db_checkbox(trans.get("ui_bilingual_label", "Multilanguage: answer in the language of the caller"), BILINGUAL_MODE_SETTING, "chk_bilingual_mode", False)
+        st.caption(trans.get("ui_bilingual_help", "She greets in the system language and goes on in the language of the caller. With allowed languages she only switches to those; left blank, she speaks any. Off, she only speaks the system language."))
+        if get_config(BILINGUAL_MODE_SETTING, "false") == "true":
+            current_bilingual_languages = get_config(BILINGUAL_LANGUAGES_SETTING, "")
+            new_bilingual_languages = st.text_input(
+                trans.get("ui_bilingual_languages_label", "Allowed languages (blank: any):"), value=current_bilingual_languages,
+                placeholder=trans.get("ui_bilingual_languages_placeholder", "en-US, fr-FR"),
+                help=trans.get("ui_bilingual_languages_help", "Codes separated by commas, for example en-US, fr-FR. Besides the system language she will only speak those. Blank: any language."))
+            if new_bilingual_languages.strip() != current_bilingual_languages:
+                set_config(BILINGUAL_LANGUAGES_SETTING, new_bilingual_languages.strip())
 
-    current_greeting = get_config("initial_greeting", "")
-    new_greeting = st.text_area(trans.get("ui_initial_greeting", "Exact Initial Greeting:"), value=current_greeting)
-    if new_greeting != current_greeting:
-        set_config("initial_greeting", new_greeting.strip())
+        greeting_mode_opts = ["exact", "adaptive"]
+        greeting_mode_labels = trans.get("greeting_mode_labels", {"exact": "Exact (word for word)", "adaptive": "Adaptive (natural, adapts to the caller)"})
+        current_greeting_mode = get_config("greeting_mode", "exact")
+        if current_greeting_mode not in greeting_mode_opts:
+            current_greeting_mode = "exact"
+        new_greeting_mode = st.selectbox(
+            trans.get("ui_greeting_mode", "Greeting style:"), greeting_mode_opts,
+            index=greeting_mode_opts.index(current_greeting_mode),
+            format_func=lambda opt: greeting_mode_labels.get(opt, opt), key="greeting_mode_select"
+        )
+        if new_greeting_mode != current_greeting_mode:
+            set_config("greeting_mode", new_greeting_mode)
+            st.rerun()
+        st.caption(trans.get("ui_greeting_mode_help", "Adaptive: the assistant says the greeting in its own natural words, listens to the caller from the first second and answers what they say first. Exact: it says the text word for word and the line is protected while it speaks. Use Exact for legal notices."))
 
-    current_extra = get_config("extra_prompt", "")
-    new_extra = st.text_area(trans.get("ui_extra_prompt", "Personality & Extra Instructions:"), value=current_extra)
-    if new_extra != current_extra:
-        set_config("extra_prompt", new_extra.strip())
+        current_greeting = get_config("initial_greeting", "")
+        new_greeting = st.text_area(trans.get("ui_initial_greeting", "Exact Initial Greeting:"), value=current_greeting)
+        if new_greeting != current_greeting:
+            set_config("initial_greeting", new_greeting.strip())
+
+        current_extra = get_config("extra_prompt", "")
+        new_extra = st.text_area(trans.get("ui_extra_prompt", "Personality & Extra Instructions:"), value=current_extra)
+        if new_extra != current_extra:
+            set_config("extra_prompt", new_extra.strip())
 
 if ai_options_inactive:
     ai_options_zone.__exit__(None, None, None)

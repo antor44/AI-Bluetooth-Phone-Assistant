@@ -1,11 +1,11 @@
 # 📞 AI Bluetooth Phone Assistant & Switchboard
 
-![Version: 3.5](https://img.shields.io/badge/Version-3.5-brightgreen.svg)
+![Version: 3.6](https://img.shields.io/badge/Version-3.6-brightgreen.svg)
 ![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
 ![Linux Only](https://img.shields.io/badge/Platform-Linux-orange.svg)
 
-Author: Antonio R. | Version: 3.5 | License: GPL 3.0
+Author: Antonio R. | Version: 3.6 | License: GPL 3.0
 
 An advanced, real-time AI telephone secretary designed to handle your mobile calls via Bluetooth. Utilizing **Google Gemini 3.8 Live** for conversational AI and optional **whisper.cpp** for hybrid transcription, this system acts as a fully autonomous switchboard: it answers calls, filters SPAM, takes messages in a dedicated inbox, maintains configurable context-aware memory with AI summaries for repeat callers, and provides a sleek Web GUI to manage your communications and server state.
 
@@ -110,6 +110,8 @@ To overcome these commercial barriers (but not, of course, the legal ones), I ha
 * **📱 Calls left to the phone:** mark a whitelist number (or all calls while the switchboard is paused) and the call stays on your phone with its own audio.
 * **🛡️ SPAM filter mode:** every call stays on your phone, with its own audio, except SPAM, which is hung up. Unknown numbers can stay on the phone too or be answered by the AI. Nothing you configured is erased: the options that do nothing meanwhile are greyed out. It is an extra layer: your phone's own anti-spam (system or third-party app) keeps acting first, in every mode You can turn those phone options off in your phone's settings if you want the switchboard to process every call (see [details](#phone-antispam)).
 * **🤖 Models panel:** the Web GUI shows which Google model does each task, the plan of your key, the requests made today and the free limits, and warns you when a daily limit is reached.
+* **🌐 Multilanguage secretary:** switch it on and she greets in your language and goes on in the language of the caller, only in the languages you allow or, if you leave the list blank, in any (see [Voice & Language Configuration](#voice--language-configuration)). Off, she only speaks the system language, as before.
+* **👁️ Visible sections:** hide the parts of the Web GUI you do not use. The page loads faster, which you notice most on the phone, and nothing is erased. The audio, echo and voice-detection block starts folded.
 * **🛠️ Web GUI maintenance:** start and stop the switchboard, check a number for SPAM from the call log and update Linux from the panel.
 * **💾 Gentle on SD cards / eMMC:** the switchboard writes to disk as little as possible.
 * **📶 Hardware-Agnostic Bluetooth HFP & Auto-Reconnect:** Works with any smartphone via `BlueZ`, `oFono`, and `PipeWire`. Includes an automatic Bluetooth reconnection watchdog and link counters. The Web GUI shows whether the phone is connected, whether its **call profile** (the oFono modem that carries the calls) is ready, and the **phone battery** when the phone reports it.
@@ -324,10 +326,11 @@ The Web GUI has a **🤖 Models in use** panel (settings column). It shows which
 |---|---|---|
 | Voice of the calls | `gemini-3.8-live` | No |
 | Online transcription of the caller (optional) | `gemini-3.5-transcribe-live` | Only on or off, in *Transcription Mode* |
-| SPAM check, call analysis and summary, end-of-call text | `gemini-3.5-flash-lite` (recommended) or `gemma-4-26b-a4b-it` | Yes, in the panel |
+| SPAM check, call analysis and summary, end-of-call text | `gemini-3.5-flash-lite` (recommended), `gemini-4-hydrogen` or `gemma-4-26b-a4b-it` | Yes, in the panel |
 
 *   **`gemini-3.5-flash-lite`** is fast, understands audio (needed to correct the transcript at the end of the call) and has a paid plan for private use.
 *   **`gemma-4-26b-a4b-it`** has many more free requests per day, but it cannot listen to the recording (no end-of-call correction with Gemini), follows the requested answer format less strictly and **exists only on the free plan**: there is no paid plan to choose, so the free-plan terms always apply (see the next point).
+*   **`gemini-4-hydrogen`** is more powerful and about 5 times more expensive than `gemini-3.5-flash-lite` (see the prices below). It has a free tier and a paid plan. According to Google it accepts audio as input, but AI Studio does not say so and it does not publish its free limits, so check them in AI Studio before relying on it. For the SPAM check and the summaries the recommended model is enough; Hydrogen is there for those who want to try it.
 *   If you saved a model that is no longer offered, the program uses the recommended one and the panel tells you once.
 
 ### 3. Free Plan vs. Paid Plan — Privacy & Terms of Use
@@ -346,6 +349,7 @@ Google no longer publishes the free limits per model in its documentation: the r
 | `gemini-3.5-transcribe-live` | no daily request limit; ~20,000 tokens per minute |
 | `gemini-3.5-flash-lite` | 500 requests per day, 15 per minute, ~250,000 tokens per minute |
 | `gemma-4-26b-a4b-it` | 14,400 requests per day, 30 per minute, ~16,000 tokens per minute |
+| `gemini-4-hydrogen` | not published (check AI Studio) |
 
 *   Each model has its own counter. Daily limits renew at **midnight Pacific time** (the panel shows the hour in your time zone). Note that `gemma-4-26b-a4b-it` has a tight per-minute token limit (~16,000 tokens/min), so checking several SPAM lookup pages in a row can hit the per-minute limit briefly even when plenty of daily requests remain.
 *   A call can use from a few to about thirty text-model requests (one per SPAM provider checked, up to 12 quick decisions, one analysis). Numbers already checked are remembered for days, so they cost nothing.
@@ -363,6 +367,7 @@ Google no longer publishes the free limits per model in its documentation: the r
     *   *Text Output:* $21.00 / 1M tokens (~$0.004 per minute).
     *   *About $0.009 per minute of speech sent, according to the public pricing information; check Google's pricing page for the current figures.*
 *   **Text Processing, Summaries & SPAM (`gemini-3.5-flash-lite`):** $0.30 / 1M tokens of input (text or audio) and $2.50 / 1M tokens of output, used silently in the background (usually well under one cent per call). `gemma-4-26b-a4b-it` has no paid plan.
+*   **Text Processing with `gemini-4-hydrogen` (optional):** $1.50 / 1M tokens of input and $7.50 / 1M tokens of output (thinking tokens count as output). On the free tier Google may use what you send to improve its products.
 
 Prices change: check [Google's pricing page](https://ai.google.dev/gemini-api/docs/pricing) for the current figures.
 
@@ -780,6 +785,8 @@ Day-to-day usage notes, explanations and tuning tips. The defaults work well in 
 ### 🔋 Bluetooth Status & Phone Battery in the Web GUI
 The panel shows one of these states: **Connected**, **Connected - call profile not ready** (BlueZ reports the phone as connected but the oFono modem that carries the calls does not exist yet), **Disconnected (reconnecting automatically)**, **No paired phone found** or **Unknown**. *Unknown* appears when the switchboard is offline or the Bluetooth state has not been refreshed for a minute. Every state change is printed in the console.
 
+**Link check when the switchboard starts or is resumed.** Pressing *Resume Switchboard* (or starting the daemon) does not just wait for the next automatic attempt: the switchboard forgets the waiting time of the earlier failed attempts, reconnects the phone at once and checks, for up to 25 seconds, that it ends up *Connected* with its call profile ready. If it does not, it repeats the steps of a clean start (it powers on the oFono modems again, trusts the paired devices and restarts the audio services, unless a call is in progress) and checks once more. The *Last event* line of the panel shows *Retrying like a clean start*, *Link recovered* or *The link could not be recovered*, and the console tells the same. If it still fails, the watchdog keeps trying as always.
+
 The battery is read from BlueZ when the phone reports an exact percentage, otherwise from the oFono handsfree level (0–5, shown in steps of 20 %). Phones report it coarsely and with delay, so it can differ by a few points from the number on the phone. If the phone does not report it, the panel shows *not reported*; the console prints once the properties that oFono exposes (`oFono Handsfree properties: …`).
 
 <a id="personality-language"></a>
@@ -820,6 +827,12 @@ For the audio, echo and voice-detection settings (answer speed, hold mode, trans
 The assistant's voice and language-related settings are configured in each language's `assistant.json` file:
 * **`voice_names`:** Sets the female and male voices used by Gemini Live (by default, `Aoede` for female and `Charon` for male). You can change them to any available prebuilt Gemini voice.
 * **`speech_language_code`:** Defines a language code (BCP-47, such as `es-ES` or `en-US`) that can be used by other parts of the application. **Gemini Live does not use this setting to determine or control the language it speaks.** Leaving it empty (`""`) does not itself enable automatic language detection in Gemini Live.
+* **Multilanguage mode (Web GUI → Identity):** with *Multilanguage: answer in the language of the caller* on, the secretary starts the call in the system language and answers in the language of the caller, with the same voice and name. The box *Allowed languages* decides which ones: with codes such as `en-US, fr-FR` she only switches to those (and keeps the system language for any other); left blank, she speaks any language. With the mode off nothing changes: she only speaks the system language. When it is on:
+    * `speech_language_code` is not sent, so the voice is not tied to one language.
+    * The language rules of the prompt that force the system language are replaced, only for that call, by the sentences of `bilingual_overrides` in each language's `assistant.json` (the file itself is not modified), and the text `bilingual_instruction_any` or `bilingual_instruction_listed` is placed at the top of her instructions. If a custom language file no longer contains one of those sentences, the console says so.
+    * Live transcription takes the allowed languages as a hint (blank: Google detects it) and Whisper.cpp detects the language by itself. The filter that discarded text in another script is switched off, so callers speaking Arabic, Chinese or Hebrew are transcribed.
+    * The word lists used to recognise goodbyes, waits and the caller's replies (the `words` section of `assistant.json`) are also merged from the allowed languages, taking each one from its own language folder (all the installed languages if the box is blank); nothing is added to the main language file. The `foreign_noise` list is not used in this mode, because a word in another language is real speech then. Texts of the system (such as *Call successfully finished*) stay in the system language. A language without folder relies on Gemini's own hang-up decision and on the text model's vote.
+    * The summaries, the SPAM analysis and the messages saved for you stay in the system language.
 * **Known Gemini 3.8 Live voice limitation:** The accent and pitch/tone of the voice may occasionally drift during a call. This is a known limitation of the **Gemini 3.8 Live** model itself and is especially noticeable with the **female voice in Spanish**.
 
 #### Multi-Language Compatibility & Script Limitations
@@ -943,7 +956,7 @@ When a hang-up is cancelled or ignored, the switchboard also **answers Gemini's 
 None of them changes the live decisions. The switchboard's rules for hold, return from hold, goodbye detection and priority keywords always read Gemini's **live** transcription, because they have to react while the caller is still talking (and the AI itself listens to the audio, not to any transcript). The Whisper text arrives later, so it cannot take part in those decisions. The only small exception is a safety rule: when the AI tries to hang up during a hold, the switchboard looks for a goodbye word in the last part of the transcript, and in real-time mode that part can already include Whisper's version.
 * **Real-time (Whisper.cpp):** after each caller turn, Whisper transcribes that turn and its text is added next to Gemini's in the transcript (`Gemini text | [Whisper]: …`). The analysis made at the end of the call (tag, spam score, summary, caller name) reads this transcript with both versions. In this mode Whisper only receives the audio that passed the noise gate and the echo suppression, so it cannot recover what was muted.
 * **Online (`gemini-3.5-transcribe-live`):** the caller's speech is sent to Google while the call goes on and its text is shown next to Gemini's own. It only receives the speech that passed the noise gate and the echo suppression, and it does not need any local processing, so it is the option for small boards where Whisper.cpp is too heavy.
-* **Whisper.cpp at end of call** and **Gemini at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and aligned with the live text. The result replaces the **saved** transcript. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
+* **Whisper.cpp at end of call** and **Gemini at end of call:** once the call is over, the whole recording of the caller (which is not affected by the gate or the echo suppression) is transcribed again and compared with the live text. The saved transcript keeps every line of the live one (the assistant, the system and the filtered lines, with their times) and each caller line where the new text is different gets that text after it, in grey, with the name of the engine. If the engine returns something unusable, the live transcript is kept as it was. The tag, spam score and summary were already decided before this step from the live transcript and are not recalculated.
 
 </details>
 
@@ -961,6 +974,7 @@ None of them changes the live decisions. The switchboard's rules for hold, retur
 ### 🛠️ Web GUI Maintenance: Daemon, SPAM Check & Linux Update
 
 *   **Stop and start the daemon:** *Stop Daemon* stops the switchboard (the panel stays open) and *Start Daemon* starts it again from the panel. When it stops, the switchboard releases the Bluetooth link of the phone so the phone uses its own speaker and microphone again; when it starts, it connects the phone again by itself. If your installation does not allow starting it from the panel, *Stop Daemon* first shows a clear warning that it will not be possible to start it again from there.
+*   **Choose what you see:** the folded block *👁️ Visible sections*, at the top of the page, has a box for each section of the Web GUI. A section you untick is not built at all, so the page loads faster (the saving is noticeable on a phone); its settings are kept and keep working. *Show all sections* brings everything back.
 *   **Check SPAM of a call:** every call of the log has a *Check SPAM* button. It copies the number into the *Test Phone Number Against SPAM Providers* box (settings column) and opens it, so you only press *Run SPAM Test*.
 *   **Update Linux:** the *Linux system update* panel runs `apt update` and `apt upgrade`, asks for the sudo password, and shows the progress live. At the end it says if everything went well or lists the lines with errors, and tells you if a reboot is needed. It refuses to start while a call is in progress. Do not turn the server off while it runs.
 *   **Care of the SD card / eMMC:** the switchboard writes to disk as little as possible. The "I am alive" signals are kept in memory, the live transcript is saved every couple of seconds, and the messages and the final data of each call are saved safely. If the power fails, the database does not get corrupted; at most the last live transcript update is lost.
@@ -985,19 +999,19 @@ Changes apply from the **next call**. Change **one setting at a time**, in small
 | **Protect Initial Greeting from Early Line Interruptions** | On | On / Off | Mutes the caller's audio while the greeting is played. |
 | **Caller Mic Gain (x)** | 1.5 | 0.5 – 5.0 | The volume of the caller's voice. |
 | **Base Noise Gate (RMS)** | 55 | 0 – 100 | Sounds quieter than this are treated as silence. |
-| **VAD Start Sensitivity** | LOW | HIGH / LOW | How easily she decides that the caller started speaking. |
+| **VAD Start Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller started speaking. |
 | **VAD Prefix Padding (ms)** | 450 | 50 – 1000 | How much speech she must hear before accepting that the caller started speaking. |
 | **VAD End Sensitivity** | HIGH | HIGH / LOW | How easily she decides that the caller stopped speaking. |
-| **VAD Silence Duration (ms)** | 900 | 200 – 2000 | How long a silence must last before she decides that the caller finished. |
+| **VAD Silence Duration (ms)** | 750 | 200 – 2000 (steps of 50) | How long a silence must last before she decides that the caller finished. |
 
 #### Quick troubleshooting
 
 | What you notice | What to try (one change at a time) |
 | :--- | :--- |
-| She answers too slowly | Lower *VAD Silence Duration* by 100 ms; keep *End Sensitivity* HIGH. |
+| She answers too slowly | Lower *VAD Silence Duration* by 50–100 ms; keep *End Sensitivity* HIGH. |
 | She answers while the caller is still thinking or dictating numbers | Raise *VAD Silence Duration* to 1100–1500 ms and set *End Sensitivity* to LOW. |
-| She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; try *Start Sensitivity* HIGH or a lower *Prefix Padding*. |
-| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; keep *Start Sensitivity* LOW and *Prefix Padding* at its default (450) or higher; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
+| She misses quiet callers or their first words | Raise *Caller Mic Gain* by 0.5 or lower the *Base Noise Gate* by 5; make sure *Start Sensitivity* is HIGH or try a lower *Prefix Padding*. |
+| She reacts to the hiss of the line or to clicks; nonsense or `[Noise Filtered]` in the transcript | Raise the *Base Noise Gate* by 5; set *Start Sensitivity* to LOW and keep *Prefix Padding* at its default (450) or higher; lower the gain if the voice sounds distorted. For a TV or voices behind the caller see [below](#tv-or-voices-behind-the-caller). |
 | She hears her own voice and repeats or interrupts herself | Turn on *Software Echo Suppression*. |
 | She asks "are you there?" while the caller speaks softly | The gate may be too high or the gain too low (or echo suppression is muting the caller); adjust them in that order. |
 | The greeting is cut when the call is answered | Keep *Protect Initial Greeting* on. |
@@ -1017,7 +1031,7 @@ Every setting is a compromise (fast vs. patient, sensitive vs. noise-proof), and
 
 **Base Noise Gate.** Anything quieter than the gate is replaced by silence before Gemini hears it. It **adapts by itself** to the noise of the line and is a bit higher while a call is on hold. It works on a very low volume scale, so it removes **the hiss of the line and very quiet noise**; a TV playing at normal volume next to the caller is usually well above it and **cannot be filtered out with this setting**. **Lower it** (steps of 5) if quiet callers are cut or words are missing at the start or end. **Raise it** if hiss, hum or distant voices reach Gemini and you see nonsense or `[Noise Filtered]` in the transcript. The gate only affects what Gemini hears: the call recording keeps the full caller audio.
 
-**VAD Start Sensitivity.** **LOW (default):** she needs clearer speech to decide that somebody started talking: fewer false triggers from clicks, coughs or noise, but a soft-spoken caller may be noticed late. **HIGH:** quieter and shorter sounds count as speech: faster reaction, but noise can interrupt her.
+**VAD Start Sensitivity.** **HIGH (default):** quieter and shorter sounds count as speech: she reacts faster and is less likely to stay waiting when the caller gives short or hesitant answers, but noise can interrupt her. **LOW:** she needs clearer speech to decide that somebody started talking: fewer false triggers from clicks, coughs or noise, but a soft-spoken caller may be noticed late.
 
 **VAD Prefix Padding.** Despite its name, this is the **minimum amount of speech she must hear before accepting that the caller started talking** (it is not a recording buffer). **Lower values** (50–200 ms): very short words such as "yes", "no" or "hello" are noticed, but short noises also count. **Higher values** (500 ms or more): short noises are ignored, but a very short word may be missed.
 
@@ -1052,7 +1066,7 @@ This is the hardest case, because the secretary cannot tell a TV from a person.
 What can help:
 1. **The caller's side** makes the biggest difference: a lower TV volume, moving to another room, or a phone with noise suppression / voice isolation for calls.
 2. **Do not raise *VAD Prefix Padding*** for this problem: return phrases are short ("hello?") and a high value can make her miss them.
-3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–700 ms (the default 900 ms avoids cutting mid-sentence pauses). If the TV never stops, this cannot help.
+3. **For faster reactions whenever there are pauses:** *End Sensitivity* HIGH and a *Silence Duration* of 500–700 ms (the default 750 ms is a balance that avoids cutting most mid-sentence pauses). If the TV never stops, this cannot help.
 
 <details>
 <summary>🧪 <b>Advanced:</b> adding return phrases (for the curious and experienced users)</summary>

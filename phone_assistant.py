@@ -6,7 +6,7 @@ caller numbers & wildcards, caches SPAM lookups, stores structured caller messag
 summaries, and interacts in real time.
 
 Author: Antonio R.
-Version: 3.5
+Version: 3.6
 License: GPL 3.0
 
 Copyright (c) 2026 Antonio R.
@@ -67,7 +67,7 @@ import dbus
 import dbus.mainloop.glib
 from gi.repository import GLib
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 from collections import Counter
 from google import genai
@@ -237,7 +237,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 DEFAULT_PW_INPUT  = "bluez_input.00_00_00_00_00_00.0"
 DEFAULT_PW_OUTPUT = "bluez_output.00_00_00_00_00_00.1"
 
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 DEFAULT_LANGUAGE = DEFAULTS["settings"]["language"]  # Language of a fresh install, until another one is selected in the Web GUI
 
 # Playback drain before hanging up (see PhoneAssistant.is_playback_drained).
@@ -246,6 +246,7 @@ PLAYBACK_FRAME_BYTES = 2                # One 16-bit mono sample: silence must b
 HANGUP_AUDIO_TAIL_SECONDS = 1.2         # Extra time after the estimated end of playback (PipeWire + Bluetooth SCO latency)
 DEFAULT_CALLER_GAIN = float(DEFAULTS["settings"]["caller_gain"])                 # Default caller microphone gain (x)
 DEFAULT_NOISE_GATE_BASE = int(DEFAULTS["settings"]["noise_gate_base"])             # Default base noise gate (RMS)
+DEFAULT_VAD_START_SENSITIVITY = DEFAULTS["settings"]["vad_start_sensitivity"]  # Default VAD start sensitivity (how easily speech is detected)
 DEFAULT_VAD_PREFIX_PADDING_MS = int(DEFAULTS["settings"]["vad_prefix_padding_ms"])      # Default VAD prefix padding (ms)
 DEFAULT_VAD_SILENCE_DURATION_MS = int(DEFAULTS["settings"]["vad_silence_duration_ms"])    # Default VAD silence (ms) before Gemini Live considers that the caller finished speaking
 DEFAULT_PLAYBACK_LEAD_SILENCE_MS = int(DEFAULTS["settings"]["playback_lead_silence_ms"])  # Default silence (ms) written before the first model audio so the Bluetooth link does not swallow the first word
@@ -324,6 +325,15 @@ BT_RECONNECT_BACKOFF_MAX_SECONDS = 120.0
 BT_PURPOSE = {"released": False}         # True while the phone was released on purpose (paused with calls left to the phone): not a lost connection
 BT_RELEASE_TIMEOUT_SECONDS = 5           # Maximum wait for BlueZ when the phone is released at shutdown
 BT_CONNECT_TIMEOUT_SECONDS = 30
+BT_RESUME_VERIFY_SECONDS = 25.0        # After a start or a resume the phone must be connected with its call profile ready within this time
+BT_RESUME_POLL_SECONDS = 2.0            # Pause between checks while waiting for the link after a start or a resume
+BT_RECOVERY_SETTLE_SECONDS = 3.0        # Pause after the clean-start steps before the link is checked again
+BT_REASON_START = "start"               # Reasons written in the log when the link is verified
+BT_REASON_RESUME = "resume"
+WHISPER_AUTO_LANGUAGE = "auto"          # Whisper.cpp detects the spoken language by itself (bilingual mode)
+BILINGUAL_MODE_SETTING = "bilingual_mode"
+BILINGUAL_LANGUAGES_SETTING = "bilingual_languages"
+BILINGUAL_DROPPED_WORD_LISTS = ("foreign_noise",)   # Lists that make no sense when several languages are allowed: foreign words are real speech then
 BT_MODEM_MISSING_CYCLES = 3             # Connected phone without an oFono modem for this many cycles -> reconnect the profile
 
 ACTIVE_ASSISTANT = None
@@ -902,6 +912,11 @@ def ensure_database_exists(reset_runtime_state: bool = False) -> None:
     c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_v35_migrated', '1')")
     if c.rowcount == 1:
         c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms' AND value='600'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+    # Upgrade installs that still hold the VAD defaults of the previous version (900 ms silence, LOW start sensitivity) without touching custom values
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('vad_silence_v36_migrated', '1')")
+    if c.rowcount == 1:
+        c.execute("UPDATE settings SET value=? WHERE key='vad_silence_duration_ms' AND value='900'", (str(DEFAULT_VAD_SILENCE_DURATION_MS),))
+        c.execute("UPDATE settings SET value=? WHERE key='vad_start_sensitivity' AND value='LOW'", (DEFAULT_VAD_START_SENSITIVITY,))
     # Values every start of the daemon sets again (state of the daemon and of the Tor service)
     for setting_key, setting_value in DEFAULTS["runtime_settings"].items():
         c.execute(f"{runtime_insert} INTO settings VALUES (?, ?)", (setting_key, str(setting_value)))
@@ -1094,6 +1109,20 @@ def initialize_ofono_modems(retries: int = 3) -> None:
                 time.sleep(3.0)
             else:
                 print(f"{_C_ERR}{ICON_ERR}oFono initialization error: {e}{_R}")
+
+
+def restart_audio_services() -> None:
+    """Audio part of a clean start: restarts PipeWire / WirePlumber and creates the null sink again."""
+    if os.environ.get("SWITCHBOARD_SKIP_AUDIO_RESTART", "").strip().lower() in ("1", "true", "yes", "on"):
+        print(f"{_C_WARN}{ICON_WARN}SWITCHBOARD_SKIP_AUDIO_RESTART: PipeWire / WirePlumber were not restarted.{_R}")
+        return
+    print(f"{_C_SERVER}{ICON_SERVER}Synchronizing audio subsystem with oFono...{_R}")
+    try:
+        subprocess.run(["systemctl", "--user", "restart", "wireplumber", "pipewire", "pipewire-pulse"], check=True, stderr=subprocess.DEVNULL)
+        time.sleep(2.0)
+        ensure_null_sink()
+    except Exception as e:
+        print(f"{_C_WARN}{ICON_WARN}Warning: Could not restart audio services: {e}{_R}")
 
 
 def initialize_bluez_devices() -> None:
@@ -1584,6 +1613,11 @@ class OnlineTranscriber:
             return []
         if configured:
             return [c.strip() for c in configured.split(",") if c.strip()]
+        if getattr(self.owner, "bilingual", False):
+            extra_codes = [c.strip() for c in get_config(BILINGUAL_LANGUAGES_SETTING, "").split(",") if c.strip()]
+            if not extra_codes:
+                return []   # No other language named: Google detects it
+            return [self.owner.current_lang] + [c for c in extra_codes if c != self.owner.current_lang]
         return [self.owner.current_lang] if self.owner.current_lang else []
 
     def _vocabulary(self) -> List[str]:
@@ -1709,11 +1743,62 @@ class OnlineTranscriber:
                 await asyncio.sleep(0.2)
 
 
-def normalize_end_of_call_labels(transcript: str, label: str) -> str:
-    """The end-of-call correction asks the text model for '[Live]: <text> | [Final ASR]: <corrected>'. Shows the Gemini
-    text plainly and names the engine that produced the alternative text."""
-    cleaned = re.sub(r"(\[\d{2}:\d{2}:\d{2}\]:)\s*\[Live\]:\s*", r"\1 ", transcript)
-    return cleaned.replace("[Final ASR]", f"[{label}]")
+END_OF_CALL_MATCH_MIN_RATIO = 0.6     # Minimum similarity between a live caller line and the line returned by the model
+_ALT_TEXT_SPLIT_RE = re.compile(r"\s\|\s\[[^\]\n]{1,80}\]:\s")
+_CALLER_LINE_HEADER_RE = re.compile(r"^\s*(\[[^\]\n]*\]\s*)*:?\s*(\[Live\]:\s*)?")
+
+
+def _plain_text(text: str) -> str:
+    """Lower case text without punctuation, to compare a live line with its corrected version."""
+    return re.sub(r"\W+", " ", text.casefold()).strip()
+
+
+def merge_end_of_call_text(live_transcript: str, model_output: str, label: str) -> str:
+    """Adds the end-of-call correction to the live transcript. The live transcript is always kept whole (assistant lines, system
+    lines, filtered lines, times and order); every caller line gets ' | [label]: corrected text' when the model heard something
+    different. The model is asked for '🗣 [HH:MM:SS]: [Live]: text | [Final ASR]: corrected', but it does not always keep the line
+    breaks, may leave out lines or copy the < > of the example, so the lines are matched by similarity and not by position."""
+    entries: List[Tuple[str, str]] = []
+    for chunk in model_output.split("🗣")[1:]:
+        match = re.search(r"\|\s*\[Final ASR\]:\s*(.*)$", chunk, re.S)
+        if not match:
+            continue
+        fixed = match.group(1).strip()
+        if fixed.startswith("<") and fixed.endswith(">"):
+            fixed = fixed[1:-1].strip()
+        heard = _CALLER_LINE_HEADER_RE.sub("", chunk[:match.start()]).strip()
+        if heard.startswith("<") and heard.endswith(">"):
+            heard = heard[1:-1].strip()
+        if fixed:
+            entries.append((heard, fixed))
+    if not entries:
+        return live_transcript
+
+    blocks = live_transcript.split("\n\n")
+    pointer = 0
+    for index, block in enumerate(blocks):
+        if not block.startswith("🗣"):
+            continue
+        live_text = _ALT_TEXT_SPLIT_RE.split(_CALLER_LINE_HEADER_RE.sub("", block[1:], count=1))[0].strip()
+        best_position, best_ratio = -1, 0.0
+        for position in range(pointer, len(entries)):
+            heard, fixed = entries[position]
+            ratio = difflib.SequenceMatcher(None, _plain_text(live_text), _plain_text(heard or fixed)).ratio()
+            if ratio > best_ratio:
+                best_position, best_ratio = position, ratio
+        if best_position < 0 or best_ratio < END_OF_CALL_MATCH_MIN_RATIO:
+            continue
+        pointer = best_position + 1
+        fixed = entries[best_position][1]
+        if _plain_text(fixed) != _plain_text(live_text):
+            blocks[index] = f"{block} | [{label}]: {fixed}"
+    return "\n\n".join(blocks)
+
+
+def write_bluetooth_heartbeat() -> None:
+    """Tells the Web GUI that the Bluetooth watchdog is alive."""
+    if not write_ram_state("bt_heartbeat", time.time()):
+        set_runtime_setting("bt_heartbeat", str(time.time()))   # No RAM directory available: fall back to the database
 
 
 class BluetoothWatchdog:
@@ -1734,6 +1819,49 @@ class BluetoothWatchdog:
         self.published_state: Tuple[str, str] = ("", "")
         self.handsfree_keys_logged = False
         self.published_battery = ""
+
+    def reset_reconnect_state(self) -> None:
+        """Forgets the back-off and the missing-modem counters so the next check reconnects at once."""
+        self.backoff_seconds.clear()
+        self.next_attempt_time.clear()
+        self.modem_missing_cycles.clear()
+
+    def _wait_until_ready(self, seconds: float) -> bool:
+        """Checks the link every few seconds until the phone is connected with its call profile ready or the time is up."""
+        deadline = time.time() + seconds
+        while True:
+            self.check_once()
+            write_bluetooth_heartbeat()
+            if self.published_state[0] == "connected":
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(BT_RESUME_POLL_SECONDS)
+
+    def verify_link(self, reason: str, call_active: Callable[[], bool]) -> bool:
+        """After a start or a resume: reconnects at once (no waiting for the back-off) and checks that the phone ends up connected
+        with its call profile ready. If it does not, the steps of a clean start are repeated (oFono modems, trusted devices and
+        audio services) and the link is checked once more. Blocking: the caller runs it in a worker thread."""
+        self.reset_reconnect_state()
+        print(f"{_C_SERVER}[{get_timestamp()}] {ICON_CONN}[Bluetooth] Checking the phone link ({reason})...{_R}")
+        if self._wait_until_ready(BT_RESUME_VERIFY_SECONDS):
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] Phone link ready ({reason}).{_R}")
+            return True
+        self._record_event("recovery_started", reason)
+        print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] The phone link is not ready ({reason}). Repeating the steps of a clean start...{_R}")
+        initialize_ofono_modems(retries=1)
+        initialize_bluez_devices()
+        if not call_active():
+            restart_audio_services()
+        time.sleep(BT_RECOVERY_SETTLE_SECONDS)
+        self.reset_reconnect_state()
+        if self._wait_until_ready(BT_RESUME_VERIFY_SECONDS):
+            self._record_event("recovery_ok", reason)
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_OK}[Bluetooth] Phone link recovered ({reason}).{_R}")
+            return True
+        self._record_event("recovery_failed", reason)
+        print(f"{_C_ERR}[{get_timestamp()}] {ICON_ERR}[Bluetooth] The phone link could not be recovered ({reason}). The watchdog keeps trying.{_R}")
+        return False
 
     @staticmethod
     def _mac_token(object_path: str) -> str:
@@ -2094,25 +2222,37 @@ def restore_speakers_left_silenced() -> None:
 
 async def bluetooth_watchdog_loop() -> None:
     """Runs the Bluetooth watchdog while the daemon is alive (also when the switchboard is paused).
-    It stays idle during a call so it never interferes with the audio link."""
+    It stays idle during a call so it never interferes with the audio link. When the daemon starts, or the switchboard is
+    resumed, it first checks that the phone link really is up and repeats the steps of a clean start if it is not."""
     watchdog = BluetoothWatchdog()
     loop = asyncio.get_running_loop()
     last_error = ""
+    last_state: Optional[str] = None
+
+    def call_is_active() -> bool:
+        return ACTIVE_ASSISTANT is not None and (getattr(ACTIVE_ASSISTANT, "running", False) or getattr(ACTIVE_ASSISTANT, "passthrough_active", False))
+
     while True:
         try:
             state = get_config("daemon_state", "running")
-            call_active = ACTIVE_ASSISTANT is not None and (getattr(ACTIVE_ASSISTANT, "running", False) or getattr(ACTIVE_ASSISTANT, "passthrough_active", False))
+            call_active = call_is_active()
             phone_left_alone = state == "paused" and get_config("paused_calls_to_phone", "false") == "true"
-            if state != "stopped" and not call_active and not phone_left_alone:
+            if state == "running" and last_state != "running" and not call_active:
+                reason = BT_REASON_START if last_state is None else BT_REASON_RESUME
+                await loop.run_in_executor(None, watchdog.verify_link, reason, call_is_active)
+                last_state = state
+                last_error = ""
+            elif state != "stopped" and not call_active and not phone_left_alone:
                 cycle_started = time.time()
                 await loop.run_in_executor(None, watchdog.check_once)
                 last_error = ""
                 cycle_seconds = time.time() - cycle_started
                 if cycle_seconds > BT_SLOW_CYCLE_SECONDS:
                     print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Bluetooth] Watchdog cycle took {cycle_seconds:.0f}s (a D-Bus call was slow).{_R}")
+            if state != "running":
+                last_state = state
             # The heartbeat stops by itself if a D-Bus call blocks the cycle above; the Web GUI then shows the state as unknown.
-            if not write_ram_state("bt_heartbeat", time.time()):
-                set_runtime_setting("bt_heartbeat", str(time.time()))   # No RAM directory available: fall back to the database
+            write_bluetooth_heartbeat()
         except Exception as e:
             if str(e) != last_error:
                 last_error = str(e)
@@ -2129,6 +2269,65 @@ def load_language_data(lang_code: str, file_name: str = "assistant.json") -> dic
         except Exception:
             pass
     return {}
+
+
+def build_bilingual_assistant_data(assistant_data: dict) -> Tuple[dict, int]:
+    """Copy of the language file for the multilanguage mode: the sentences that force the main language are replaced by the
+    ones listed in "bilingual_overrides" (the language file itself is not touched). "inline_prompts" is applied to every inline
+    prompt; any other key is the name of a text of the language file. Returns the new data and how many sentences of those
+    texts were not found (a language file with custom text)."""
+    overrides = assistant_data.get("bilingual_overrides", {})
+    data = dict(assistant_data)
+    missed = 0
+    for key, rules in overrides.items():
+        if key == "inline_prompts":
+            continue
+        text = str(data.get(key, ""))
+        for rule in rules:
+            find = rule.get("find", "")
+            if not find:
+                continue
+            if find in text:
+                text = text.replace(find, rule.get("replace", ""))
+            else:
+                missed += 1
+        data[key] = text
+    prompts = dict(data.get("inline_prompts", {}))
+    for name, text in prompts.items():
+        for rule in overrides.get("inline_prompts", []):
+            if rule.get("find") and isinstance(text, str):
+                text = text.replace(rule["find"], rule.get("replace", ""))
+        prompts[name] = text
+    data["inline_prompts"] = prompts
+    return data, missed
+
+
+def merge_multilanguage_words(main_words: dict, main_lang: str, allowed_languages: List[str]) -> Tuple[dict, List[str]]:
+    """Word lists for the multilanguage mode: the lists of the main language plus the lists of the other languages (their own
+    assistant.json, nothing is copied into the main file). With allowed languages, only the folders named by their exact code
+    ('en-US' and 'en-GB' are different languages for this purpose); with none named, every installed language. Only lists are merged: the
+    texts of the system stay in the main language. Returns the words and the language codes that were merged."""
+    merged = {key: (list(value) if isinstance(value, list) else value) for key, value in main_words.items()}
+    wanted = {code.lower() for code in allowed_languages}
+    merged_codes: List[str] = []
+    try:
+        installed = sorted(d for d in os.listdir(LANG_DIR) if os.path.isdir(os.path.join(LANG_DIR, d)))
+    except OSError:
+        installed = []
+    for code in installed:
+        if code == main_lang or (wanted and code.lower() not in wanted):
+            continue
+        other_words = load_language_data(code, "assistant.json").get("words", {})
+        found = False
+        for key, value in other_words.items():
+            if isinstance(value, list) and key not in BILINGUAL_DROPPED_WORD_LISTS:
+                merged[key] = list(dict.fromkeys(list(merged.get(key, [])) + value))
+                found = True
+        if found:
+            merged_codes.append(code)
+    for key in BILINGUAL_DROPPED_WORD_LISTS:
+        merged[key] = []
+    return merged, merged_codes
 
 
 def is_female_gender(gender_value: str, gui_data: dict) -> bool:
@@ -2364,9 +2563,47 @@ def clean_json_text(raw_text: str) -> str:
     return m.group(0).strip() if m else "{}"
 
 
+ANALYSIS_REPLY_LOG_CHARS = 300   # How much of an unusable analysis reply is written in the console
+
+
+def empty_call_analysis() -> Dict[str, Any]:
+    """Neutral result of the call analysis: used before the analysis and when the text model gives nothing usable."""
+    return {"caller_type": "unknown", "risk_score": 0, "insult_detected": False, "private_data_requested": False,
+            "caller_name": "", "company": "", "summary": "", "response_text": ""}
+
+
+def normalize_call_analysis(parsed: Any) -> Optional[Dict[str, Any]]:
+    """Call analysis from the JSON of the text model. A field the model left out keeps its neutral value (models that follow the
+    format loosely, such as Gemma, may drop one) and the ones that are there are kept. None when the reply has none of the fields."""
+    if not isinstance(parsed, dict):
+        return None
+    analysis = empty_call_analysis()
+    found = False
+    for key in analysis:
+        if parsed.get(key) is not None:
+            analysis[key] = parsed[key]
+            found = True
+    if not found:
+        return None
+    try:
+        analysis["risk_score"] = max(0, min(100, int(float(analysis["risk_score"]))))
+    except (TypeError, ValueError):
+        analysis["risk_score"] = 0
+    if analysis["caller_type"] not in OUTPUT_SCHEMA["properties"]["caller_type"]["enum"]:
+        analysis["caller_type"] = "unknown"
+    for key in ("insult_detected", "private_data_requested"):
+        value = analysis[key]
+        analysis[key] = value.strip().lower() == "true" if isinstance(value, str) else bool(value)
+    for key in ("caller_name", "company", "summary", "response_text"):
+        analysis[key] = str(analysis[key] or "").strip()
+    return analysis
+
+
 def extract_response_text(response, default: str = "{}") -> str:
     try:
         for p in response.candidates[0].content.parts:
+            if getattr(p, "thought", False):
+                continue   # The reasoning of the model is not the answer
             if getattr(p, "text", None) and p.text.strip():
                 return p.text.strip()
     except Exception:
@@ -2448,11 +2685,21 @@ class PhoneAssistant:
         self.assistant_name = get_config("assistant_name", "Assistant")
         self.assistant_gender = get_config("assistant_gender", "female")
         self.current_lang = get_config("language", DEFAULT_LANGUAGE)
+        self.bilingual = get_config(BILINGUAL_MODE_SETTING, "false") == "true"   # The assistant answers in the language of the caller
 
         self.assistant_data = load_language_data(self.current_lang, "assistant.json")
+        self.bilingual_languages = [c.strip() for c in get_config(BILINGUAL_LANGUAGES_SETTING, "").split(",") if c.strip()] if self.bilingual else []
+        if self.bilingual:
+            self.assistant_data, missed_rules = build_bilingual_assistant_data(self.assistant_data)
+            if missed_rules:
+                print(f"{_C_WARN}{ICON_WARN}[Multilanguage] {missed_rules} language rule(s) of the prompt were not found in {self.current_lang}/assistant.json (custom text?): she may keep answering in the system language.{_R}")
         self.gui_data = load_language_data(self.current_lang, "gui.json")
         self.spam_data = load_language_data(self.current_lang, "spam.json")
         self.words_data = self.assistant_data.get("words", {})
+        self.bilingual_word_languages: List[str] = []
+        if self.bilingual:
+            self.words_data, self.bilingual_word_languages = merge_multilanguage_words(self.words_data, self.current_lang, self.bilingual_languages)
+            print(f"{_C_SERVER}[{get_timestamp()}] {ICON_INFO}[Multilanguage] Word lists of: {', '.join([self.current_lang] + self.bilingual_word_languages)}{_R}")
         self.prompts_data = self.assistant_data.get("inline_prompts", {})
         self.labels_data = self.assistant_data.get("labels", {})
 
@@ -2642,7 +2889,7 @@ class PhoneAssistant:
         except ValueError:
             self.noise_gate_base = DEFAULT_NOISE_GATE_BASE
 
-        self.vad_start_sens = get_config("vad_start_sensitivity", "LOW")
+        self.vad_start_sens = get_config("vad_start_sensitivity", DEFAULT_VAD_START_SENSITIVITY)
         self.vad_end_sens = get_config("vad_end_sensitivity", "HIGH")
         try:
             self.vad_prefix_padding_ms = int(get_config("vad_prefix_padding_ms", str(DEFAULT_VAD_PREFIX_PADDING_MS)))
@@ -2664,6 +2911,7 @@ class PhoneAssistant:
         self.whisper_full_model = f"{w_model}{w_quant}"
 
         self.model_text = get_config("text_model", default_text_model())
+        self.analysis_format_error = False                       # True when the text model answered, but not in the expected format
         self.analysis_failed = False                             # True when the text model could not analyze the call (quota, network)
 
         recordings_dir = os.path.join(BASE_DIR, "recordings")
@@ -2675,11 +2923,7 @@ class PhoneAssistant:
         self.client_text = genai.Client(api_key=API_KEY)
         self.client_live = genai.Client(api_key=API_KEY, http_options={"api_version": "v1alpha"})
 
-        self.last_call_json = {
-            "caller_type": "unknown", "risk_score": 0, "insult_detected": False,
-            "private_data_requested": False, "caller_name": "", "company": "",
-            "summary": "", "response_text": ""
-        }
+        self.last_call_json = empty_call_analysis()
 
     @staticmethod
     def _find_memory_category(target_tag: str) -> Optional[Dict[str, Any]]:
@@ -4145,7 +4389,7 @@ class PhoneAssistant:
                 wf.setframerate(16000)
                 for chunk in audio_bytes_list:
                     wf.writeframes(chunk)
-            lang_arg = self.current_lang.split("-")[0]
+            lang_arg = WHISPER_AUTO_LANGUAGE if self.bilingual else self.current_lang.split("-")[0]
             cmd = [WHISPER_BIN, "-l", lang_arg, "-t", str(self.whisper_threads), "-m", model_path, "-f", tmp_wav]
             if self.whisper_prompt and await asyncio.to_thread(whisper_supports_prompt):
                 cmd += ["--prompt", self.whisper_prompt]
@@ -4271,10 +4515,11 @@ class PhoneAssistant:
         return normalized in set(self.words_data.get("assistant_placeholder_phrases", []))
 
     def is_valid_text(self, text: str) -> bool:
-        if re.search(r"[\u4e00-\u9fff\uac00-\ud7a3\u3040-\u30ff\u1100-\u11ff]", text):
-            return False
-        if self.current_lang.split("-")[0].lower() in LATIN_SCRIPT_LANGS and non_latin_letter_ratio(text) > 0.5:
-            return False
+        if not self.bilingual:   # With several languages allowed, text in another script is real speech, not noise
+            if re.search(r"[\u4e00-\u9fff\uac00-\ud7a3\u3040-\u30ff\u1100-\u11ff]", text):
+                return False
+            if self.current_lang.split("-")[0].lower() in LATIN_SCRIPT_LANGS and non_latin_letter_ratio(text) > 0.5:
+                return False
         cleaned = text.strip().lower()
         if len(cleaned) <= 1 and cleaned not in ("y", "o", "a", "s", "i", "sí", "si", "no"):
             return False
@@ -4306,19 +4551,23 @@ class PhoneAssistant:
                 response = generate_text_sync(self.client_text, self.model_text, prompt, config)
 
             text_part = extract_response_text(response, default="{}")
-            cleaned_text = clean_json_text(text_part)
-            parsed = json.loads(cleaned_text)
-
-            if "caller_type" in parsed and "risk_score" in parsed:
-                self.last_call_json = parsed
+            try:
+                parsed = json.loads(clean_json_text(text_part))
+            except json.JSONDecodeError as decode_error:
+                raise ValueError(f"the reply is not valid JSON ({decode_error.msg}). Start of the reply: {text_part[:ANALYSIS_REPLY_LOG_CHARS]!r}") from decode_error
+            analysis = normalize_call_analysis(parsed)
+            if analysis is None:
+                raise ValueError(f"the reply has none of the fields of the analysis. Start of the reply: {text_part[:ANALYSIS_REPLY_LOG_CHARS]!r}")
+            self.last_call_json = analysis
+            if not analysis["summary"]:
+                self.analysis_failed = True
+                self.analysis_format_error = True
+                print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Post-Processing] The call analysis of {self.model_text} came without a summary. Start of the reply: {text_part[:ANALYSIS_REPLY_LOG_CHARS]!r}{_R}")
         except Exception as analysis_error:
             self.analysis_failed = True
-            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Post-Processing] The call analysis could not be made: {describe_model_error(analysis_error)}{_R}")
-            self.last_call_json = {
-                "caller_type": "unknown", "risk_score": 0, "insult_detected": False,
-                "private_data_requested": False, "caller_name": "", "company": "",
-                "summary": "", "response_text": ""
-            }
+            self.analysis_format_error = isinstance(analysis_error, ValueError)
+            print(f"{_C_WARN}[{get_timestamp()}] {ICON_WARN}[Post-Processing] The call analysis could not be made ({self.model_text}): {describe_model_error(analysis_error)}{_R}")
+            self.last_call_json = empty_call_analysis()
 
     def _matches_any_phrase(self, text: str, phrases: list, fuzzy: bool = False) -> bool:
         return matches_any_phrase(text, phrases, fuzzy and self.fuzzy_keywords)
@@ -5325,7 +5574,7 @@ class PhoneAssistant:
             return ""
         try:
             proc = await asyncio.create_subprocess_exec(
-                WHISPER_BIN, "-l", self.current_lang.split("-")[0], "-t", "4", "-m", model_path, "-f", wav_path,
+                WHISPER_BIN, "-l", WHISPER_AUTO_LANGUAGE if self.bilingual else self.current_lang.split("-")[0], "-t", "4", "-m", model_path, "-f", wav_path,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
             )
             stdout, _ = await proc.communicate()
@@ -5338,8 +5587,8 @@ class PhoneAssistant:
     async def correct_transcript_with_whisper(self, raw_whisper: str) -> str:
         template = self.assistant_data.get("transcript_fix_whisper_prompt") or (
             "We have two transcriptions of a call held in the language with code {lang}:\n1. LIVE TRANSCRIPT (📞 correct, 🗣 may have noise).\n2. RAW WHISPER (🗣 only).\n"
-            "Task: Align and correct 🗣 parts in LIVE TRANSCRIPT using RAW WHISPER. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
-            "Write everything in the call language and treat words in any other language as noise. If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\n"
+            "Task: correct only the 🗣 lines of the LIVE TRANSCRIPT using RAW WHISPER. Return one line for each 🗣 line, in the same order, without adding or removing any, in this exact format (without the < > signs): 🗣 [HH:MM:SS]: [Live]: live text | [Final ASR]: corrected text\n"
+            "Write everything in the call language and treat words in any other language as noise. If noise, write [Noise Filtered]. Output ONLY those lines, without explanations.\n"
             "LIVE TRANSCRIPT:\n{live_transcript}\n\nRAW WHISPER:\n{raw_whisper}"
         )
         prompt = template.replace("{lang}", self.current_lang).replace("{live_transcript}", self.accumulated_transcript).replace("{raw_whisper}", raw_whisper)
@@ -5358,8 +5607,8 @@ class PhoneAssistant:
                 audio_bytes = f.read()
             audio_mime = "audio/mp3" if wav_path.lower().endswith(".mp3") else "audio/wav"
             template = self.assistant_data.get("transcript_fix_audio_prompt") or (
-                "Task: the call is held in the language with code {lang}. Align and correct 🗣 parts in LIVE TRANSCRIPT by listening to audio. Format: 🗣 [HH:MM:SS]: [Live]: <text> | [Final ASR]: <corrected>\n"
-                "Write everything in the call language and treat words in any other language as noise. If noise, write [Noise Filtered]. Output ONLY formatted dialogue.\nLIVE TRANSCRIPT:\n{live_transcript}"
+                "Task: the call is held in the language with code {lang}. Listen to the audio and correct only the 🗣 lines of the LIVE TRANSCRIPT.\nReturn one line for each 🗣 line, in the same order, without adding or removing any, in this exact format (without the < > signs): 🗣 [HH:MM:SS]: [Live]: live text | [Final ASR]: corrected text\n"
+                "Write everything in the call language and treat words in any other language as noise. If noise, write [Noise Filtered]. Output ONLY those lines, without explanations.\nLIVE TRANSCRIPT:\n{live_transcript}"
             )
             prompt = template.replace("{lang}", self.current_lang).replace("{live_transcript}", self.accumulated_transcript)
             buf = io.StringIO()
@@ -5409,7 +5658,7 @@ class PhoneAssistant:
                     if mic_offset_bytes > 0:
                         caller_pcm_raw = (b"\x00" * mic_offset_bytes) + caller_pcm_raw
 
-                caller_pcm = upsample_16k_to_24k(caller_pcm_raw)
+                caller_pcm = await asyncio.to_thread(upsample_16k_to_24k, caller_pcm_raw)   # Worker thread: the main loop must stay free to answer the next call
 
                 max_len = max(len(caller_pcm), len(asst_pcm_raw))
                 if len(caller_pcm) < max_len:
@@ -5453,7 +5702,8 @@ class PhoneAssistant:
         max_spam_score = max(self.last_call_json.get("risk_score", 0), self.network_spam_score)
         call_summary = str(self.last_call_json.get("summary", "") or "").strip()
         if self.analysis_failed and not call_summary:
-            call_summary = str(self.assistant_data.get("analysis_unavailable_message", "")).strip()
+            message_key = "analysis_invalid_message" if self.analysis_format_error else "analysis_unavailable_message"
+            call_summary = str(self.assistant_data.get(message_key, "")).strip()
 
         if self.final_transcription_mode == "whisper_final" and os.path.exists(self.client_recording_path):
             print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running Whisper.cpp on caller audio...{_R}")
@@ -5466,19 +5716,19 @@ class PhoneAssistant:
                     os.remove(tmp_whisper_wav)
             if raw_whisper:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Aligning with {self.model_text}...{_R}")
-                final_trans = normalize_end_of_call_labels(await self.correct_transcript_with_whisper(raw_whisper),
-                                                           f"Whisper.cpp {self.whisper_full_model} (end of call)")
+                final_trans = merge_end_of_call_text(final_trans, await self.correct_transcript_with_whisper(raw_whisper),
+                                                     f"Whisper.cpp {self.whisper_full_model} (end of call)")
         elif self.final_transcription_mode == "gemini_final" and os.path.exists(self.client_recording_path):
             if model_family(self.model_text) == "gemma":
                 audio_model = next((str(option["id"]) for option in MODEL_CATALOG.get("text", {}).get("options", []) if option.get("audio")), default_text_model())
                 print(f"{_C_WARN}[Post-Processing] Gemma models do not support native audio parsing. Falling back to {audio_model}...{_R}")
-                final_trans = normalize_end_of_call_labels(
-                    await self.correct_transcript_with_gemini_audio(self.client_recording_path, model_override=audio_model),
+                final_trans = merge_end_of_call_text(
+                    final_trans, await self.correct_transcript_with_gemini_audio(self.client_recording_path, model_override=audio_model),
                     f"{audio_model} (end of call)")
             else:
                 print(f"{_C_SERVER}[{get_timestamp()}] {ICON_SERVER}[Post-Processing] Running {self.model_text} Audio alignment...{_R}")
-                final_trans = normalize_end_of_call_labels(await self.correct_transcript_with_gemini_audio(self.client_recording_path),
-                                                           f"{self.model_text} (end of call)")
+                final_trans = merge_end_of_call_text(final_trans, await self.correct_transcript_with_gemini_audio(self.client_recording_path),
+                                                     f"{self.model_text} (end of call)")
 
         contact_match = match_contact_rule(self.caller_number, self.spam_data)
         custom_contact_tag = (contact_match or {}).get("tag", "").strip()
@@ -5695,6 +5945,14 @@ class PhoneAssistant:
         if memory_block:
             instruction += memory_block
 
+        if self.bilingual:
+            if self.bilingual_languages:
+                bilingual_text = str(self.assistant_data.get("bilingual_instruction_listed", "")).replace("{languages}", ", ".join(self.bilingual_languages))
+            else:
+                bilingual_text = str(self.assistant_data.get("bilingual_instruction_any", ""))
+            if bilingual_text:
+                instruction = f"{bilingual_text}\n\n{instruction}"   # First thing she reads: the language rules of the main prompt were already adapted
+
         instruction += self.assistant_data.get("system_date", "\nDATE: {today_str}").format(today_str=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
         if contact_match and contact_match.get("prompt_rules"):
             instruction += self.assistant_data.get("custom_contact_rule", "\nRule: {rule}").format(rule=contact_match["prompt_rules"])
@@ -5743,8 +6001,8 @@ class PhoneAssistant:
         )
         # Optional explicit speech language (BCP-47) from the language file; empty disables it.
         speech_lang_code = str(self.assistant_data.get("speech_language_code", "")).strip()
-        if not self.send_speech_language_code:
-            speech_lang_code = ""
+        if not self.send_speech_language_code or self.bilingual:
+            speech_lang_code = ""   # Bilingual: the voice is not tied to one language, it follows the caller
         speech_config = None
         if speech_lang_code:
             try:
@@ -5782,7 +6040,7 @@ class PhoneAssistant:
             echo_suppression=self.software_echo_suppression, protect_greeting=self.protect_initial_greeting,
             transcription_mode=self.final_transcription_mode, whisper_signals=self.whisper_signals, whisper_bin=WHISPER_BIN or None,
             whisper_model=self.whisper_full_model, whisper_threads=self.whisper_threads, flush_on_interrupt=self.flush_on_interrupt,
-            audioop=audioop is not None, instruction_chars=len(instruction),
+            audioop=audioop is not None, instruction_chars=len(instruction), bilingual=self.bilingual, bilingual_languages=self.bilingual_languages, bilingual_word_languages=self.bilingual_word_languages,
             pw_record_target=self.pw_record_target, pw_playback_target=self.pw_playback_target,
             monitor_mode=getattr(self, "monitor_mode", None), python=sys.version.split()[0],
         )
@@ -6443,16 +6701,7 @@ if __name__ == "__main__":
     initialize_ofono_modems()
     initialize_bluez_devices()
 
-    if os.environ.get("SWITCHBOARD_SKIP_AUDIO_RESTART", "").strip().lower() in _truthy:
-        print(f"{_C_WARN}{ICON_WARN}SWITCHBOARD_SKIP_AUDIO_RESTART: PipeWire / WirePlumber were not restarted.{_R}")
-    else:
-        print(f"{_C_SERVER}{ICON_SERVER}Synchronizing audio subsystem with oFono...{_R}")
-        try:
-            subprocess.run(["systemctl", "--user", "restart", "wireplumber", "pipewire", "pipewire-pulse"], check=True, stderr=subprocess.DEVNULL)
-            time.sleep(2.0)
-            ensure_null_sink()
-        except Exception as e:
-            print(f"{_C_WARN}{ICON_WARN}Warning: Could not restart audio services: {e}{_R}")
+    restart_audio_services()
 
     restore_speakers_left_silenced()
     unblock_phones_left_blocked()
