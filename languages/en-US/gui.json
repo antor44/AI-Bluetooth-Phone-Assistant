@@ -64,7 +64,8 @@
   "ui_dismiss": "Got it",
   "ui_text_model_notes": {
     "gemini-3.5-flash-lite": "Recommended. Fast, understands audio (it can correct the transcript at the end of the call) and has a paid plan for private use.",
-    "gemma-4-26b-a4b-it": "Many more free requests per day, but it cannot listen to the recording (no end-of-call correction), follows the requested answer format less strictly and exists only on the free plan."
+    "gemma-4-26b-a4b-it": "Many more free requests per day, but it cannot listen to the recording (no end-of-call correction), follows the requested answer format less strictly and exists only on the free plan.",
+    "gemini-4-hydrogen": "More powerful and about 5 times more expensive. According to Google it understands audio (AI Studio does not say so) and its free limits are unknown: check AI Studio before using it on the free plan."
   },
   "ui_model_free_only_warning": "This model exists only on the free plan of the Gemini API: there is no paid plan to choose, so the terms of the free plan always apply (see Privacy below).",
   "ui_role_live": "Voice of the calls",
@@ -80,6 +81,7 @@
   "ui_limit_no_daily": "no daily request limit",
   "ui_limit_per_minute": "{n}/min",
   "ui_limit_tokens_per_minute": "~{n} tokens/min",
+  "ui_limit_unknown": "Google does not publish the free limits of this model: check AI Studio",
   "ui_price_no_paid_plan": "no paid plan exists",
   "ui_price_text": "${price_in} in / ${price_out} out per million tokens",
   "ui_price_live": "${price_in}/min of call audio + ${price_out}/min of assistant voice",
@@ -95,7 +97,7 @@
   "ui_privacy_eu_text": "**European Economic Area, Switzerland and United Kingdom.** Google's terms say that only paid services may be used when you make an application available to users in those regions. If you give this switchboard to other people there (clients, employees), use a key with billing enabled. Whether your own use counts is for you to check: the terms are Google's and may change (link below). This is not legal advice.",
   "ui_spam_filter_title": "🛡️ SPAM filter mode",
   "ui_spam_filter_label": "Turn on the SPAM filter mode",
-  "ui_spam_filter_help": "Every call stays on the phone, with its own audio, except SPAM, which is hung up. Blacklist rules still reject. Nothing you configured is erased: the options that do nothing meanwhile are greyed out and come back as they were when you turn the mode off. If the switchboard is paused, the pause goes first.",
+  "ui_spam_filter_help": "Every call stays on the phone, with its own audio, except SPAM, which is hung up. Blacklist rules still reject. Nothing you configured is erased: the options that do nothing meanwhile are greyed out and come back as they were when you turn the mode off. If the switchboard is paused, the pause goes first. Your phone's own anti-spam and blocked numbers act before all this: what the phone blocks or screens by itself usually never reaches the switchboard, so it is neither answered nor logged here.",
   "ui_spam_filter_unknown_label": "Numbers that are not in your contact list (and are not SPAM):",
   "ui_spam_filter_unknown_opts": {
     "phone": "Leave them on the phone",
@@ -258,8 +260,17 @@
   "ui_bt_battery_unknown": "🔋 Phone battery: not reported",
   "ui_bt_counters": "Lost connections: {lost} | Restored connections: {restored} | Failed reconnection attempts: {failed}",
   "ui_bt_last_event": "Last event ({time}): {event}",
-  "ui_bt_event_labels": {"lost": "Connection lost", "restored": "Connection restored", "failed": "Reconnection attempt failed"},
+  "ui_bt_event_labels": {"lost": "Connection lost", "restored": "Connection restored", "failed": "Reconnection attempt failed", "recovery_started": "Retrying like a clean start", "recovery_ok": "Link recovered", "recovery_failed": "The link could not be recovered"},
   "ui_btn_bt_reset_counters": "🧹 Reset counters",
+  "ui_sections_title": "👁️ Visible sections",
+  "ui_sections_hidden_count": "{n} hidden",
+  "ui_sections_help": "Hide the sections you do not use: the page loads faster, especially on the phone. Nothing is erased; the settings of a hidden section are kept.",
+  "ui_btn_show_all_sections": "↩️ Show all sections",
+  "ui_bilingual_label": "Multilanguage: answer in the language of the caller",
+  "ui_bilingual_help": "She greets in the system language and goes on in the language of the caller. With allowed languages she only switches to those; left blank, she speaks any. Off, she only speaks the system language. Summaries and messages for you stay in the system language.",
+  "ui_bilingual_languages_label": "Allowed languages (blank: any):",
+  "ui_bilingual_languages_placeholder": "en-US, fr-FR",
+  "ui_bilingual_languages_help": "Codes separated by commas, for example en-US, fr-FR. Besides the system language she will only speak those. Blank: any language.",
   "ui_toast_bt_counters_reset": "Bluetooth counters reset",
 
   "ui_in_progress": "🟢 IN PROGRESS",
