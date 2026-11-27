@@ -64,7 +64,8 @@
   "ui_dismiss": "Entendido",
   "ui_text_model_notes": {
     "gemini-3.5-flash-lite": "Recomendado. Rápido, entiende audio (puede corregir la transcripción al final de la llamada) y tiene plan de pago para uso privado.",
-    "gemma-4-26b-a4b-it": "Muchas más peticiones gratis al día, pero no puede escuchar la grabación (sin corrección al final de la llamada), sigue con menos rigor el formato de respuesta pedido y existe solo en el plan gratuito."
+    "gemma-4-26b-a4b-it": "Muchas más peticiones gratis al día, pero no puede escuchar la grabación (sin corrección al final de la llamada), sigue con menos rigor el formato de respuesta pedido y existe solo en el plan gratuito.",
+    "gemini-4-hydrogen": "Más potente y unas 5 veces más caro. Según Google entiende audio (AI Studio no lo indica) y no se sabe qué límites gratuitos tiene: compruébalo en AI Studio antes de usarlo en el plan gratuito."
   },
   "ui_model_free_only_warning": "Este modelo existe solo en el plan gratuito de la API de Gemini: no hay plan de pago que elegir, así que siempre se aplican las condiciones del plan gratuito (ver Privacidad más abajo).",
   "ui_role_live": "Voz de las llamadas",
@@ -80,6 +81,7 @@
   "ui_limit_no_daily": "sin límite diario de peticiones",
   "ui_limit_per_minute": "{n}/min",
   "ui_limit_tokens_per_minute": "~{n} tokens/min",
+  "ui_limit_unknown": "Google no publica los límites gratuitos de este modelo: consúltalos en AI Studio",
   "ui_price_no_paid_plan": "no existe plan de pago",
   "ui_price_text": "{price_in} $ de entrada / {price_out} $ de salida por millón de tokens",
   "ui_price_live": "{price_in} $/min de audio de llamada + {price_out} $/min de voz del asistente",
@@ -95,7 +97,7 @@
   "ui_privacy_eu_text": "**Espacio Económico Europeo, Suiza y Reino Unido.** Las condiciones de Google dicen que solo pueden usarse servicios de pago cuando pones una aplicación a disposición de usuarios de esas regiones. Si das esta centralita a otras personas allí (clientes, empleados), usa una clave con facturación activada. Si tu propio uso cuenta es algo que debes comprobar tú: las condiciones son de Google y pueden cambiar (enlace abajo). Esto no es asesoramiento legal.",
   "ui_spam_filter_title": "🛡️ Modo filtro SPAM",
   "ui_spam_filter_label": "Activar el modo filtro SPAM",
-  "ui_spam_filter_help": "Todas las llamadas se quedan en el móvil, con su propio audio, salvo el SPAM, que se cuelga. Las reglas de la lista negra siguen rechazando. No se borra nada de lo que configuraste: las opciones que mientras tanto no hacen nada aparecen en gris y vuelven a estar como estaban al desactivar el modo. Si la centralita está en pausa, manda la pausa.",
+  "ui_spam_filter_help": "Todas las llamadas se quedan en el móvil, con su propio audio, salvo el SPAM, que se cuelga. Las reglas de la lista negra siguen rechazando. No se borra nada de lo que configuraste: las opciones que mientras tanto no hacen nada aparecen en gris y vuelven a estar como estaban al desactivar el modo. Si la centralita está en pausa, manda la pausa. El antispam y los números bloqueados del propio móvil actúan antes que todo esto: lo que el móvil bloquea o filtra por sí mismo normalmente no llega a la centralita, así que ni se atiende ni queda en este registro.",
   "ui_spam_filter_unknown_label": "Números que no están en tu lista de contactos (y no son SPAM):",
   "ui_spam_filter_unknown_opts": {
     "phone": "Dejarlos en el móvil",
@@ -258,8 +260,17 @@
   "ui_bt_battery_unknown": "🔋 Batería del móvil: no informada",
   "ui_bt_counters": "Conexiones perdidas: {lost} | Conexiones restablecidas: {restored} | Intentos de reconexión fallidos: {failed}",
   "ui_bt_last_event": "Último evento ({time}): {event}",
-  "ui_bt_event_labels": {"lost": "Conexión perdida", "restored": "Conexión restablecida", "failed": "Intento de reconexión fallido"},
+  "ui_bt_event_labels": {"lost": "Conexión perdida", "restored": "Conexión restablecida", "failed": "Intento de reconexión fallido", "recovery_started": "Reintentando como en un arranque limpio", "recovery_ok": "Conexión recuperada", "recovery_failed": "No se pudo recuperar la conexión"},
   "ui_btn_bt_reset_counters": "🧹 Poner contadores a cero",
+  "ui_sections_title": "👁️ Secciones visibles",
+  "ui_sections_hidden_count": "{n} ocultas",
+  "ui_sections_help": "Oculta las secciones que no uses: el panel carga más rápido, sobre todo en el móvil. No se borra nada; los ajustes de una sección oculta se conservan.",
+  "ui_btn_show_all_sections": "↩️ Mostrar todas las secciones",
+  "ui_bilingual_label": "Multiidioma: responder en el idioma de quien llama",
+  "ui_bilingual_help": "Saluda en el idioma del sistema y sigue en el idioma de quien llama. Con idiomas permitidos, solo cambia a esos; en blanco, habla cualquiera. Desactivado, solo habla el idioma del sistema. Los resúmenes y los recados para ti siguen en el idioma del sistema.",
+  "ui_bilingual_languages_label": "Idiomas permitidos (en blanco: cualquiera):",
+  "ui_bilingual_languages_placeholder": "en-US, fr-FR",
+  "ui_bilingual_languages_help": "Códigos separados por comas, por ejemplo en-US, fr-FR. Además del idioma del sistema, solo hablará esos. En blanco: cualquier idioma.",
   "ui_toast_bt_counters_reset": "Contadores Bluetooth a cero",
 
   "ui_in_progress": "🟢 EN CURSO",
